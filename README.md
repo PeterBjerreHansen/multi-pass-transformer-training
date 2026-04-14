@@ -187,22 +187,74 @@ The implementation initializes the token-to-memory projection as an identity map
 
 ## Tasks
 
-The current experiments focus on synthetic algorithmic tasks featuring state-tracking where exactness is easy to measure and computational "depth" is required.
+The current experiments focus on algorithmic tasks featuring state-tracking where exactness is easy to measure and computational "depth" is required.
 
 ### Permutation Composition
 
 The model receives symbolic permutation operations and must predict the composed result. This tests whether the recurrent memory path helps with iterative state updates.
+Pass `--supervision trace` to train on every intermediate permutation state plus the final state.
+
+### Symbolic BBH-Like Tasks
+
+The `tasks/` package also includes small procedural symbolic tasks inspired by BBH-style reasoning benchmarks:
+
+- `walk`: 2D random-walk state tracking.
+- `dyck`: Dyck-style bracket completion with stack state.
+- `boolean_rpn`: postfix Boolean expression evaluation.
+- `arithmetic`: modular arithmetic accumulators.
+- `truth_graph`: acyclic Boolean dependency programs.
+- `order_deduction`: total-order transitive deduction.
+- `tracking`: shuffled-object tracking with swap, rotate, and reverse operations.
+- `permutation`: permutation composition by repeated swaps.
+
+Each task exposes final-only and trace-supervised generation through `supervision="final"` or `supervision="trace"`. The trace mode is intended for debugging and ablation; final-only supervision is the cleaner setting for testing whether recurrent memories help without an external scratchpad.
+
+Use `train_bbh_symbolic.py` for a lightweight curriculum over one symbolic task at a time:
+
+```bash
+python3 train_bbh_symbolic.py \
+  --task walk \
+  --supervision final \
+  --architecture memory_update \
+  --model-size small \
+  --n-pass 4 \
+  --pass-loss-weights 0.0 0.1 1.0 1.0 \
+  --compare-generation-modes \
+  --max-level 64
+```
+
+Run the same task with trace supervision for a deep-supervision ablation:
+
+```bash
+python3 train_bbh_symbolic.py \
+  --task walk \
+  --supervision trace \
+  --architecture memory_update \
+  --model-size small \
+  --n-pass 4 \
+  --pass-loss-weights 0.0 0.1 1.0 1.0 \
+  --compare-generation-modes \
+  --max-level 64
+```
 
 The available architectures are `transformer`, `memory_tape`, `memory_concat`, and `memory_update`.
-The training script uses curriculum training. `--max-num-swaps` sets the maximum curriculum level.
+For the permutation task, `--num-objects` controls the permutation size and `--max-level` controls the maximum number of swaps.
 Pass `--log-jsonl path/to/log.jsonl` to write structured run and eval events.
+`train_permutation.py` remains as a thin compatibility wrapper for older commands, forwarding `--max-num-swaps` to `--max-level` and `--curriculum-start-swaps` to `--curriculum-start-level`.
+
+### CLRS-Text Algorithmic Traces
+
+The CLRS-Text benchmark converts execution traces from the CLRS algorithmic reasoning benchmark into language-model examples. The model receives an algorithm name, inputs, and an initial trace state, then generates the trace suffix and final answer. This gives a recognized benchmark for testing whether multi-pass memories help with algorithm execution and length generalization.
+
+The implementation uses byte-level tokenization, so the CLRS-Text strings can be used directly without adding a tokenizer dependency. The default CLRS-Text run trains on a small mixture of `minimum`, `binary_search`, `kmp_matcher`, and `find_maximum_subarray_kadane`.
 
 ### Architecture Examples
 
 Baseline transformer:
 
 ```bash
-python3 train_permutation.py \
+python3 train_bbh_symbolic.py \
+  --task permutation \
   --architecture transformer \
   --curriculum-threshold 1.0 \
   --train-steps 50000
@@ -211,7 +263,8 @@ python3 train_permutation.py \
 MemoryTape:
 
 ```bash
-python3 train_permutation.py \
+python3 train_bbh_symbolic.py \
+  --task permutation \
   --architecture memory_tape \
   --n-pass 4 \
   --pass-loss-weights 0.0 0.1 1.0 1.0 \
@@ -222,7 +275,8 @@ python3 train_permutation.py \
 MemoryConcat:
 
 ```bash
-python3 train_permutation.py \
+python3 train_bbh_symbolic.py \
+  --task permutation \
   --architecture memory_concat \
   --n-pass 4 \
   --pass-loss-weights 0.0 0.1 1.0 1.0 \
@@ -233,7 +287,8 @@ python3 train_permutation.py \
 MemoryUpdate:
 
 ```bash
-python3 train_permutation.py \
+python3 train_bbh_symbolic.py \
+  --task permutation \
   --architecture memory_update \
   --n-pass 4 \
   --pass-loss-weights 0.0 0.1 1.0 1.0 \
@@ -241,6 +296,36 @@ python3 train_permutation.py \
   --curriculum-threshold 1.0 \
   --train-steps 50000
 ```
+
+CLRS-Text mixture benchmark:
+
+```bash
+python3 -m pip install ".[clrs]"
+
+python3 train_clrs_text.py \
+  --architecture memory_update \
+  --task-preset easy \
+  --model-size small \
+  --n-pass 4 \
+  --pass-loss-weights 0.0 0.1 1.0 1.0 \
+  --memory-update-gate on \
+  --compare-generation-modes
+```
+
+CLRS task presets are `easy`, `easy_plus`, `medium`, and `hard`. Model-size presets are `tiny`, `small`, `medium`, and `large`; they set `--n-layer`, `--n-head`, and `--n-embd`. Explicit flags still override presets, so `--task-preset easy --block-size 1024` keeps the larger block size.
+
+For offline or custom slices, pass local JSONL files with `question`, `answer`, `algo_name`, and optional `length` fields:
+
+```bash
+python3 train_clrs_text.py \
+  --data-source jsonl \
+  --train-jsonl data/clrs_train.jsonl \
+  --eval-jsonl data/clrs_eval.jsonl \
+  --algorithms minimum,binary_search \
+  --eval-lengths 16,32
+```
+
+Use `--train-lengths` and `--eval-lengths` to control the exact hosted CLRS-Text lengths included in each split. The built-in presets use matching train and eval length lists so the default comparison is not secretly testing interpolation lengths.
 
 ## To Do:
 1. Test scaling of the architectures: more parameters, more data, harder tasks. 
@@ -256,6 +341,12 @@ For local development, install the test dependency group if you want to run pyte
 
 ```bash
 python3 -m pip install ".[test]"
+```
+
+To train against the hosted CLRS-Text datasets on Hugging Face, install:
+
+```bash
+python3 -m pip install ".[clrs]"
 ```
 
 To run on CPU or CUDA, pass `--device cpu` or `--device cuda` to the training scripts.

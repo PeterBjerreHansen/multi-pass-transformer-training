@@ -8,11 +8,34 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+clrs = [
+    "datasets>=2.18",
+]
 test = [
     "pytest>=7",
 ]
 plot = [
     "matplotlib>=3.7",
+]
+
+[tool.setuptools]
+py-modules = [
+    "model_factory",
+    "models",
+    "train_bbh_symbolic",
+    "train_clrs_text",
+    "train_permutation",
+]
+
+[tool.setuptools.packages.find]
+include = ["tasks*"]
+exclude = [
+    "figures*",
+    "papers*",
+    "runs*",
+    "runs_clrs*",
+    "runs_permutation*",
+    "tests*",
 ]
 
 [tool.pytest.ini_options]

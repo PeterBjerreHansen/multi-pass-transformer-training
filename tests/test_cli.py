@@ -8,7 +8,7 @@ ROOT_DIR = Path(__file__).resolve().parents[1]
 
 
 def test_training_entrypoint_help_commands():
-    for script_name in ("train_permutation.py",):
+    for script_name in ("train_permutation.py", "train_clrs_text.py", "train_bbh_symbolic.py"):
         result = subprocess.run(
             [sys.executable, script_name, "--help"],
             cwd=ROOT_DIR,
