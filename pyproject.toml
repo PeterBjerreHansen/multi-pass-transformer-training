@@ -11,6 +11,9 @@ dependencies = [
 test = [
     "pytest>=7",
 ]
+plot = [
+    "matplotlib>=3.7",
+]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

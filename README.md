@@ -2,7 +2,7 @@
 This project explores a way to train transformers for recurrent-style inference without training them as recurrent models over token time. The models are trained with multiple passes over the same token-sequence. Earlier passes write per-token memory states; later passes read shifted versions of those memories, giving each token access to deep-layer information from previous token positions while preserving parallel training.
 
 ## Early Testing
-Transformers have a notoriously limited ability to track state (see for example [Li25](https://arxiv.org/abs/2503.02854)), but with multi-pass training and attention over a memory-tape at inference-time we get much improved performance. The permutation task looks like "STATE [A, B, C, D], swap 1 2, STATE [B, A, C, D]" with one swap. I trained the models with a curriculum of increasing difficulty; when the model learns to predict STATE after $n$ swaps with an accuracy of 95% (or 100\%) it "graduates" to $n+1$ swaps.  
+Transformers have a notoriously limited ability to track state (see for example [Li25](https://arxiv.org/abs/2503.02854)), but with multi-pass training and attention over a memory-tape at inference-time we get much improved performance. The permutation task looks like "STATE [A, B, C, D], swap 1 2, STATE [B, A, C, D]" with one swap. I trained the models with a curriculum of increasing difficulty; when the model learns to predict STATE after $n$ swaps with an accuracy of >99% it "graduates" to $n+1$ swaps.  
 
 ![](figures/permutation_task_plot.png "Permutation Task")
 

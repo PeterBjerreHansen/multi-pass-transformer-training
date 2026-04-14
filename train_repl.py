@@ -45,7 +45,7 @@ def parse_args():
     parser.add_argument("--train-program-length", type=int, default=6)
     parser.add_argument("--loss-on", choices=["suffix", "full"], default="suffix")
     parser.add_argument("--curriculum-start-program-length", type=int, default=1)
-    parser.add_argument("--curriculum-threshold", type=float, default=0.98)
+    parser.add_argument("--curriculum-threshold", type=float, default=0.99)
     parser.add_argument(
         "--review-easier-every",
         type=int,
@@ -270,14 +270,15 @@ def main():
         log_jsonl(args.log_jsonl, {"event": "eval", "step": step, "level": current_level, "metrics": current_metrics})
         inspect_eval_examples(model, args, stoi, itos, current_level, eval_rng)
 
-        easier_level = choose_easier_eval_level(current_level, eval_rng)
-        easier_metrics = evaluate_program_length(model, args, stoi, easier_level, eval_rng)
-        print(
-            f"  eval_easier program_length  {easier_level:3d} | "
-            f"loss {float(easier_metrics['loss']):.4f} | "
-            f"{format_eval_metrics(easier_metrics)}"
-        )
-        log_jsonl(args.log_jsonl, {"event": "eval_easier", "step": step, "level": easier_level, "metrics": easier_metrics})
+        if current_level > args.curriculum_start_program_length:
+            easier_level = choose_easier_eval_level(current_level, eval_rng)
+            easier_metrics = evaluate_program_length(model, args, stoi, easier_level, eval_rng)
+            print(
+                f"  eval_easier program_length  {easier_level:3d} | "
+                f"loss {float(easier_metrics['loss']):.4f} | "
+                f"{format_eval_metrics(easier_metrics)}"
+            )
+            log_jsonl(args.log_jsonl, {"event": "eval_easier", "step": step, "level": easier_level, "metrics": easier_metrics})
 
         metric_value = float(current_metrics["exact_match"])
         if metric_value >= args.curriculum_threshold and current_level < args.train_program_length:

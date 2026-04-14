@@ -14,7 +14,7 @@ def add_model_args(parser, *, default_n_embd: int):
     parser.add_argument("--n-layer", type=int, default=4)
     parser.add_argument("--n-head", type=int, default=4)
     parser.add_argument("--n-embd", type=int, default=default_n_embd)
-    parser.add_argument("--n-pass", type=int, default=2)
+    parser.add_argument("--n-pass", type=int, default=4)
     parser.add_argument("--memory-update-gate", choices=["on", "off"], default="off")
     parser.add_argument("--memory-gate-bias", type=float, default=-1.0)
     parser.add_argument("--pass-loss-weights", type=float, nargs="*", default=None)

@@ -31,9 +31,9 @@ def parse_args():
     )
     add_model_args(parser, default_n_embd=128)
     parser.add_argument("--num-objects", type=int, default=4)
-    parser.add_argument("--max-num-swaps", type=int, default=32)
+    parser.add_argument("--max-num-swaps", type=int, default=64)
     parser.add_argument("--curriculum-start-swaps", type=int, default=1)
-    parser.add_argument("--curriculum-threshold", type=float, default=0.98)
+    parser.add_argument("--curriculum-threshold", type=float, default=0.99)
     parser.add_argument(
         "--review-easier-every",
         type=int,
@@ -171,14 +171,15 @@ def main():
         )
         log_jsonl(args.log_jsonl, {"event": "eval", "step": step, "level": current_level, "metrics": current_metrics})
 
-        easier_level = choose_easier_eval_level(current_level, eval_rng)
-        easier_metrics = evaluate_num_swaps(model, args, stoi, easier_level, eval_rng)
-        print(
-            f"  eval_easier swaps  {easier_level:3d} | "
-            f"loss {float(easier_metrics['loss']):.4f} | "
-            f"{format_eval_metrics(easier_metrics)}"
-        )
-        log_jsonl(args.log_jsonl, {"event": "eval_easier", "step": step, "level": easier_level, "metrics": easier_metrics})
+        if current_level > args.curriculum_start_swaps:
+            easier_level = choose_easier_eval_level(current_level, eval_rng)
+            easier_metrics = evaluate_num_swaps(model, args, stoi, easier_level, eval_rng)
+            print(
+                f"  eval_easier swaps  {easier_level:3d} | "
+                f"loss {float(easier_metrics['loss']):.4f} | "
+                f"{format_eval_metrics(easier_metrics)}"
+            )
+            log_jsonl(args.log_jsonl, {"event": "eval_easier", "step": step, "level": easier_level, "metrics": easier_metrics})
 
         metric_value = float(current_metrics["exact_match"])
         if metric_value >= args.curriculum_threshold and current_level < args.max_num_swaps:
