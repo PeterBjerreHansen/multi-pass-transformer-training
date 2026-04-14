@@ -193,12 +193,8 @@ The current experiments focus on synthetic algorithmic tasks featuring state-tra
 
 The model receives symbolic permutation operations and must predict the composed result. This tests whether the recurrent memory path helps with iterative state updates.
 
-### REPL Traces
-
-The model learns simple assignment-and-print traces with variable state. This is a small proxy for recurrent symbolic execution.
-
 The available architectures are `transformer`, `memory_tape`, `memory_concat`, and `memory_update`.
-Both training scripts use curriculum training. `--max-num-swaps` and `--train-program-length` set the maximum curriculum levels.
+The training script uses curriculum training. `--max-num-swaps` sets the maximum curriculum level.
 Pass `--log-jsonl path/to/log.jsonl` to write structured run and eval events.
 
 ### Architecture Examples
@@ -237,13 +233,13 @@ python3 train_permutation.py \
 MemoryUpdate:
 
 ```bash
-python3 train_repl.py \
+python3 train_permutation.py \
   --architecture memory_update \
-  --n-pass 3 \
-  --pass-loss-weights 0.0 0.1 1.0 \
+  --n-pass 4 \
+  --pass-loss-weights 0.0 0.1 1.0 1.0 \
   --memory-update-gate on \
-  --randomize-num-vars \
-  --train-steps 100000
+  --curriculum-threshold 1.0 \
+  --train-steps 50000
 ```
 
 ## To Do:

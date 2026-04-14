@@ -4,7 +4,7 @@ from types import SimpleNamespace
 import torch
 import torch.nn as nn
 
-from train_utils import evaluate_batches, teacher_forced_metrics
+from train_permutation import evaluate_batches
 
 
 class TeacherForcingPerfectBadGenerator(nn.Module):
@@ -26,6 +26,15 @@ class TeacherForcingPerfectBadGenerator(nn.Module):
         return torch.cat((prompt, wrong_suffix), dim=1)
 
 
+def _teacher_forced_metrics(logits: torch.Tensor, batch) -> tuple[float, float]:
+    preds = logits.argmax(dim=-1)
+    mask = batch.metric_mask
+    correct = preds == batch.targets
+    token_accuracy = correct[mask].float().mean().item()
+    exact_match = (correct | ~mask).all(dim=1).float().mean().item()
+    return exact_match, token_accuracy
+
+
 def test_evaluate_batches_uses_generation_metrics_not_teacher_forcing():
     batch = SimpleNamespace(
         idx=torch.tensor([[2, 2, 2]]),
@@ -42,7 +51,7 @@ def test_evaluate_batches_uses_generation_metrics_not_teacher_forcing():
     model = TeacherForcingPerfectBadGenerator()
 
     logits = model(batch.idx)
-    teacher_forced_exact_match, teacher_forced_token_accuracy = teacher_forced_metrics(logits, batch)
+    teacher_forced_exact_match, teacher_forced_token_accuracy = _teacher_forced_metrics(logits, batch)
     assert teacher_forced_exact_match == 1.0
     assert teacher_forced_token_accuracy == 1.0
 

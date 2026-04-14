@@ -8,7 +8,7 @@ ROOT_DIR = Path(__file__).resolve().parents[1]
 
 
 def test_training_entrypoint_help_commands():
-    for script_name in ("train_permutation.py", "train_repl.py"):
+    for script_name in ("train_permutation.py",):
         result = subprocess.run(
             [sys.executable, script_name, "--help"],
             cwd=ROOT_DIR,
@@ -22,7 +22,6 @@ def test_training_entrypoint_help_commands():
 def test_training_entrypoint_help_omits_fixed_mode_flags():
     obsolete_flags = {
         "train_permutation.py": ("--eval-num-swaps", "--train-num-swaps"),
-        "train_repl.py": ("--eval-program-lengths",),
     }
 
     for script_name, script_flags in obsolete_flags.items():
@@ -43,8 +42,6 @@ def test_training_entrypoints_reject_fixed_mode_flags():
         ("train_permutation.py", "--curriculum"),
         ("train_permutation.py", "--eval-num-swaps"),
         ("train_permutation.py", "--train-num-swaps"),
-        ("train_repl.py", "--curriculum"),
-        ("train_repl.py", "--eval-program-lengths"),
     )
 
     for script_name, flag in cases:
