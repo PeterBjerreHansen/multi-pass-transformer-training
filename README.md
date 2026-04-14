@@ -198,7 +198,7 @@ The model receives symbolic permutation operations and must predict the composed
 The model learns simple assignment-and-print traces with variable state. This is a small proxy for recurrent symbolic execution.
 
 The available architectures are `transformer`, `memory_tape`, `memory_concat`, and `memory_update`.
-Both training scripts support fixed-length training by default and curriculum training with `--curriculum`.
+Both training scripts use curriculum training. `--max-num-swaps` and `--train-program-length` set the maximum curriculum levels.
 Pass `--log-jsonl path/to/log.jsonl` to write structured run and eval events.
 
 ### Architecture Examples
@@ -208,7 +208,6 @@ Baseline transformer:
 ```bash
 python3 train_permutation.py \
   --architecture transformer \
-  --curriculum \
   --curriculum-threshold 1.0 \
   --train-steps 50000
 ```
@@ -218,7 +217,6 @@ MemoryTape:
 ```bash
 python3 train_permutation.py \
   --architecture memory_tape \
-  --curriculum \
   --n-pass 4 \
   --pass-loss-weights 0.0 0.1 1.0 1.0 \
   --curriculum-threshold 1.0 \
@@ -230,7 +228,6 @@ MemoryConcat:
 ```bash
 python3 train_permutation.py \
   --architecture memory_concat \
-  --curriculum \
   --n-pass 4 \
   --pass-loss-weights 0.0 0.1 1.0 1.0 \
   --curriculum-threshold 1.0 \
@@ -242,7 +239,6 @@ MemoryUpdate:
 ```bash
 python3 train_repl.py \
   --architecture memory_update \
-  --curriculum \
   --n-pass 3 \
   --pass-loss-weights 0.0 0.1 1.0 \
   --memory-update-gate on \

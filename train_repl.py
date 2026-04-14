@@ -31,7 +31,10 @@ from train_utils import (
 
 
 def parse_args():
-    parser = argparse.ArgumentParser(description="Train a transformer architecture on REPL-style traces.")
+    parser = argparse.ArgumentParser(
+        description="Train a transformer architecture on REPL-style traces with a curriculum.",
+        allow_abbrev=False,
+    )
     add_model_args(parser, default_n_embd=128)
     parser.add_argument("--max-num-vars", type=int, default=4)
     parser.add_argument("--randomize-num-vars", action="store_true")
@@ -40,16 +43,14 @@ def parse_args():
     parser.add_argument("--operand-patterns", type=str, default="num_num,var_num,num_var,var_var")
     parser.add_argument("--print-prob", type=float, default=0.25)
     parser.add_argument("--train-program-length", type=int, default=6)
-    parser.add_argument("--eval-program-lengths", type=int, nargs="+", default=[6])
     parser.add_argument("--loss-on", choices=["suffix", "full"], default="suffix")
-    parser.add_argument("--curriculum", action="store_true")
     parser.add_argument("--curriculum-start-program-length", type=int, default=1)
     parser.add_argument("--curriculum-threshold", type=float, default=0.98)
     parser.add_argument(
         "--review-easier-every",
         type=int,
         default=2,
-        help="In curriculum mode, sample an easier task every Nth batch. Use 0 to disable.",
+        help="Sample an easier task every Nth batch. Use 0 to disable.",
     )
     parser.add_argument(
         "--inspect-eval-errors",
@@ -68,16 +69,14 @@ def validate_task_args(args):
         raise ValueError("--train-program-length must be non-negative")
     if not 0.0 <= args.print_prob <= 1.0:
         raise ValueError("--print-prob must be in [0, 1]")
-
-    if args.curriculum:
-        if args.curriculum_start_program_length < 1:
-            raise ValueError("--curriculum-start-program-length must be at least 1")
-        if args.curriculum_start_program_length > args.train_program_length:
-            raise ValueError("--curriculum-start-program-length must be <= --train-program-length")
-        if not 0.0 <= args.curriculum_threshold <= 1.0:
-            raise ValueError("--curriculum-threshold must be in [0, 1]")
-        if args.review_easier_every < 0:
-            raise ValueError("--review-easier-every must be >= 0")
+    if args.curriculum_start_program_length < 1:
+        raise ValueError("--curriculum-start-program-length must be at least 1")
+    if args.curriculum_start_program_length > args.train_program_length:
+        raise ValueError("--curriculum-start-program-length must be <= --train-program-length")
+    if not 0.0 <= args.curriculum_threshold <= 1.0:
+        raise ValueError("--curriculum-threshold must be in [0, 1]")
+    if args.review_easier_every < 0:
+        raise ValueError("--review-easier-every must be >= 0")
 
 
 def build_batch(args, stoi, program_length: int, rng: random.Random):
@@ -166,7 +165,7 @@ def inspect_eval_examples(model, args, stoi, itos, program_length: int, rng: ran
 def print_run_header(args, block_size: int, model):
     print(f"device: {args.device}")
     print("task: repl")
-    print(f"training_mode: {'curriculum' if args.curriculum else 'fixed'}")
+    print("training_mode: curriculum")
     print(f"architecture: {args.architecture}")
     print(f"generation_mode: {args.generation_mode}")
     print(f"max_num_vars: {args.max_num_vars}")
@@ -183,15 +182,10 @@ def print_run_header(args, block_size: int, model):
             if args.memory_update_gate == "on":
                 print(f"memory_gate_bias: {args.memory_gate_bias}")
         print(f"pass_loss_weights: {args.pass_loss_weights}")
-    if args.curriculum:
-        print(f"curriculum_start_program_length: {args.curriculum_start_program_length}")
-        print(f"curriculum_max_program_length: {args.train_program_length}")
-        print(f"curriculum_threshold: {args.curriculum_threshold}")
-        print(f"review_easier_every: {args.review_easier_every}")
-    else:
-        print(f"train_program_length: {args.train_program_length}")
-    if not args.curriculum:
-        print(f"eval_program_lengths: {args.eval_program_lengths}")
+    print(f"curriculum_start_program_length: {args.curriculum_start_program_length}")
+    print(f"curriculum_max_program_length: {args.train_program_length}")
+    print(f"curriculum_threshold: {args.curriculum_threshold}")
+    print(f"review_easier_every: {args.review_easier_every}")
     print(f"block_size: {block_size}")
     print("number of parameters: %.2fM" % (model.get_num_params() / 1e6,))
 
@@ -204,14 +198,9 @@ def main():
     validate_model_args(args)
     validate_task_args(args)
 
-    if args.curriculum:
-        max_program_length = args.train_program_length
-    else:
-        max_program_length = max([args.train_program_length] + args.eval_program_lengths)
-
     block_size = required_block_size(
         max_num_vars=args.max_num_vars,
-        program_length=max_program_length,
+        program_length=args.train_program_length,
     )
     vocab, stoi, itos = build_repl_vocab(value_mod=args.value_mod, max_num_vars=args.max_num_vars)
     model = build_model(args, vocab_size=len(vocab), block_size=block_size, device=args.device)
@@ -219,6 +208,7 @@ def main():
 
     train_rng = random.Random(args.seed + 10)
     eval_rng = random.Random(args.seed + 20)
+    log_rng = random.Random(args.seed + 30)
     current_level = args.curriculum_start_program_length
     promotion_history: list[tuple[int, int, float]] = []
 
@@ -227,20 +217,17 @@ def main():
 
     for step in range(1, args.train_steps + 1):
         model.train()
-        if args.curriculum:
-            train_program_length = choose_curriculum_train_level(
-                step,
-                current_level,
-                args.curriculum_start_program_length,
-                args.review_easier_every,
-                train_rng,
-            )
-        else:
-            train_program_length = args.train_program_length
+        train_program_length = choose_curriculum_train_level(
+            step,
+            current_level,
+            args.curriculum_start_program_length,
+            args.review_easier_every,
+            train_rng,
+        )
 
         batch = build_batch(args, stoi, train_program_length, train_rng)
         optimizer.zero_grad(set_to_none=True)
-        loss, logits, pass_losses = forward_and_loss(model, batch, args)
+        loss, _, _ = forward_and_loss(model, batch, args)
         loss.backward()
         optimizer.step()
 
@@ -248,13 +235,16 @@ def main():
         if not should_log:
             continue
 
-        train_exact, train_token_acc = teacher_forced_metrics(logits, batch)
-        suffix = f"train_program_length {train_program_length:3d}"
-        if args.curriculum:
-            suffix += f" | curriculum_level {current_level:3d}"
+        model.eval()
+        with torch.no_grad():
+            log_batch = build_batch(args, stoi, current_level, log_rng)
+            log_loss, log_logits, log_pass_losses = forward_and_loss(model, log_batch, args)
+            train_exact, train_token_acc = teacher_forced_metrics(log_logits, log_batch)
+
+        suffix = f"train_program_length {current_level:3d} | curriculum_level {current_level:3d}"
         print(
-            f"step {step:5d} | train_loss {loss.item():.4f} | "
-            f"pass_losses {format_pass_losses(pass_losses)} | "
+            f"step {step:5d} | train_loss {log_loss.item():.4f} | "
+            f"pass_losses {format_pass_losses(log_pass_losses)} | "
             f"{suffix} | train_trace_acc {train_exact:.3f} | train_token_acc {train_token_acc:.3f}"
         )
         log_jsonl(
@@ -262,60 +252,53 @@ def main():
             {
                 "event": "train_step",
                 "step": step,
-                "train_loss": float(loss.detach().item()),
-                "train_program_length": train_program_length,
-                "curriculum_level": current_level if args.curriculum else None,
+                "train_loss": float(log_loss.detach().item()),
+                "train_program_length": current_level,
+                "sampled_train_program_length": train_program_length,
+                "curriculum_level": current_level,
                 "train_exact_match": train_exact,
                 "train_token_accuracy": train_token_acc,
             },
         )
 
-        if args.curriculum:
-            current_metrics = evaluate_program_length(model, args, stoi, current_level, eval_rng)
+        current_metrics = evaluate_program_length(model, args, stoi, current_level, eval_rng)
+        print(
+            f"  eval_current program_length {current_level:3d} | "
+            f"loss {float(current_metrics['loss']):.4f} | "
+            f"{format_eval_metrics(current_metrics)}"
+        )
+        log_jsonl(args.log_jsonl, {"event": "eval", "step": step, "level": current_level, "metrics": current_metrics})
+        inspect_eval_examples(model, args, stoi, itos, current_level, eval_rng)
+
+        easier_level = choose_easier_eval_level(current_level, eval_rng)
+        easier_metrics = evaluate_program_length(model, args, stoi, easier_level, eval_rng)
+        print(
+            f"  eval_easier program_length  {easier_level:3d} | "
+            f"loss {float(easier_metrics['loss']):.4f} | "
+            f"{format_eval_metrics(easier_metrics)}"
+        )
+        log_jsonl(args.log_jsonl, {"event": "eval_easier", "step": step, "level": easier_level, "metrics": easier_metrics})
+
+        metric_value = float(current_metrics["exact_match"])
+        if metric_value >= args.curriculum_threshold and current_level < args.train_program_length:
+            promotion_history.append((current_level, step, metric_value))
+            current_level += 1
             print(
-                f"  eval_current program_length {current_level:3d} | "
-                f"loss {float(current_metrics['loss']):.4f} | "
-                f"{format_eval_metrics(current_metrics)}"
+                f"  curriculum_promote -> program_length {current_level:3d} | "
+                f"seq_acc {metric_value:.3f}"
             )
-            log_jsonl(args.log_jsonl, {"event": "eval", "step": step, "level": current_level, "metrics": current_metrics})
-            inspect_eval_examples(model, args, stoi, itos, current_level, eval_rng)
+            log_jsonl(args.log_jsonl, {"event": "curriculum_promote", "step": step, "next_level": current_level, "seq_acc": metric_value})
 
-            easier_level = choose_easier_eval_level(current_level, eval_rng)
-            easier_metrics = evaluate_program_length(model, args, stoi, easier_level, eval_rng)
+    if promotion_history:
+        print("promotion_history:")
+        for solved_program_length, step, metric_value in promotion_history:
             print(
-                f"  eval_easier program_length  {easier_level:3d} | "
-                f"loss {float(easier_metrics['loss']):.4f} | "
-                f"{format_eval_metrics(easier_metrics)}"
+                f"  solved_program_length {solved_program_length:3d} | "
+                f"promoted_at_step {step:5d} | "
+                f"seq_acc {metric_value:.3f}"
             )
-            log_jsonl(args.log_jsonl, {"event": "eval_easier", "step": step, "level": easier_level, "metrics": easier_metrics})
-
-            metric_value = float(current_metrics["exact_match"])
-            if metric_value >= args.curriculum_threshold and current_level < args.train_program_length:
-                promotion_history.append((current_level, step, metric_value))
-                current_level += 1
-                print(f"  curriculum_promote -> program_length {current_level:3d} | seq_acc {metric_value:.3f}")
-                log_jsonl(args.log_jsonl, {"event": "curriculum_promote", "step": step, "next_level": current_level, "seq_acc": metric_value})
-        else:
-            for eval_program_length in args.eval_program_lengths:
-                metrics = evaluate_program_length(model, args, stoi, eval_program_length, eval_rng)
-                print(
-                    f"  eval_program_length {eval_program_length:3d} | "
-                    f"loss {float(metrics['loss']):.4f} | "
-                    f"{format_eval_metrics(metrics)}"
-                )
-                log_jsonl(args.log_jsonl, {"event": "eval", "step": step, "level": eval_program_length, "metrics": metrics})
-
-    if args.curriculum:
-        if promotion_history:
-            print("promotion_history:")
-            for solved_program_length, step, metric_value in promotion_history:
-                print(
-                    f"  solved_program_length {solved_program_length:3d} | "
-                    f"promoted_at_step {step:5d} | "
-                    f"seq_acc {metric_value:.3f}"
-                )
-        else:
-            print("promotion_history: none")
+    else:
+        print("promotion_history: none")
 
 
 if __name__ == "__main__":
