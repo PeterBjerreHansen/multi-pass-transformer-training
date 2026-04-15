@@ -1,9 +1,6 @@
 .DS_Store
 __pycache__/
 *.pyc
-runs_permutation/*
-runs_clrs/*
 runs_bbh/*
-!runs_bbh/*.sh
 papers/
 pytest_cache

@@ -8,7 +8,6 @@ from tasks import permutation
 from tasks import tracking
 from tasks import truth_graph
 from tasks import walk
-from tasks.clrs_text import ClrsTextExample, encode_example, decode_ids
 
 
 def _tokens(ids, itos):
@@ -104,7 +103,7 @@ def test_print_symbolic_task_examples():
     _print_example("tracking trace", _tokens(prompt, tracking_itos), _tokens(answer, tracking_itos))
 
 
-def test_print_permutation_and_clrs_examples():
+def test_print_permutation_example():
     _, perm_stoi, perm_itos = permutation.build_permutation_vocab(num_objects=4)
     batch = permutation.build_permutation_batch(
         batch_size=1,
@@ -120,15 +119,3 @@ def test_print_permutation_and_clrs_examples():
     answer = batch.targets[0, prompt_len - 1 : prompt_len - 1 + output_len].tolist()
     _print_example("permutation trace", _tokens(prompt, perm_itos), _tokens(answer, perm_itos))
     assert _tokens(answer, perm_itos).count(permutation.TRACE_TOKEN) == 3
-
-    clrs_example = ClrsTextExample(
-        question="minimum: key: [0.3 0.1], initial_trace: 0 trace | min:",
-        answer="1 | 1",
-        algo_name="minimum",
-        length=2,
-    )
-    encoded = encode_example(clrs_example)
-    print("\nclrs_text byte example")
-    print("  prompt:", decode_ids(encoded.idx[: encoded.prompt_length]))
-    print("  answer:", decode_ids(encoded.targets[encoded.prompt_length - 1 :]))
-    assert "minimum" in decode_ids(encoded.idx[: encoded.prompt_length])

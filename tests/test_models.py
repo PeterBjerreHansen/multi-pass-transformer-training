@@ -106,3 +106,16 @@ def test_config_round_trips_for_future_checkpointing():
     )
     restored_memory_update = MemoryUpdateConfig.from_dict(memory_update_config.to_dict())
     assert restored_memory_update.to_dict() == memory_update_config.to_dict()
+
+    legacy_memory_update = MemoryUpdateConfig.from_dict(
+        {
+            "block_size": 8,
+            "vocab_size": 17,
+            "n_layer": 1,
+            "n_head": 2,
+            "n_embd": 8,
+            "n_pass": 3,
+        }
+    )
+    assert legacy_memory_update.memory_gate_bias == -1.0
+    assert legacy_memory_update.use_memory_gate is True

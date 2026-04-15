@@ -8,9 +8,6 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-clrs = [
-    "datasets>=2.18",
-]
 test = [
     "pytest>=7",
 ]
@@ -22,9 +19,9 @@ plot = [
 py-modules = [
     "model_factory",
     "models",
-    "train_bbh_symbolic",
-    "train_clrs_text",
-    "train_permutation",
+    "bbh_training",
+    "train_bbh_curriculum",
+    "train_bbh_trace",
 ]
 
 [tool.setuptools.packages.find]
@@ -33,8 +30,6 @@ exclude = [
     "figures*",
     "papers*",
     "runs*",
-    "runs_clrs*",
-    "runs_permutation*",
     "tests*",
 ]
 

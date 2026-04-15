@@ -27,12 +27,12 @@ def test_bbh_symbolic_registry_builds_all_task_specs():
         assert batch.idx.size(1) <= spec.required_block_size(spec.default_max_level, "final")
 
 
-def test_bbh_symbolic_entrypoint_runs_one_cpu_step(tmp_path):
+def test_bbh_curriculum_entrypoint_runs_one_cpu_step(tmp_path):
     log_path = tmp_path / "bbh_symbolic.jsonl"
     result = subprocess.run(
         [
             sys.executable,
-            "train_bbh_symbolic.py",
+            "train_bbh_curriculum.py",
             "--task",
             "walk",
             "--architecture",
@@ -69,6 +69,7 @@ def test_bbh_symbolic_entrypoint_runs_one_cpu_step(tmp_path):
     )
 
     assert "task_family: bbh_symbolic" in result.stdout
+    assert "training_mode: answer_curriculum" in result.stdout
     assert "task: walk" in result.stdout
     assert "log_policy: promotions" in result.stdout
     assert "promotion_history:" in result.stdout
@@ -81,11 +82,11 @@ def test_bbh_symbolic_entrypoint_runs_one_cpu_step(tmp_path):
     assert "eval_easier" not in events
 
 
-def test_bbh_symbolic_entrypoint_runs_permutation_task():
+def test_bbh_curriculum_entrypoint_runs_permutation_task():
     result = subprocess.run(
         [
             sys.executable,
-            "train_bbh_symbolic.py",
+            "train_bbh_curriculum.py",
             "--task",
             "permutation",
             "--architecture",
@@ -126,15 +127,19 @@ def test_bbh_symbolic_entrypoint_runs_permutation_task():
     assert "promotion_history:" in result.stdout
 
 
-def test_train_permutation_wrapper_forwards_to_bbh_symbolic_trainer():
+def test_bbh_trace_entrypoint_runs_fixed_level_trace_step():
     result = subprocess.run(
         [
             sys.executable,
-            "train_permutation.py",
+            "train_bbh_trace.py",
+            "--task",
+            "permutation",
             "--architecture",
             "transformer",
             "--device",
             "cpu",
+            "--model-size",
+            "tiny",
             "--n-layer",
             "1",
             "--n-head",
@@ -143,10 +148,10 @@ def test_train_permutation_wrapper_forwards_to_bbh_symbolic_trainer():
             "8",
             "--num-objects",
             "3",
-            "--curriculum-start-swaps",
-            "1",
-            "--max-num-swaps",
+            "--max-level",
             "2",
+            "--eval-levels",
+            "1,2",
             "--batch-size",
             "1",
             "--train-steps",
@@ -162,7 +167,8 @@ def test_train_permutation_wrapper_forwards_to_bbh_symbolic_trainer():
         text=True,
     )
 
-    assert "task_family: bbh_symbolic" in result.stdout
-    assert "task: permutation" in result.stdout
-    assert "num_objects: 3" in result.stdout
-    assert "max_level: 2" in result.stdout
+    assert "training_mode: trace_fixed" in result.stdout
+    assert "supervision: trace" in result.stdout
+    assert "fixed_level: 2" in result.stdout
+    assert "eval_levels: 1,2" in result.stdout
+    assert "eval_trace level" in result.stdout

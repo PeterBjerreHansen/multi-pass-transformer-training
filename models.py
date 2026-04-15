@@ -1,3 +1,4 @@
+from dataclasses import asdict, dataclass
 import math
 import torch
 import torch.nn as nn
@@ -162,42 +163,24 @@ class CausalTransformer(nn.Module):
             ids = torch.cat((ids, ids_next), dim=1)
         return ids
 
+@dataclass
 class TransformerConfig:
-    def __init__(
-        self,
-        block_size: int,
-        vocab_size: int,
-        n_layer: int,
-        n_head: int,
-        n_embd: int,
-    ):
-        if n_embd % n_head != 0:
-            raise ValueError(f"n_embd ({n_embd}) must be divisible by n_head ({n_head})")
-        self.block_size = block_size
-        self.vocab_size = vocab_size
-        self.n_layer = n_layer
-        self.n_head = n_head
-        self.n_embd = n_embd
+    block_size: int
+    vocab_size: int
+    n_layer: int
+    n_head: int
+    n_embd: int
 
+    def __post_init__(self):
+        if self.n_embd % self.n_head != 0:
+            raise ValueError(f"n_embd ({self.n_embd}) must be divisible by n_head ({self.n_head})")
 
     def to_dict(self) -> dict:
-        return {
-            "block_size": self.block_size,
-            "vocab_size": self.vocab_size,
-            "n_layer": self.n_layer,
-            "n_head": self.n_head,
-            "n_embd": self.n_embd,
-        }
+        return asdict(self)
 
     @classmethod
     def from_dict(cls, d: dict) -> "TransformerConfig":
-        return cls(
-            block_size=d["block_size"],
-            vocab_size=d["vocab_size"],
-            n_layer=d["n_layer"],
-            n_head=d["n_head"],
-            n_embd=d["n_embd"],
-        )
+        return cls(**d)
 
 
 #------------------------------------------------------------
@@ -377,42 +360,14 @@ class MultiPassTransformer(nn.Module):
 
         return ids
 
+@dataclass
 class MultiPassConfig(TransformerConfig):
-    def __init__(
-        self,
-        block_size: int,
-        vocab_size: int,
-        n_layer: int,
-        n_head: int,
-        n_embd: int,
-        n_pass: int,
-    ):
-        super().__init__(
-            block_size=block_size,
-            vocab_size=vocab_size,
-            n_layer=n_layer,
-            n_head=n_head,
-            n_embd=n_embd,
-        )
-        if n_pass < 2:
-            raise ValueError(f"n_pass ({n_pass}) must be at least 2 for multi-pass models")
-        self.n_pass = n_pass
+    n_pass: int
 
-    def to_dict(self) -> dict:
-        d = super().to_dict()
-        d["n_pass"] = self.n_pass
-        return d
-
-    @classmethod
-    def from_dict(cls, d: dict) -> "MultiPassConfig":
-        return cls(
-            block_size=d["block_size"],
-            vocab_size=d["vocab_size"],
-            n_layer=d["n_layer"],
-            n_head=d["n_head"],
-            n_embd=d["n_embd"],
-            n_pass=d["n_pass"],
-        )
+    def __post_init__(self):
+        super().__post_init__()
+        if self.n_pass < 2:
+            raise ValueError(f"n_pass ({self.n_pass}) must be at least 2 for multi-pass models")
     
 
 #------------------------------------------------------------
@@ -596,7 +551,7 @@ class MemoryUpdateTransformer(MultiPassTransformer):
     def _init_token_to_memory_weights(self):
         with torch.no_grad():
             n_embd = self.config.n_embd
-            self.token_to_memory.weight.copy_(
+            self.token_to_msemory.weight.copy_(
                 torch.eye(
                     n_embd,
                     device=self.token_to_memory.weight.device,
@@ -621,34 +576,10 @@ class MemoryUpdateTransformer(MultiPassTransformer):
             memory_states = block(memory_states, token_stream)
         return memory_states
 
+@dataclass
 class MemoryUpdateConfig(MultiPassConfig):
-    def __init__(
-        self,
-        block_size: int,
-        vocab_size: int,
-        n_layer: int,
-        n_head: int,
-        n_embd: int,
-        n_pass: int,
-        memory_gate_bias: float = -1.0,
-        use_memory_gate: bool = True,
-    ):
-        super().__init__(
-            block_size=block_size,
-            vocab_size=vocab_size,
-            n_layer=n_layer,
-            n_head=n_head,
-            n_embd=n_embd,
-            n_pass=n_pass,
-        )
-        self.memory_gate_bias = memory_gate_bias
-        self.use_memory_gate = use_memory_gate
-
-    def to_dict(self) -> dict:
-        d = super().to_dict()
-        d["memory_gate_bias"] = self.memory_gate_bias
-        d["use_memory_gate"] = self.use_memory_gate
-        return d
+    memory_gate_bias: float = -1.0
+    use_memory_gate: bool = True
 
     @classmethod
     def from_dict(cls, d: dict) -> "MemoryUpdateConfig":

@@ -4,7 +4,7 @@ from types import SimpleNamespace
 import torch
 import torch.nn as nn
 
-from train_permutation import evaluate_batches
+from bbh_training import evaluate_batches
 
 
 class TeacherForcingPerfectBadGenerator(nn.Module):

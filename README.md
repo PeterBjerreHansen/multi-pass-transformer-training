@@ -192,7 +192,7 @@ The current experiments focus on algorithmic tasks featuring state-tracking wher
 ### Permutation Composition
 
 The model receives symbolic permutation operations and must predict the composed result. This tests whether the recurrent memory path helps with iterative state updates.
-Pass `--supervision trace` to train on every intermediate permutation state plus the final state.
+Use `train_bbh_curriculum.py` for final-answer-only curriculum experiments and `train_bbh_trace.py` for fixed-level trace-supervised controls.
 
 ### Symbolic BBH-Like Tasks
 
@@ -207,14 +207,13 @@ The `tasks/` package also includes small procedural symbolic tasks inspired by B
 - `tracking`: shuffled-object tracking with swap, rotate, and reverse operations.
 - `permutation`: permutation composition by repeated swaps.
 
-Each task exposes final-only and trace-supervised generation through `supervision="final"` or `supervision="trace"`. The trace mode is intended for debugging and ablation; final-only supervision is the cleaner setting for testing whether recurrent memories help without an external scratchpad.
+Each task supports two experiment regimes. `train_bbh_curriculum.py` uses final-answer-only supervision with a curriculum and logs graduation events. `train_bbh_trace.py` uses trace supervision at one fixed level and logs accuracy curves for plotting.
 
-Use `train_bbh_symbolic.py` for a lightweight curriculum over one symbolic task at a time:
+Answer-only curriculum:
 
 ```bash
-python3 train_bbh_symbolic.py \
+python3 train_bbh_curriculum.py \
   --task walk \
-  --supervision final \
   --architecture memory_update \
   --model-size small \
   --n-pass 4 \
@@ -223,12 +222,11 @@ python3 train_bbh_symbolic.py \
   --max-level 64
 ```
 
-Run the same task with trace supervision for a deep-supervision ablation:
+Fixed-level trace supervision:
 
 ```bash
-python3 train_bbh_symbolic.py \
+python3 train_bbh_trace.py \
   --task walk \
-  --supervision trace \
   --architecture memory_update \
   --model-size small \
   --n-pass 4 \
@@ -240,20 +238,14 @@ python3 train_bbh_symbolic.py \
 The available architectures are `transformer`, `memory_tape`, `memory_concat`, and `memory_update`.
 For the permutation task, `--num-objects` controls the permutation size and `--max-level` controls the maximum number of swaps.
 Pass `--log-jsonl path/to/log.jsonl` to write structured run and eval events.
-`train_permutation.py` remains as a thin compatibility wrapper for older commands, forwarding `--max-num-swaps` to `--max-level` and `--curriculum-start-swaps` to `--curriculum-start-level`.
-
-### CLRS-Text Algorithmic Traces
-
-The CLRS-Text benchmark converts execution traces from the CLRS algorithmic reasoning benchmark into language-model examples. The model receives an algorithm name, inputs, and an initial trace state, then generates the trace suffix and final answer. This gives a recognized benchmark for testing whether multi-pass memories help with algorithm execution and length generalization.
-
-The implementation uses byte-level tokenization, so the CLRS-Text strings can be used directly without adding a tokenizer dependency. The default CLRS-Text run trains on a small mixture of `minimum`, `binary_search`, `kmp_matcher`, and `find_maximum_subarray_kadane`.
+The `runs_bbh/` scripts cover the small 2x2 comparison: answer-only curriculum versus fixed-level trace supervision, on `permutation` and `tracking`, for `transformer` and `memory_update`.
 
 ### Architecture Examples
 
 Baseline transformer:
 
 ```bash
-python3 train_bbh_symbolic.py \
+python3 train_bbh_curriculum.py \
   --task permutation \
   --architecture transformer \
   --curriculum-threshold 1.0 \
@@ -263,7 +255,7 @@ python3 train_bbh_symbolic.py \
 MemoryTape:
 
 ```bash
-python3 train_bbh_symbolic.py \
+python3 train_bbh_curriculum.py \
   --task permutation \
   --architecture memory_tape \
   --n-pass 4 \
@@ -275,7 +267,7 @@ python3 train_bbh_symbolic.py \
 MemoryConcat:
 
 ```bash
-python3 train_bbh_symbolic.py \
+python3 train_bbh_curriculum.py \
   --task permutation \
   --architecture memory_concat \
   --n-pass 4 \
@@ -287,7 +279,7 @@ python3 train_bbh_symbolic.py \
 MemoryUpdate:
 
 ```bash
-python3 train_bbh_symbolic.py \
+python3 train_bbh_curriculum.py \
   --task permutation \
   --architecture memory_update \
   --n-pass 4 \
@@ -296,36 +288,6 @@ python3 train_bbh_symbolic.py \
   --curriculum-threshold 1.0 \
   --train-steps 50000
 ```
-
-CLRS-Text mixture benchmark:
-
-```bash
-python3 -m pip install ".[clrs]"
-
-python3 train_clrs_text.py \
-  --architecture memory_update \
-  --task-preset easy \
-  --model-size small \
-  --n-pass 4 \
-  --pass-loss-weights 0.0 0.1 1.0 1.0 \
-  --memory-update-gate on \
-  --compare-generation-modes
-```
-
-CLRS task presets are `easy`, `easy_plus`, `medium`, and `hard`. Model-size presets are `tiny`, `small`, `medium`, and `large`; they set `--n-layer`, `--n-head`, and `--n-embd`. Explicit flags still override presets, so `--task-preset easy --block-size 1024` keeps the larger block size.
-
-For offline or custom slices, pass local JSONL files with `question`, `answer`, `algo_name`, and optional `length` fields:
-
-```bash
-python3 train_clrs_text.py \
-  --data-source jsonl \
-  --train-jsonl data/clrs_train.jsonl \
-  --eval-jsonl data/clrs_eval.jsonl \
-  --algorithms minimum,binary_search \
-  --eval-lengths 16,32
-```
-
-Use `--train-lengths` and `--eval-lengths` to control the exact hosted CLRS-Text lengths included in each split. The built-in presets use matching train and eval length lists so the default comparison is not secretly testing interpolation lengths.
 
 ## To Do:
 1. Test scaling of the architectures: more parameters, more data, harder tasks. 
@@ -341,12 +303,6 @@ For local development, install the test dependency group if you want to run pyte
 
 ```bash
 python3 -m pip install ".[test]"
-```
-
-To train against the hosted CLRS-Text datasets on Hugging Face, install:
-
-```bash
-python3 -m pip install ".[clrs]"
 ```
 
 To run on CPU or CUDA, pass `--device cpu` or `--device cuda` to the training scripts.
