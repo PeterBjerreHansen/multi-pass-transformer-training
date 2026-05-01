@@ -1,5 +1,5 @@
 # Multi-Pass Transformer Training
-This project explores a way to train transformers for recurrent-style inference without training them as recurrent models over token time. The models are trained with multiple passes over the same token-sequence. Earlier passes write per-token memory states; later passes read shifted versions of those memories, giving each token access to deep-layer information from previous token positions while preserving parallel training.
+This project explores a way to train transformers for recurrent-style inference without training them as token time recurrent models. The key idea is to train transformers with multiple passes over the same token-sequence. Earlier passes write per-token memory states; later passes read shifted versions of those memories, giving each token access to deep-layer information from previous token positions while preserving parallel training.
 
 ## A Motivating Problem: State Tracking
 Transformers have a notoriously limited ability to track state (see for example [Li25](https://arxiv.org/abs/2503.02854)), which is why this kind of task is featured often in benchmarks with hard-to-solve tasks for LLMS like BBH (see [Suzgun22](https://arxiv.org/abs/2210.09261)). So, we pick four BBH tasks and check if a small transformer model can learn to repeatedly update a symbolic state.
@@ -124,14 +124,15 @@ Okay, but the state-tracking tasks introduced earlier had only a few tokens to p
 
 Yes, partly. The BBH curriculum tasks isolate whether the model can learn repeated state updates without trace supervision, but final-answer-only supervision does not stress test final-pass generation over a long suffix. The mismatch problem only becomes unavoidable when the model has to keep generating after the prompt and repeatedly feed its own approximate memory cache forward.
 
-That is why the repo also includes longer-range trace tasks. These are fixed-trace generation problems where the model must emit a long legal suffix after the prompt, so recompute-versus-final-pass evaluation becomes a real test of cache mismatch and recurrent stability. The active trace tasks are `random_graph_walk`, where the next legal transition depends on the latent state, and `othello`, where legality depends on the evolving board state.
+That is why the repo also includes longer-range trace tasks. These are fixed-trace generation problems where the model must emit a long legal suffix after the prompt, so recompute-versus-final-pass evaluation becomes a real test of cache mismatch and recurrent stability. For some time I have been interested in the world-model of [OthelloGPT](https://arxiv.org/pdf/2309.00941) which is an 8 layer GPT 2 style model trained to predict legel sequences of [othello](https://www.eothello.com/) moves. Since move legality depends on the evolving board state, the model will need to learn an implicit kind of board-state-tracking. Since (the vast majority) othello games are sequences of 60 moves I will count it as a long-range state tracking task to generate legal sequences othello moves. 
 
-<p style="color: #b00020;"><strong>TODO:</strong> Replace this with trace-task results. There should be three plots; first is training loss, second is final-pass sequence-legality, and third is final-pass average streak of legal actions. Hopefully we see that multi-pass models can generate longer sequences of legal moves than the baseline.</p>
+![](figures/trace_plot_figs.png "trace")
 
-### Drift
+As seen in the plot above all the multi-pass models outperform the transformer by a large margin. It is worth noting that all the models have around 1 million parameters, which is about $20$ times less than OthelloGPT (that learned the task with $>1\%$ margin of error). So, it seems that the multipass-models are able to generate reasonably accurately, but we need to compare the final_pass generation mode with the recomputation mode to get a clearer picture. So, we generate with both recomputation and final_pass modes and plot average accuracy at token-index $x$: 
 
-<p style="color: #b00020;"><strong>TODO:</strong> Replace this with drift experimental results. The intended drift experiment is post-training only: load finished trace checkpoints and compare recompute versus final-pass legality and accuracy as a function of move index.</p>
+![](figures/drift_plots_othello.png "drift")
 
+Somewhat surprisingly we see that the final_pass generation mode outperforms the recomputation mode! The only explanation I can think of for this is that the multipass models have learned a truly recurrent path of computation, and so fully recurrent inference/generation for state-tracking just works better. I also found that using $K$ or $K-1$ pass context-memory did not make any difference.
 
 ## Multi-pass Architectures
 The following architectures explore some different ways of passing on the memories between passes. They all follow the abstract multi-pass training and inference-time methods (see the parent-class `MultiPassTransformer` in the codebase). 
