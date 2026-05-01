@@ -15,6 +15,21 @@ plot = [
     "matplotlib>=3.7",
 ]
 
+[tool.setuptools]
+py-modules = [
+    "model_factory",
+    "models",
+]
+
+[tool.setuptools.packages.find]
+include = ["tasks*", "experiments*"]
+exclude = [
+    "figures*",
+    "papers*",
+    "runs*",
+    "tests*",
+]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["."]

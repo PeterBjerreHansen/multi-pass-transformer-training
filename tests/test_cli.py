@@ -1,4 +1,3 @@
-import re
 import subprocess
 import sys
 from pathlib import Path
@@ -8,9 +7,13 @@ ROOT_DIR = Path(__file__).resolve().parents[1]
 
 
 def test_training_entrypoint_help_commands():
-    for script_name in ("train_permutation.py",):
+    for module_name in (
+        "experiments.train_bbh",
+        "experiments.train_trace",
+        "experiments.eval_trace_drift",
+    ):
         result = subprocess.run(
-            [sys.executable, script_name, "--help"],
+            [sys.executable, "-m", module_name, "--help"],
             cwd=ROOT_DIR,
             check=True,
             capture_output=True,
@@ -19,37 +22,47 @@ def test_training_entrypoint_help_commands():
         assert "usage:" in result.stdout
 
 
-def test_training_entrypoint_help_omits_fixed_mode_flags():
-    obsolete_flags = {
-        "train_permutation.py": ("--eval-num-swaps", "--train-num-swaps"),
-    }
-
-    for script_name, script_flags in obsolete_flags.items():
-        result = subprocess.run(
-            [sys.executable, script_name, "--help"],
-            cwd=ROOT_DIR,
-            check=True,
-            capture_output=True,
-            text=True,
-        )
-        assert not re.search(r"(^|[\s\[])--curriculum(?=[\s,\]\n])", result.stdout)
-        for flag in script_flags:
-            assert flag not in result.stdout
-
-
-def test_training_entrypoints_reject_fixed_mode_flags():
-    cases = (
-        ("train_permutation.py", "--curriculum"),
-        ("train_permutation.py", "--eval-num-swaps"),
-        ("train_permutation.py", "--train-num-swaps"),
+def test_symbolic_entrypoints_have_updated_clis():
+    curriculum = subprocess.run(
+        [sys.executable, "-m", "experiments.train_bbh", "--help"],
+        cwd=ROOT_DIR,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    trace = subprocess.run(
+        [sys.executable, "-m", "experiments.train_trace", "--help"],
+        cwd=ROOT_DIR,
+        check=True,
+        capture_output=True,
+        text=True,
     )
 
-    for script_name, flag in cases:
-        result = subprocess.run(
-            [sys.executable, script_name, flag],
-            cwd=ROOT_DIR,
-            capture_output=True,
-            text=True,
-        )
-        assert result.returncode != 0
-        assert "unrecognized arguments" in result.stderr
+    assert "--preset" in curriculum.stdout
+    assert "--token-selection" in curriculum.stdout
+    assert "--run-dir" in curriculum.stdout
+    assert "--architecture" in curriculum.stdout
+    assert "pointer_chasing_main" in curriculum.stdout
+    assert "tracking_smoke" in curriculum.stdout
+    assert "--cache-source" not in curriculum.stdout
+    assert "--batch-size" not in curriculum.stdout
+    assert "--eval-interval" not in curriculum.stdout
+    assert "--lr" not in curriculum.stdout
+    assert "--num-nodes" not in curriculum.stdout
+    assert "--curriculum-threshold" not in curriculum.stdout
+
+    assert "--preset" in trace.stdout
+    assert "--architecture" in trace.stdout
+    assert "random_graph_walk_main" in trace.stdout
+    assert "othello_main" in trace.stdout
+
+    for help_text in (
+        curriculum.stdout,
+        trace.stdout,
+    ):
+        assert "--generation-mode" not in help_text
+        assert "--greedy-cache" not in help_text
+        assert "--results-dir" not in help_text
+        assert "--log-jsonl" not in help_text
+        assert "--compare-generation-modes" not in help_text
+        assert "--task" not in help_text
