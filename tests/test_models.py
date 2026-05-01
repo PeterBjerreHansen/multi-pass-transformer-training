@@ -1,6 +1,9 @@
+from types import SimpleNamespace
+
 import pytest
 import torch
 
+from model_factory import build_model
 from models import (
     CausalTransformer,
     MemoryBlock,
@@ -246,6 +249,49 @@ def test_config_round_trips_for_future_checkpointing():
         memory_tape_gate="None",
     )
     assert none_memory_tape.memory_tape_gate == "none"
+
+
+@pytest.mark.parametrize(
+    "architecture,extra_args,model_cls,config_cls",
+    (
+        ("transformer", {}, CausalTransformer, TransformerConfig),
+        ("memory_concat", {}, MemoryConcatTransformer, MultiPassConfig),
+        ("memory_tape", {}, MemoryTapeTransformer, MemoryTapeConfig),
+        ("memory_tape", {"memory_tape_gate": "none"}, MemoryTapeTransformer, MemoryTapeConfig),
+        ("memory_tape", {"memory_tape_gate": "scalar"}, MemoryTapeTransformer, MemoryTapeConfig),
+        ("memory_update", {}, MemoryUpdateTransformer, MemoryUpdateConfig),
+        ("memory_update", {"memory_update_gate": "on"}, MemoryUpdateTransformer, MemoryUpdateConfig),
+    ),
+)
+def test_build_model_constructs_expected_model_and_config_classes(
+    architecture,
+    extra_args,
+    model_cls,
+    config_cls,
+):
+    arg_values = dict(
+        architecture=architecture,
+        n_layer=1,
+        n_head=2,
+        n_embd=8,
+        n_pass=3,
+        memory_tape_gate="tanh",
+        memory_update_gate="off",
+        memory_gate_bias=-1.0,
+    )
+    arg_values.update(extra_args)
+    args = SimpleNamespace(**arg_values)
+
+    model = build_model(args, vocab_size=17, block_size=8, device="cpu")
+    assert isinstance(model, model_cls)
+    assert isinstance(model.config, config_cls)
+
+    idx = torch.randint(0, model.config.vocab_size, (2, 6))
+    logits = model(idx)
+    assert logits.shape == (2, 6, model.config.vocab_size)
+
+    if architecture == "memory_tape":
+        assert model.transformer.h[0].memory_tape_gate == model.config.memory_tape_gate
 
     memory_update_config = MemoryUpdateConfig(
         block_size=8,

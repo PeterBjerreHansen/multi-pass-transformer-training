@@ -49,6 +49,25 @@ def test_bbh_training_objects_respect_task_defaults():
     assert block_size == task.required_block_size(args, args.max_level)
 
 
+def test_bbh_cli_memory_tape_gate_override_reaches_factory():
+    args = parse_bbh_args(
+        [
+            "--preset",
+            "pointer_chasing_smoke",
+            "--architecture",
+            "memory_tape",
+            "--memory-tape-gate",
+            "None",
+            "--device",
+            "cpu",
+        ]
+    )
+    _, _, _, _, model, _ = build_bbh_training_objects(args)
+
+    assert model.config.memory_tape_gate == "none"
+    assert model.transformer.h[0].memory_tape_gate == "none"
+
+
 def test_trace_random_graph_walk_cli_accepts_custom_sizes():
     args = parse_trace_args(
         [

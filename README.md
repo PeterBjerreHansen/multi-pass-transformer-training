@@ -132,7 +132,7 @@ As seen in the plot above all the multi-pass models outperform the transformer b
 
 ![](figures/drift_plots_othello.png "drift")
 
-Somewhat surprisingly we see that the final_pass generation mode outperforms the recomputation mode! The only explanation I can think of for this is that the multipass models have learned a truly recurrent path of computation, and so fully recurrent inference/generation for state-tracking just works better. I also found that using $K$ or $K-1$ pass context-memory did not make any difference.
+Somewhat surprisingly we see that the final_pass generation mode outperforms the recomputation mode! The only explanation I can think of for this is that the multipass models have learned a truly recurrent path of computation, and so fully recurrent inference/generation for state-tracking just works better. 
 
 ## Multi-pass Architectures
 The following architectures explore some different ways of passing on the memories between passes. They all follow the abstract multi-pass training and inference-time methods (see the parent-class `MultiPassTransformer` in the codebase). 

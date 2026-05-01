@@ -135,6 +135,7 @@ def parse_args(argv: list[str] | None = None):
         default=argparse.SUPPRESS,
     )
     parser.add_argument("--token-selection", choices=["sample", "argmax"], default=argparse.SUPPRESS)
+    parser.add_argument("--memory-tape-gate", default=argparse.SUPPRESS)
     parser.add_argument("--train-steps", type=int, default=argparse.SUPPRESS)
     parser.add_argument("--device", default=argparse.SUPPRESS)
     parser.add_argument("--run-dir", default=argparse.SUPPRESS)

@@ -42,6 +42,7 @@ def test_symbolic_entrypoints_have_updated_clis():
     assert "--token-selection" in curriculum.stdout
     assert "--run-dir" in curriculum.stdout
     assert "--architecture" in curriculum.stdout
+    assert "--memory-tape-gate" in curriculum.stdout
     assert "pointer_chasing_main" in curriculum.stdout
     assert "tracking_smoke" in curriculum.stdout
     assert "--cache-source" not in curriculum.stdout
