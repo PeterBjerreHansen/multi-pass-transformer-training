@@ -1,13 +1,11 @@
 import random
 
-from tasks import arithmetic
-from tasks import boolean_rpn
-from tasks import dyck
-from tasks import order_deduction
-from tasks import permutation
-from tasks import tracking
-from tasks import truth_graph
-from tasks import walk
+from tasks.bbh import permutation
+from tasks.bbh import pointer_chasing
+from tasks.bbh import state_machine
+from tasks.bbh import tracking
+from tasks.trace import random_graph_walk
+from tasks.trace import othello
 
 
 def _tokens(ids, itos):
@@ -20,75 +18,68 @@ def _print_example(name, prompt_tokens, answer_tokens):
     print("  answer:", " ".join(answer_tokens))
 
 
-def test_print_symbolic_task_examples():
-    walk_tokens, walk_stoi, walk_itos = walk.build_walk_vocab(max_steps=8)
-    prompt, answer, moves, final_state = walk.sample_walk_example(
-        num_steps=6,
-        stoi=walk_stoi,
+def test_print_symbolic_task_examples(tmp_path):
+    _, pointer_stoi, pointer_itos = pointer_chasing.build_pointer_chasing_vocab(num_nodes=8)
+    prompt, answer, pointers, start_node, final_node = pointer_chasing.sample_pointer_chasing_example(
+        num_nodes=8,
+        num_hops=6,
+        stoi=pointer_stoi,
         rng=random.Random(101),
-        supervision="trace",
     )
-    states, solved_final = walk.solve_walk(moves)
-    assert solved_final == final_state
-    _print_example("walk trace", _tokens(prompt, walk_itos), _tokens(answer, walk_itos))
+    _, solved_final = pointer_chasing.solve_pointer_chasing(pointers, start_node, 6)
+    assert solved_final == final_node
+    _print_example("pointer_chasing final", _tokens(prompt, pointer_itos), _tokens(answer, pointer_itos))
 
-    _, dyck_stoi, dyck_itos = dyck.build_dyck_vocab(max_bracket_types=4)
-    prompt, answer, prefix, completion = dyck.sample_dyck_example(
-        prefix_length=8,
-        max_depth=4,
-        bracket_types=3,
-        stoi=dyck_stoi,
-        rng=random.Random(102),
-        supervision="trace",
-    )
-    _, solved_completion = dyck.solve_dyck_prefix(prefix)
-    assert solved_completion == completion
-    _print_example("dyck trace", _tokens(prompt, dyck_itos), _tokens(answer, dyck_itos))
-
-    _, bool_stoi, bool_itos = boolean_rpn.build_boolean_rpn_vocab()
-    prompt, answer, expr, result = boolean_rpn.sample_boolean_rpn_example(
-        num_binary_ops=4,
-        stoi=bool_stoi,
-        rng=random.Random(103),
-        supervision="trace",
-    )
-    _, solved_result = boolean_rpn.eval_bool_rpn(expr)
-    assert solved_result == result
-    _print_example("boolean_rpn trace", _tokens(prompt, bool_itos), _tokens(answer, bool_itos))
-
-    _, arith_stoi, arith_itos = arithmetic.build_arithmetic_vocab(max_modulus=10)
-    prompt, answer, initial, operations, final = arithmetic.sample_arithmetic_example(
+    _, sm_stoi, sm_itos = state_machine.build_state_machine_vocab(num_states=5, alphabet_size=3)
+    prompt, answer, table, start_state, actions, trace, final_state = state_machine.sample_state_machine_example(
+        num_states=5,
+        alphabet_size=3,
         num_steps=5,
-        modulus=10,
-        stoi=arith_stoi,
+        stoi=sm_stoi,
+        rng=random.Random(109),
+    )
+    solved_trace, solved_final = state_machine.solve_state_machine(table, start_state, actions)
+    assert solved_trace == trace
+    assert solved_final == final_state
+    _print_example("state_machine final", _tokens(prompt, sm_itos), _tokens(answer, sm_itos))
+
+    _, lsw_stoi, lsw_itos = random_graph_walk.build_random_graph_walk_vocab(
+        num_states=5,
+        label_pool_size=4,
+    )
+    prompt, answer, transition_table, start_state, actions, trace, final_state = (
+        random_graph_walk.sample_random_graph_walk_example(
+            num_states=5,
+            label_pool_size=4,
+            num_steps=5,
+            stoi=lsw_stoi,
+            rng=random.Random(110),
+        )
+    )
+    solved_trace, solved_final = random_graph_walk.solve_random_graph_walk(
+        transition_table,
+        start_state,
+        actions,
+    )
+    assert solved_trace == trace
+    assert solved_final == final_state
+    assert _tokens(answer, lsw_itos) == [random_graph_walk.label_token(action) for action in actions]
+    _print_example("random_graph_walk trace", _tokens(prompt, lsw_itos), _tokens(answer, lsw_itos))
+
+    _, othello_stoi, othello_itos = othello.build_othello_vocab(othello_train_games=16, othello_val_games=8)
+    prompt, answer, sampled_trace = othello.sample_othello_example(
+        stoi=othello_stoi,
         rng=random.Random(104),
-        supervision="trace",
+        split="val",
+        othello_data_dir=str(tmp_path / "othello_data"),
+        othello_train_games=16,
+        othello_val_games=8,
+        othello_dataset_seed=17,
     )
-    _, solved_final = arithmetic.eval_modular_arithmetic(initial, operations, 10)
-    assert solved_final == final
-    _print_example("arithmetic trace", _tokens(prompt, arith_itos), _tokens(answer, arith_itos))
-
-    _, truth_stoi, truth_itos = truth_graph.build_truth_vocab(max_num_vars=6)
-    prompt, answer, definitions, query_index, final = truth_graph.sample_truth_example(
-        num_vars=5,
-        stoi=truth_stoi,
-        rng=random.Random(105),
-        supervision="trace",
-    )
-    values = truth_graph.eval_truth_program(definitions)
-    assert values[query_index] == final
-    _print_example("truth_graph trace", _tokens(prompt, truth_itos), _tokens(answer, truth_itos))
-
-    _, order_stoi, order_itos = order_deduction.build_order_vocab(max_num_objects=6)
-    prompt, answer, order, (left, right), final = order_deduction.sample_order_example(
-        num_objects=5,
-        stoi=order_stoi,
-        rng=random.Random(106),
-        supervision="trace",
-    )
-    rank = {obj: index for index, obj in enumerate(order)}
-    assert (rank[left] < rank[right]) == final
-    _print_example("order_deduction trace", _tokens(prompt, order_itos), _tokens(answer, order_itos))
+    legal_prefix_len, all_legal = othello.legal_prefix_length(answer)
+    assert legal_prefix_len == len(sampled_trace)
+    assert all_legal
+    _print_example("othello trace", _tokens(prompt, othello_itos), _tokens(answer, othello_itos))
 
     _, tracking_stoi, tracking_itos = tracking.build_tracking_vocab(num_objects=5)
     prompt, answer, ops, query_pos, final_object = tracking.sample_tracking_example(
@@ -96,26 +87,19 @@ def test_print_symbolic_task_examples():
         num_ops=5,
         stoi=tracking_stoi,
         rng=random.Random(107),
-        supervision="trace",
     )
     _, final_state = tracking.solve_tracking(5, ops)
     assert final_state[query_pos] == final_object
-    _print_example("tracking trace", _tokens(prompt, tracking_itos), _tokens(answer, tracking_itos))
+    _print_example("tracking final", _tokens(prompt, tracking_itos), _tokens(answer, tracking_itos))
 
 
 def test_print_permutation_example():
     _, perm_stoi, perm_itos = permutation.build_permutation_vocab(num_objects=4)
-    batch = permutation.build_permutation_batch(
-        batch_size=1,
+    prompt, answer, swaps, final_state = permutation.sample_permutation_example(
         num_objects=4,
         num_swaps=3,
         stoi=perm_stoi,
         rng=random.Random(108),
-        supervision="trace",
     )
-    prompt_len = int(batch.prompt_lengths[0].item())
-    output_len = int(batch.output_lengths[0].item())
-    prompt = batch.idx[0, :prompt_len].tolist()
-    answer = batch.targets[0, prompt_len - 1 : prompt_len - 1 + output_len].tolist()
-    _print_example("permutation trace", _tokens(prompt, perm_itos), _tokens(answer, perm_itos))
-    assert _tokens(answer, perm_itos).count(permutation.TRACE_TOKEN) == 3
+    assert permutation.solve_permutation(4, swaps) == final_state
+    _print_example("permutation final", _tokens(prompt, perm_itos), _tokens(answer, perm_itos))

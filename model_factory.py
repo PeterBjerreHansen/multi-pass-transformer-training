@@ -1,6 +1,7 @@
 from models import (
     CausalTransformer,
     MemoryConcatTransformer,
+    MemoryTapeConfig,
     MemoryTapeTransformer,
     MemoryUpdateConfig,
     MemoryUpdateTransformer,
@@ -49,13 +50,14 @@ def build_model(args, vocab_size: int, block_size: int, device: str):
         )
         model = MemoryUpdateTransformer(config)
     elif args.architecture == "memory_tape":
-        config = MultiPassConfig(
+        config = MemoryTapeConfig(
             block_size=block_size,
             vocab_size=vocab_size,
             n_layer=args.n_layer,
             n_head=args.n_head,
             n_embd=args.n_embd,
             n_pass=args.n_pass,
+            memory_tape_gate=getattr(args, "memory_tape_gate", "tanh"),
         )
         model = MemoryTapeTransformer(config)
     else:

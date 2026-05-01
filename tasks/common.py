@@ -8,15 +8,7 @@ PAD_TOKEN = "<pad>"
 BOS_TOKEN = "<bos>"
 SEP_TOKEN = "<sep>"
 EOS_TOKEN = "<eos>"
-TRACE_TOKEN = "<trace>"
-FINAL_TOKEN = "<final>"
-STATE_TOKEN = "<state>"
-STACK_TOKEN = "<stack>"
-EMPTY_TOKEN = "<empty>"
 QUERY_TOKEN = "<query>"
-
-SUPERVISION_MODES = ("final", "trace")
-
 
 @dataclass
 class SymbolicBatch:
@@ -25,12 +17,6 @@ class SymbolicBatch:
     metric_mask: torch.Tensor
     prompt_lengths: torch.Tensor
     output_lengths: torch.Tensor
-
-
-def validate_supervision(supervision: str):
-    if supervision not in SUPERVISION_MODES:
-        raise ValueError(f"supervision must be one of {SUPERVISION_MODES}")
-
 
 def build_vocab(tokens: Iterable[str]) -> Tuple[list[str], Dict[str, int], Dict[int, str]]:
     seen = set()
@@ -103,7 +89,3 @@ def build_batch_from_sequences(
         prompt_lengths=torch.tensor(prompt_lengths, dtype=torch.long, device=device),
         output_lengths=torch.tensor(output_lengths, dtype=torch.long, device=device),
     )
-
-
-def numeric_tokens(min_value: int, max_value: int) -> list[str]:
-    return [str(value) for value in range(min_value, max_value + 1)]

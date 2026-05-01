@@ -4,7 +4,7 @@ from types import SimpleNamespace
 import torch
 import torch.nn as nn
 
-from bbh_training import evaluate_batches
+from experiments.common import evaluate_batches
 
 
 class TeacherForcingPerfectBadGenerator(nn.Module):
@@ -16,7 +16,7 @@ class TeacherForcingPerfectBadGenerator(nn.Module):
     def calc_loss(self, logits, targets):
         return torch.tensor(0.0)
 
-    def generate(self, prompt, max_new_tokens, do_sample, generation_mode):
+    def generate(self, prompt, max_new_tokens, do_sample, inference_mode, cache_source="penultimate"):
         wrong_suffix = torch.zeros(
             prompt.size(0),
             max_new_tokens,
@@ -45,7 +45,9 @@ def test_evaluate_batches_uses_generation_metrics_not_teacher_forcing():
     )
     args = SimpleNamespace(
         architecture="transformer",
-        generation_mode="greedy",
+        inference_mode="final_pass",
+        token_selection="argmax",
+        cache_source="penultimate",
         eval_batches=1,
     )
     model = TeacherForcingPerfectBadGenerator()

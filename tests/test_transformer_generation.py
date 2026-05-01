@@ -2,6 +2,7 @@ import torch
 
 from models import (
     MemoryConcatTransformer,
+    MemoryTapeConfig,
     MemoryTapeTransformer,
     MemoryUpdateConfig,
     MemoryUpdateTransformer,
@@ -21,9 +22,11 @@ def make_config(config_cls, block_size: int, **kwargs):
     )
 
 
-def test_generation_modes_run():
+def test_inference_modes_run():
     cases = (
-        (MemoryTapeTransformer, MultiPassConfig, {}),
+        (MemoryTapeTransformer, MemoryTapeConfig, {}),
+        (MemoryTapeTransformer, MemoryTapeConfig, {"memory_tape_gate": "none"}),
+        (MemoryTapeTransformer, MemoryTapeConfig, {"memory_tape_gate": "scalar"}),
         (MemoryConcatTransformer, MultiPassConfig, {}),
         (MemoryUpdateTransformer, MemoryUpdateConfig, {}),
         (MemoryUpdateTransformer, MemoryUpdateConfig, {"use_memory_gate": False}),
@@ -35,9 +38,37 @@ def test_generation_modes_run():
         model = model_cls(config).eval()
         prompt = torch.randint(0, config.vocab_size, (2, 7))
 
-        recompute = model.generate(prompt.clone(), max_new_tokens=1, do_sample=False, generation_mode="recompute")
-        greedy = model.generate(prompt.clone(), max_new_tokens=1, do_sample=False, generation_mode="greedy")
-        assert torch.equal(recompute, greedy)
+        recompute = model.generate(prompt.clone(), max_new_tokens=1, do_sample=False, inference_mode="recompute")
+        final_pass = model.generate(
+            prompt.clone(),
+            max_new_tokens=1,
+            do_sample=False,
+            inference_mode="final_pass",
+            cache_source="penultimate",
+        )
+        final_pass_last_cache = model.generate(
+            prompt.clone(),
+            max_new_tokens=1,
+            do_sample=False,
+            inference_mode="final_pass",
+            cache_source="last",
+        )
+        assert torch.equal(recompute, final_pass)
+        assert torch.equal(recompute, final_pass_last_cache)
 
-        generated = model.generate(prompt.clone(), max_new_tokens=4, do_sample=False, generation_mode="greedy")
+        generated = model.generate(
+            prompt.clone(),
+            max_new_tokens=4,
+            do_sample=False,
+            inference_mode="final_pass",
+            cache_source="penultimate",
+        )
+        generated_last_cache = model.generate(
+            prompt.clone(),
+            max_new_tokens=4,
+            do_sample=False,
+            inference_mode="final_pass",
+            cache_source="last",
+        )
         assert generated.shape == (2, 11)
+        assert generated_last_cache.shape == (2, 11)

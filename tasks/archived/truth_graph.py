@@ -2,24 +2,23 @@ from typing import Dict, List, Sequence, Tuple
 
 import random
 
-from tasks.bbh_symbolic_common import (
+from tasks.common import (
     BOS_TOKEN,
     EOS_TOKEN,
-    FINAL_TOKEN,
     PAD_TOKEN,
     QUERY_TOKEN,
     SEP_TOKEN,
-    STATE_TOKEN,
     SymbolicBatch,
     build_batch_from_sequences,
     build_vocab,
     decode_ids,
     make_sequence,
-    validate_supervision,
 )
 
 
 TASK_TOKEN = "TRUTH"
+STATE_TOKEN = "<state>"
+FINAL_TOKEN = "<final>"
 ASSIGN_TOKEN = "="
 SEMI_TOKEN = ";"
 TRUE_TOKEN = "T"
@@ -29,6 +28,12 @@ AND_TOKEN = "AND"
 OR_TOKEN = "OR"
 XOR_TOKEN = "XOR"
 BINARY_OPS = (AND_TOKEN, OR_TOKEN, XOR_TOKEN)
+SUPERVISION_MODES = ("final", "trace")
+
+
+def validate_supervision(supervision: str):
+    if supervision not in SUPERVISION_MODES:
+        raise ValueError(f"supervision must be one of {SUPERVISION_MODES}")
 
 
 def var_token(index: int) -> str:
@@ -40,7 +45,7 @@ def required_block_size(num_vars: int, supervision: str = "final") -> int:
     if num_vars < 2:
         raise ValueError("num_vars must be at least 2")
     prompt_tokens = 1 + 4 + (num_vars - 1) * 6 + 2
-    answer_len = 2 if supervision == "final" else 3 * num_vars + 2
+    answer_len = 1 if supervision == "final" else 3 * num_vars + 2
     return 2 + prompt_tokens + answer_len
 
 
@@ -146,7 +151,8 @@ def sample_truth_example(
     if supervision == "trace":
         for index, value in enumerate(values):
             answer.extend([stoi[STATE_TOKEN], stoi[var_token(index)], stoi[bool_token(value)]])
-    answer.extend([stoi[FINAL_TOKEN], stoi[bool_token(final)]])
+        answer.append(stoi[FINAL_TOKEN])
+    answer.append(stoi[bool_token(final)])
     return prompt, answer, definitions, query_index, final
 
 

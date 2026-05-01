@@ -146,10 +146,11 @@ class CausalTransformer(nn.Module):
             max_new_tokens:int, 
             temperature=1.0, 
             do_sample=True,
-            generation_mode="recompute",
+            inference_mode="recompute",
+            cache_source="penultimate",
         ):
-        if generation_mode != "recompute":
-            raise ValueError("CausalTransformer only supports generation_mode='recompute'")
+        if inference_mode != "recompute":
+            raise ValueError("CausalTransformer only supports inference_mode='recompute'")
         for _ in range(max_new_tokens):
             # if the sequence context is growing too long we must crop it at block_size
             ids_cond = ids if ids.size(1) <= self.config.block_size else ids[:, -self.config.block_size:]
@@ -275,14 +276,12 @@ class MultiPassTransformer(nn.Module):
         x = x + self.transformer.wpe(pos)
         return x
 
-    def forward(
-            self,
-            idx,
-            return_all_logits=False,
-        ):
+    def forward_passes(self, idx):
+        """Return logits and memory states for every recurrent pass."""
         token_stream = self._embed_tokens(idx)
         prev_memory_states = torch.zeros_like(token_stream)
         logits_per_pass = []
+        memory_per_pass = []
 
         for _ in range(self.config.n_pass):
             memory_tape = torch.zeros_like(prev_memory_states)
@@ -291,8 +290,17 @@ class MultiPassTransformer(nn.Module):
             logits = self.lm_head(self.transformer.ln_f(hidden_states))
             memory_states = self.mem_head(self.ln_mem(hidden_states))
             logits_per_pass.append(logits)
+            memory_per_pass.append(memory_states)
             prev_memory_states = memory_states
 
+        return logits_per_pass, memory_per_pass
+
+    def forward(
+            self,
+            idx,
+            return_all_logits=False,
+        ):
+        logits_per_pass, _ = self.forward_passes(idx)
         return logits_per_pass if return_all_logits else logits_per_pass[-1]
 
     def generate(
@@ -301,9 +309,10 @@ class MultiPassTransformer(nn.Module):
             max_new_tokens: int,
             temperature=1.0,
             do_sample=True,
-            generation_mode="recompute",
+            inference_mode="recompute",
+            cache_source="penultimate",
         ):
-        if generation_mode == "recompute":
+        if inference_mode == "recompute":
             for _ in range(max_new_tokens):
                 ids_cond = ids if ids.size(1) <= self.config.block_size else ids[:, -self.config.block_size:]
                 logits = self.forward(ids_cond)
@@ -315,18 +324,37 @@ class MultiPassTransformer(nn.Module):
                     ids_next = torch.argmax(last_token_logits, dim=-1, keepdim=True)
                 ids = torch.cat((ids, ids_next), dim=1)
             return ids
-        if generation_mode == "greedy":
-            return self._generate_greedy(ids, max_new_tokens, temperature=temperature, do_sample=do_sample)
-        raise ValueError(f"Unsupported generation_mode: {generation_mode}")
+        if inference_mode == "final_pass":
+            return self._generate_final_pass(
+                ids,
+                max_new_tokens,
+                temperature=temperature,
+                do_sample=do_sample,
+                cache_source=cache_source,
+            )
+        raise ValueError(f"Unsupported inference_mode: {inference_mode}")
 
-    def _generate_greedy(self, ids: torch.Tensor, max_new_tokens: int, temperature=1.0, do_sample=True):
+    def _generate_final_pass(
+            self,
+            ids: torch.Tensor,
+            max_new_tokens: int,
+            temperature=1.0,
+            do_sample=True,
+            cache_source="penultimate",
+        ):
         if max_new_tokens <= 0:
             return ids
+        if cache_source == "penultimate":
+            cache_pass_idx = self.config.n_pass - 2
+        elif cache_source == "last":
+            cache_pass_idx = self.config.n_pass - 1
+        else:
+            raise ValueError("cache_source must be 'penultimate' or 'last'")
 
         ids_window = ids if ids.size(1) <= self.config.block_size else ids[:, -self.config.block_size:]
         token_stream = self._embed_tokens(ids_window)
         prev_memory_states = torch.zeros_like(token_stream)
-        greedy_memory_history = None
+        final_pass_memory_history = None
 
         for pass_idx in range(self.config.n_pass):
             memory_tape = torch.zeros_like(prev_memory_states)
@@ -334,8 +362,8 @@ class MultiPassTransformer(nn.Module):
             hidden_states = self._run_full_pass(token_stream, memory_tape)
             logits = self.lm_head(self.transformer.ln_f(hidden_states))
             memory_states = self.mem_head(self.ln_mem(hidden_states))
-            if pass_idx == self.config.n_pass - 2:
-                greedy_memory_history = memory_states
+            if pass_idx == cache_pass_idx:
+                final_pass_memory_history = memory_states
             prev_memory_states = memory_states
 
         for _ in range(max_new_tokens):
@@ -351,12 +379,12 @@ class MultiPassTransformer(nn.Module):
             token_stream = self._embed_tokens(ids_window)
             memory_tape = torch.zeros_like(token_stream)
             if token_stream.size(1) > 1:
-                memory_tape[:, 1:, :] = greedy_memory_history[:, -(token_stream.size(1) - 1):, :]
+                memory_tape[:, 1:, :] = final_pass_memory_history[:, -(token_stream.size(1) - 1):, :]
             hidden_states = self._run_full_pass(token_stream, memory_tape)
             logits = self.lm_head(self.transformer.ln_f(hidden_states))
             memory_states = self.mem_head(self.ln_mem(hidden_states))
-            greedy_memory_history = torch.cat((greedy_memory_history, memory_states[:, -1:, :]), dim=1)
-            greedy_memory_history = greedy_memory_history[:, -self.config.block_size:, :]
+            final_pass_memory_history = torch.cat((final_pass_memory_history, memory_states[:, -1:, :]), dim=1)
+            final_pass_memory_history = final_pass_memory_history[:, -self.config.block_size:, :]
 
         return ids
 
@@ -368,7 +396,26 @@ class MultiPassConfig(TransformerConfig):
         super().__post_init__()
         if self.n_pass < 2:
             raise ValueError(f"n_pass ({self.n_pass}) must be at least 2 for multi-pass models")
-    
+
+
+@dataclass
+class MemoryTapeConfig(MultiPassConfig):
+    memory_tape_gate: str = "tanh"
+
+    @staticmethod
+    def normalize_gate(memory_tape_gate) -> str:
+        if memory_tape_gate is None:
+            return "none"
+        normalized = str(memory_tape_gate).lower()
+        options = ("none", "tanh", "scalar")
+        if normalized not in options:
+            raise ValueError(f"memory_tape_gate must be one of: {', '.join(options)}")
+        return normalized
+
+    def __post_init__(self):
+        super().__post_init__()
+        self.memory_tape_gate = self.normalize_gate(self.memory_tape_gate)
+
 
 #------------------------------------------------------------
 #--               MemoryConcat Transformer                 --
@@ -466,18 +513,48 @@ class MemoryBlock(nn.Module):
         super().__init__()
         self.ln_1 = LayerNorm(config.n_embd)
         self.attn = CausalSelfAttention(config)
+        self.ln_2 = LayerNorm(config.n_embd)
+        self.mlp = MLP(config)
         self.ln_mem_q = LayerNorm(config.n_embd)
         self.ln_mem_kv = LayerNorm(config.n_embd)
         self.cross_attn = CausalCrossAttention(config)
-        self.ln_2 = LayerNorm(config.n_embd)
-        self.mlp = MLP(config)
+        self.memory_tape_gate = config.memory_tape_gate
+        self.memory_gate = None if self.memory_tape_gate == "none" else nn.Parameter(
+            torch.tensor(0.2 if self.memory_tape_gate == "scalar" else 0.0)
+        )
+        self._memory_gate_scale = {
+            "none": self._ungated_memory_scale,
+            "tanh": self._tanh_memory_scale,
+            "scalar": self._scalar_memory_scale,
+        }[self.memory_tape_gate]
+
+    def _ungated_memory_scale(self):
+        return 1.0
+
+    def _tanh_memory_scale(self):
+        return torch.tanh(self.memory_gate)
+
+    def _scalar_memory_scale(self):
+        return self.memory_gate
+
+    def memory_gate_stats(self):
+        if self.memory_gate is None:
+            return None
+        raw = self.memory_gate.detach()
+        effective = self._memory_gate_scale().detach()
+        return {
+            "mode": self.memory_tape_gate,
+            "raw": float(raw.cpu().item()),
+            "effective": float(effective.cpu().item()),
+        }
 
     def forward(self, x, memory_states):
         x = x + self.attn(self.ln_1(x))
-        x = x + self.cross_attn(
+        memory_delta = self.cross_attn(
             self.ln_mem_q(x),
             self.ln_mem_kv(memory_states),
         )
+        x = x + self._memory_gate_scale() * memory_delta
         x = x + self.mlp(self.ln_2(x))
         return x
 
@@ -485,15 +562,87 @@ class MemoryTapeTransformer(MultiPassTransformer):
     block_cls = MemoryBlock
 
     def __init__(self, config):
+        object.__setattr__(self, "_rng_state_before_construction", torch.get_rng_state())
         super().__init__(config)
         self._finish_initialization()
+        del self._rng_state_before_construction
+
+    def _causal_transformer_apply_start_rng_state(self):
+        current_state = torch.get_rng_state()
+        torch.set_rng_state(self._rng_state_before_construction)
+        try:
+            nn.ModuleDict(
+                dict(
+                    wte=nn.Embedding(self.config.vocab_size, self.config.n_embd),
+                    h=nn.ModuleList([Block(self.config) for _ in range(self.config.n_layer)]),
+                    wpe=nn.Embedding(self.config.block_size, self.config.n_embd),
+                    ln_f=LayerNorm(self.config.n_embd),
+                )
+            )
+            nn.Linear(self.config.n_embd, self.config.vocab_size, bias=False)
+            return torch.get_rng_state()
+        finally:
+            torch.set_rng_state(current_state)
+
+    def _init_active_path_weights(self):
+        self._init_weights(self.transformer.wte)
+        for block in self.transformer.h:
+            block.attn.apply(self._init_weights)
+            block.mlp.apply(self._init_weights)
+        self._init_weights(self.transformer.wpe)
+        self._init_weights(self.lm_head)
+
+    def _init_active_path_residual_projections(self):
+        std = 0.02 / math.sqrt(2 * self.config.n_layer)
+        for block in self.transformer.h:
+            torch.nn.init.normal_(block.attn.c_proj.weight, mean=0.0, std=std)
+            torch.nn.init.normal_(block.mlp.c_proj.weight, mean=0.0, std=std)
+
+    def _init_memory_path_weights(self):
+        for block in self.transformer.h:
+            block.cross_attn.apply(self._init_weights)
+        self._init_weights(self.mem_head)
+
+    def _init_memory_path_residual_projections(self):
+        std = 0.02 / math.sqrt(2 * self.config.n_layer)
+        for block in self.transformer.h:
+            torch.nn.init.normal_(block.cross_attn.c_proj.weight, mean=0.0, std=std)
+
+    def _finish_initialization(self):
+        torch.set_rng_state(self._causal_transformer_apply_start_rng_state())
+        self._init_active_path_weights()
+        self._init_active_path_residual_projections()
+        self._init_memory_path_weights()
+        self._init_memory_path_residual_projections()
+
+    def memory_gate_stats(self):
+        block_stats = [
+            stats
+            for block in self.transformer.h
+            for stats in [block.memory_gate_stats()]
+            if stats is not None
+        ]
+        if not block_stats:
+            return None
+
+        raw_values = [stats["raw"] for stats in block_stats]
+        effective_values = [stats["effective"] for stats in block_stats]
+        effective = torch.tensor(effective_values)
+        modes = [stats["mode"] for stats in block_stats]
+        mode = modes[0] if len(set(modes)) == 1 else "mixed"
+        return {
+            "mode": mode,
+            "raw": raw_values,
+            "effective": effective_values,
+            "mean_abs_effective": float(effective.abs().mean().item()),
+            "max_abs_effective": float(effective.abs().max().item()),
+        }
 
     def _run_full_pass(self, token_stream, memory_tape):
         x = token_stream
         for block in self.transformer.h:
             x = block(x, memory_tape)
         return x
-
 
 #------------------------------------------------------------
 #--               MemoryUpdate Transformer                 --
@@ -551,7 +700,7 @@ class MemoryUpdateTransformer(MultiPassTransformer):
     def _init_token_to_memory_weights(self):
         with torch.no_grad():
             n_embd = self.config.n_embd
-            self.token_to_msemory.weight.copy_(
+            self.token_to_memory.weight.copy_(
                 torch.eye(
                     n_embd,
                     device=self.token_to_memory.weight.device,

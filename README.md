@@ -1,15 +1,14 @@
 # Multi-Pass Transformer Training
 This project explores a way to train transformers for recurrent-style inference without training them as recurrent models over token time. The models are trained with multiple passes over the same token-sequence. Earlier passes write per-token memory states; later passes read shifted versions of those memories, giving each token access to deep-layer information from previous token positions while preserving parallel training.
 
-## Early Testing
-Transformers have a notoriously limited ability to track state (see for example [Li25](https://arxiv.org/abs/2503.02854)), but with multi-pass training and attention over a memory-tape at inference-time we get much improved performance. The permutation task looks like "STATE [A, B, C, D], swap 1 2, STATE [B, A, C, D]" with one swap. I trained the models with a curriculum of increasing difficulty; when the model learns to predict STATE after $n$ swaps with an accuracy of >99% it "graduates" to $n+1$ swaps.  
+## A Motivating Problem: State Tracking
+Transformers have a notoriously limited ability to track state (see for example [Li25](https://arxiv.org/abs/2503.02854)), which is why this kind of task is featured often in benchmarks with hard-to-solve tasks for LLMS like BBH (see [Suzgun22](https://arxiv.org/abs/2210.09261)). So, we pick four BBH tasks and check if a small transformer model can learn to repeatedly update a symbolic state.
 
-![](figures/permutation_task_plot.png "Permutation Task")
+![](figures/bbh_curriculum_fig.png "BBH")
 
-For this experiment both baseline transformers are tiny 4 layer, 4 attention-head and 128 embedding dimension models. The baseline transformer is severely depth-constrained whereas additional attention to memory tokens enables the multi-pass model to recurrently track the state.
+The tasks where learned by making the models track an increasing number of state-changes. The permutation task for example looks like "[A,B,C,D] swap 1 2 [B,A,C,D]" and we predict only the last state and increase the number of swaps once a validation-accuracy of above 98% is reached. For these experiments the baseline transformer and multi-pass models use the `small` preset: 4 layers, 4 attention heads, and 128 embedding dimensions. The baseline is intentionally depth-constrained, while the multi-pass models can reuse a shifted memory tape across recurrent passes. Thus the number of state-changes that a transformer can learn flattens in a way that the multi-pass training alleviates. 
 
-
-## Motivation
+## A Theoretical Motivation
 The training-time parallelization of decoder-only transformers is one of the main reasons they scale so well. At layer $l$, the hidden state $h_i^l$ at position $i$ can attend to earlier positions $h_{j<i}^{l-1}$ from layer $l-1$, and not to hidden states from the same or deeper layers. This *causal* attention pattern permits hidden states for all token positions in a layer $[h_{1}^{l}, \ldots, h_{n}^l]$ to be computed in parallel during training, but it also disallows attention to previous tokens' deeper-layer hidden states at inference time.
 
 This information flow makes autoregressive inference *stateless*. At each generation step the transformer predicts the next token as if seeing the context for the first time. KV caching allows the model to predict using only the current token and its cache, but the cache only improves efficiency, and it does not carry forward any information that would not be recomputed had you just fed the context to the model.
@@ -23,7 +22,7 @@ The tempting 'fix' would be to let the hidden state $h_{i}^{l}$ at token $i$ dep
 But here is an idea: what if we run multiple parallel passes over the same teacher-forced sequence instead of making token $i$ wait for token $i-1$ during training? Pass 1 writes a memory tape. Pass 2 reads a shifted version of that tape. Pass 3 can read the shifted tape from pass 2, and so on. The hope is that such multi-pass training can teach the model to emit memories that are useful and stable enough to support cheaper recurrent-style memory use at inference time.
 
 
-## Setup
+### Setup
 The goal is not merely to cache attention keys and values. The goal is to train the model to read and write a memory state for each token, and then test whether those memories can be reused during generation. There are many possible memory designs. This project focuses on one memory vector per token per pass. For a token sequence
 $T_{1:n} = [t_1, \ldots, t_n]$, define the pass-$i$ memory tape:
 
@@ -89,9 +88,9 @@ The training schema:
 is exact with respect to this `K`-pass model. No approximation has been introduced yet.
 
 
-## Mismatch and Greedy Inference
+## Mismatch and Final-Pass Inference
 
-And how do we get stateful inference out of this? Well, the exact inference procedure for this model is expensive. For every new token, we can run all $K$ passes on the full current prefix. That exact recomputation preserves the same pass-by-pass recurrence used in training, but it is too expensive for the target inference mode. What we want is greedy final-pass inference:
+And how do we get stateful inference out of this? Well, the exact inference procedure for this model is expensive. For every new token, we can run all $K$ passes on the full current prefix. That exact recomputation preserves the same pass-by-pass recurrence used in training, but it is too expensive for the target inference mode. What we want is final-pass inference:
 
 1. Run the prompt exactly for $K$ passes.
 2. Cache the prompt memory tape from pass $K-1$.
@@ -100,23 +99,39 @@ And how do we get stateful inference out of this? Well, the exact inference proc
 
 ![](figures/mismatch_fig.png "Training and generation mismatch")
 
-The first generated token is special. Suppose the prompt has length $n$. When predicting $t_{n+1}$, the final pass can read the correct prompt memory tape $M_{1:n}^{K-1}$. So the first greedy step uses the same previous-pass prompt memory that exact $K$-pass inference would use. The mismatch starts after that. Once token $t_{n+1}$ has been generated, exact multi-pass inference would in theory need the pass-$K-1$ memory for that new token $m_{n+1}^{K-1}$. But greedy final-pass inference did not run pass $K-1$ for the generated token. It only ran pass $K$, so the memory it actually has is $m_{n+1}^{K}$. Therefore the exact memory tape for the next step would be:
+The first generated token is special. Suppose the prompt has length $n$. When predicting $t_{n+1}$, the final pass can read the correct prompt memory tape $M_{1:n}^{K-1}$. So the first final-pass step uses the same previous-pass prompt memory that exact $K$-pass inference would use. The mismatch starts after that. Once token $t_{n+1}$ has been generated, exact multi-pass inference would in theory need the pass-$K-1$ memory for that new token $m_{n+1}^{K-1}$. But final-pass inference did not run pass $K-1$ for the generated token. It only ran pass $K$, so the memory it actually has is $m_{n+1}^{K}$. Therefore the exact memory tape for the next step would be:
 
 ```math
 [m_1^{K-1}, \ldots, m_n^{K-1}, m_{n+1}^{K-1}]
 ```
 
-while the greedy memory tape is:
+while the final-pass memory tape is:
 
 ```math
 [m_1^{K-1}, \ldots, m_n^{K-1}, m_{n+1}^{K}]
 ```
 
-That substitution is the whole approximation. After prompt warmup, greedy inference treats newly generated final-pass memories as if they were next-step previous-pass memories. The project therefore depends on a stability question:
+That substitution is the whole approximation. After prompt warmup, final-pass inference treats newly generated final-pass memories as if they were next-step previous-pass memories. The project therefore depends on a stability question:
 
 > Does multi-pass training make adjacent-pass memories similar enough that $m_t^K$ can stand in for $m_t^{K-1}$ during generation?
 
-If yes, generation can pay for the $K$-pass computation once on the prompt, then continue by updating only the final-pass memory approximation. If no, the greedy memory cache drifts away from the exact multi-pass model and we would have to add some auxiliary loss to force similarity. The real empirical question is the gap between exact recomputation and greedy final-pass inference.
+If yes, generation can pay for the $K$-pass computation once on the prompt, then continue by updating only the final-pass memory approximation. If no, the final-pass memory cache drifts away from the exact multi-pass model and we would have to add some auxiliary loss to force similarity. The real empirical question is the gap between exact recomputation and final-pass inference.
+
+## Experiments
+
+### Long-Range Trace Tasks
+Okay, but the state-tracking tasks introduced earlier had only a few tokens to predict. Is this not a cherry-picked set of tasks that avoids the mismatch problem?
+
+Yes, partly. The BBH curriculum tasks isolate whether the model can learn repeated state updates without trace supervision, but final-answer-only supervision does not stress test final-pass generation over a long suffix. The mismatch problem only becomes unavoidable when the model has to keep generating after the prompt and repeatedly feed its own approximate memory cache forward.
+
+That is why the repo also includes longer-range trace tasks. These are fixed-trace generation problems where the model must emit a long legal suffix after the prompt, so recompute-versus-final-pass evaluation becomes a real test of cache mismatch and recurrent stability. The active trace tasks are `random_graph_walk`, where the next legal transition depends on the latent state, and `othello`, where legality depends on the evolving board state.
+
+<p style="color: #b00020;"><strong>TODO:</strong> Replace this with trace-task results. There should be three plots; first is training loss, second is final-pass sequence-legality, and third is final-pass average streak of legal actions. Hopefully we see that multi-pass models can generate longer sequences of legal moves than the baseline.</p>
+
+### Drift
+
+<p style="color: #b00020;"><strong>TODO:</strong> Replace this with drift experimental results. The intended drift experiment is post-training only: load finished trace checkpoints and compare recompute versus final-pass legality and accuracy as a function of move index.</p>
+
 
 ## Multi-pass Architectures
 The following architectures explore some different ways of passing on the memories between passes. They all follow the abstract multi-pass training and inference-time methods (see the parent-class `MultiPassTransformer` in the codebase). 
@@ -162,7 +177,7 @@ M     = M_in + Delta
 M     = MemoryDecoderBlocks(M)
 ```
 
-The training CLI also has an optional gated write variant via `--memory-update-gate on`:
+The trace training CLI and experiment presets also support an optional gated write variant:
 
 ```text
 Gate = sigmoid(W_gate([M_in, TokenEmb(T), Delta]))
@@ -184,116 +199,145 @@ M_t^k      = MemHead(LN_mem(m_t^k))
 
 The implementation initializes the token-to-memory projection as an identity map, so the first pass has a useful token signal even though the incoming memory is zero. When the gate is enabled, the gate bias starts slightly negative, making early writes conservative while still learnable.
 
+## Future Work
+
+### 1. Scaling
+It would be interesting to see how the models scale more precisely. It is hard to gauge quality of the idea with such small parameter counts and dataset sizes. 
+
+### 2. Stability Exploration
+It is an interesting empirical finding that the final-pass generation seems to work unreasonably well! But it should be explored more in depth to see if the positive preliminary results generalize to longer-range settings. 
+
+### 3. Best Memory Format 
+I should explore more systematically what the best ways to pass memory forwards is; attention? embeddings?, a small encoder? For now I have implemented a few suggestions, but I highly doubt that any of these are optimal. The more general method of multi-pass training could work with a variety of memory-implementations.
 
 ## Tasks
 
 The current experiments focus on algorithmic tasks featuring state-tracking where exactness is easy to measure and computational "depth" is required.
 
-### Permutation Composition
+### Task Families
 
-The model receives symbolic permutation operations and must predict the composed result. This tests whether the recurrent memory path helps with iterative state updates.
-Use `train_bbh_curriculum.py` for final-answer-only curriculum experiments and `train_bbh_trace.py` for fixed-level trace-supervised controls.
+Experiment entry points live under `experiments/`. Shared batching utilities live in `tasks/common.py`, BBH generators live under `tasks/bbh/`, trace generators live under `tasks/trace/`, and the small shared runner helpers live in `experiments/common.py`. Tracked plotting notebooks now live under `figures/`.
 
-### Symbolic BBH-Like Tasks
+The current experiment tasks are:
 
-The `tasks/` package also includes small procedural symbolic tasks inspired by BBH-style reasoning benchmarks:
-
-- `walk`: 2D random-walk state tracking.
-- `dyck`: Dyck-style bracket completion with stack state.
-- `boolean_rpn`: postfix Boolean expression evaluation.
-- `arithmetic`: modular arithmetic accumulators.
-- `truth_graph`: acyclic Boolean dependency programs.
-- `order_deduction`: total-order transitive deduction.
+- `pointer_chasing`: functional-graph pointer chasing from a queried start node; level 0 is a direct edge lookup, then curriculum level increases hop count while the preset fixes the graph size.
+- `state_machine`: per-example deterministic finite-state machines with balanced shuffled transition tables and action sequences.
 - `tracking`: shuffled-object tracking with swap, rotate, and reverse operations.
 - `permutation`: permutation composition by repeated swaps.
+- `random_graph_walk`: state-graph traces where each state exposes only a subset of overlapping action labels, so the next legal action must be interpreted in the context of the current state.
+- `othello`: legal Othello move-trace generation from the fixed opening prefix, evaluated both by exact suffix match and legality of the generated continuation.
 
-Each task supports two experiment regimes. `train_bbh_curriculum.py` uses final-answer-only supervision with a curriculum and logs graduation events. `train_bbh_trace.py` uses trace supervision at one fixed level and logs accuracy curves for plotting.
+The live experiment API is family-specific and preset-driven. `python3 -m experiments.train_bbh` runs the BBH-inspired tasks with final-answer-only supervision and curriculum promotions. `python3 -m experiments.train_trace` runs the trace tasks from named presets with fixed trace targets.
 
 Answer-only curriculum:
 
 ```bash
-python3 train_bbh_curriculum.py \
-  --task walk \
+python3 -m experiments.train_bbh \
+  --preset pointer_chasing_main \
   --architecture memory_update \
-  --model-size small \
-  --n-pass 4 \
-  --pass-loss-weights 0.0 0.1 1.0 1.0 \
-  --compare-generation-modes \
-  --max-level 64
+  --run-dir results/bbh/pointer_chasing/memory_update/example_run
 ```
 
-Fixed-level trace supervision:
+Trace training on `random_graph_walk`:
 
 ```bash
-python3 train_bbh_trace.py \
-  --task walk \
+python3 -m experiments.train_trace \
+  --preset random_graph_walk_main \
   --architecture memory_update \
-  --model-size small \
-  --n-pass 4 \
-  --pass-loss-weights 0.0 0.1 1.0 1.0 \
-  --compare-generation-modes \
-  --max-level 64
+  --run-dir results/trace/random_graph_walk/memory_update/example_run
+```
+
+Trace training on `othello`:
+
+```bash
+python3 -m experiments.train_trace \
+  --preset othello_main \
+  --architecture memory_tape \
+  --run-dir results/trace/othello/memory_tape/example_run
 ```
 
 The available architectures are `transformer`, `memory_tape`, `memory_concat`, and `memory_update`.
-For the permutation task, `--num-objects` controls the permutation size and `--max-level` controls the maximum number of swaps.
-Pass `--log-jsonl path/to/log.jsonl` to write structured run and eval events.
-The `runs_bbh/` scripts cover the small 2x2 comparison: answer-only curriculum versus fixed-level trace supervision, on `permutation` and `tracking`, for `transformer` and `memory_update`.
+Task shape, curriculum limits, optimizer settings, evaluation cadence, and BBH token-selection defaults live in the presets rather than on the public BBH CLI. The main presets are `pointer_chasing_main`, `tracking_main`, `permutation_main`, `state_machine_main`, `random_graph_walk_main`, and `othello_main`. The BBH presets default to `token_selection=argmax`, but the CLI still allows an explicit override. The smoke-test presets mirror the main presets at smaller scale. The trace CLI still exposes Othello dataset location and split-size overrides because those are runtime environment knobs rather than experiment semantics. For `othello`, the task always trains and evaluates on full padded 60-move traces; there is no task-level horizon flag.
+
+Each training run writes a single artifact bundle in its `--run-dir`:
+
+- `config.json`
+- `metrics.jsonl`
+- `latest.pt`
+
+The `runs/` directory is split by experiment family, while the tracked plotting notebooks live under `figures/`:
+
+- `runs/bbh/`: answer-only curriculum runs.
+- `runs/trace/`: fixed-trace training runs.
+- `runs/drift/`: post-training drift evaluation jobs.
+- `figures/`: plotting notebooks for BBH, trace, and drift.
+
+Run the default BBH curriculum comparison with:
+
+```bash
+bash runs/bbh/10_bbh_curriculum.sh
+```
+
+Run the dedicated trace scripts with:
+
+```bash
+bash runs/trace/10_random_graph_walk_trace.sh
+bash runs/trace/10_othello_trace.sh
+```
+
+Use the smoke wrappers for quick end-to-end checks:
+
+```bash
+bash runs/bbh/00_bbh_smoke.sh
+bash runs/trace/00_smoke_trace.sh
+```
+
+Trace runs write their artifacts under `results/trace/<task>/<arch>/<run_id>/`.
+
+Drift evaluation:
+
+```bash
+python3 -m experiments.eval_trace_drift \
+  --input-run-dir results/trace/random_graph_walk/memory_tape/example_run \
+  --inference-mode final_pass \
+  --cache-source penultimate
+```
+
+The drift evaluator is post-training only. Each invocation evaluates one saved trace checkpoint under one `inference_mode` and one `cache_source`, then writes `config.json`, `summary.jsonl`, and `per_position.jsonl`. By default, single-run drift outputs are organized under `results/drift/<task>/<architecture>_<cache_source>_<inference_mode>/<source_run_id>/`, which makes it easy to load exactly the combinations you want in `figures/plot_drift.ipynb`. The tracked notebooks for BBH, trace, and drift live under `figures/plot_bbh.ipynb`, `figures/plot_trace.ipynb`, and `figures/plot_drift.ipynb`.
 
 ### Architecture Examples
 
 Baseline transformer:
 
 ```bash
-python3 train_bbh_curriculum.py \
-  --task permutation \
-  --architecture transformer \
-  --curriculum-threshold 1.0 \
-  --train-steps 50000
+python3 -m experiments.train_bbh \
+  --preset permutation_main \
+  --architecture transformer
 ```
 
 MemoryTape:
 
 ```bash
-python3 train_bbh_curriculum.py \
-  --task permutation \
-  --architecture memory_tape \
-  --n-pass 4 \
-  --pass-loss-weights 0.0 0.1 1.0 1.0 \
-  --curriculum-threshold 1.0 \
-  --train-steps 50000
+python3 -m experiments.train_bbh \
+  --preset permutation_main \
+  --architecture memory_tape
 ```
 
 MemoryConcat:
 
 ```bash
-python3 train_bbh_curriculum.py \
-  --task permutation \
-  --architecture memory_concat \
-  --n-pass 4 \
-  --pass-loss-weights 0.0 0.1 1.0 1.0 \
-  --curriculum-threshold 1.0 \
-  --train-steps 50000
+python3 -m experiments.train_bbh \
+  --preset permutation_main \
+  --architecture memory_concat
 ```
 
 MemoryUpdate:
 
 ```bash
-python3 train_bbh_curriculum.py \
-  --task permutation \
-  --architecture memory_update \
-  --n-pass 4 \
-  --pass-loss-weights 0.0 0.1 1.0 1.0 \
-  --memory-update-gate on \
-  --curriculum-threshold 1.0 \
-  --train-steps 50000
+python3 -m experiments.train_bbh \
+  --preset permutation_main \
+  --architecture memory_update
 ```
-
-## To Do:
-1. Test scaling of the architectures: more parameters, more data, harder tasks. 
-2. If there is significant divergence between $m_i^{K-1}$ and $m_i^{K}$, explore options to force similarity.
-3. I should explore more systematically what the best ways to pass memory forwards is; attention? embeddings?, a small encoder?
-4. Experiment with gating especially for the memory-update architecture. 
 
 ## Requirements
 

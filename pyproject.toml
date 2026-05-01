@@ -19,13 +19,10 @@ plot = [
 py-modules = [
     "model_factory",
     "models",
-    "bbh_training",
-    "train_bbh_curriculum",
-    "train_bbh_trace",
 ]
 
 [tool.setuptools.packages.find]
-include = ["tasks*"]
+include = ["tasks*", "experiments*"]
 exclude = [
     "figures*",
     "papers*",

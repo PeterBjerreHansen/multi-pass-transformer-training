@@ -1,6 +1,11 @@
 .DS_Store
 __pycache__/
 *.pyc
-runs_bbh/*
+results/
 papers/
+archive/
+data/
+figures/*.ipynb
 pytest_cache
+TODO_CODING.md
+TODO_EXPERIMENTS.md
