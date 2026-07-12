@@ -1,18 +1,21 @@
+from __future__ import annotations
+
+from contextlib import contextmanager
+from dataclasses import dataclass
+from datetime import datetime, timezone
+import hashlib
 import json
+from pathlib import Path
 import random
 import shlex
 import subprocess
 import sys
 import time
-from dataclasses import dataclass
-from datetime import datetime, timezone
-from pathlib import Path
-from typing import Callable
+from typing import Callable, Iterator, Sequence
 
 import torch
 
 from model_factory import ARCHITECTURES, build_model, is_multi_pass_architecture
-from models import MemoryTapeConfig
 
 
 MODEL_SIZE_PRESETS = {
@@ -21,7 +24,6 @@ MODEL_SIZE_PRESETS = {
     "medium": {"n_layer": 6, "n_head": 6, "n_embd": 192},
     "large": {"n_layer": 8, "n_head": 8, "n_embd": 256},
 }
-
 CHECKPOINT_LABEL_WIDTH = 14
 
 
@@ -33,26 +35,19 @@ class RunArtifacts:
     checkpoint_path: Path
 
 
-def add_shared_model_args(parser, *, default_inference_mode: str):
+def add_shared_model_args(parser, *, default_inference_mode: str) -> None:
     parser.add_argument("--architecture", choices=ARCHITECTURES, default="transformer")
     parser.add_argument("--model-size", choices=sorted(MODEL_SIZE_PRESETS), default="small")
-    parser.add_argument("--inference-mode", choices=["recompute", "final_pass"], default=default_inference_mode)
-    parser.add_argument("--token-selection", choices=["sample", "argmax"], default="sample")
     parser.add_argument(
-        "--cache-source",
-        choices=["penultimate", "last"],
-        default="penultimate",
-        help="For final-pass decoding, warm the recurrent cache from M_{K-1} or M_K.",
+        "--inference-mode",
+        choices=["recompute", "append_recurrent"],
+        default=default_inference_mode,
     )
+    parser.add_argument("--token-selection", choices=["sample", "argmax"], default="sample")
     parser.add_argument("--n-layer", type=int, default=None)
     parser.add_argument("--n-head", type=int, default=None)
     parser.add_argument("--n-embd", type=int, default=None)
     parser.add_argument("--n-pass", type=int, default=4)
-    parser.add_argument(
-        "--memory-tape-gate",
-        default="scalar",
-        help="MemoryTape read gate: none, tanh, or scalar.",
-    )
     parser.add_argument("--memory-update-gate", choices=["on", "off"], default="off")
     parser.add_argument("--memory-gate-bias", type=float, default=-1.0)
     parser.add_argument("--pass-loss-weights", type=float, nargs="*", default=None)
@@ -60,7 +55,7 @@ def add_shared_model_args(parser, *, default_inference_mode: str):
     parser.add_argument("--block-size", type=int, default=None)
 
 
-def add_shared_training_args(parser):
+def add_shared_training_args(parser) -> None:
     parser.add_argument("--batch-size", type=int, default=64)
     parser.add_argument("--train-steps", type=int, default=50_000)
     parser.add_argument("--lr", type=float, default=1e-4)
@@ -68,43 +63,53 @@ def add_shared_training_args(parser):
     parser.add_argument("--eval-interval", type=int, default=200)
     parser.add_argument("--eval-batches", type=int, default=4)
     parser.add_argument("--seed", type=int, default=1337)
-    parser.add_argument(
-        "--run-dir",
-        default=None,
-        help="Optional directory for config.json, metrics.jsonl, and latest.pt.",
-    )
-    parser.add_argument(
-        "--resume-from",
-        default=None,
-        help="Optional path to a prior run directory or latest.pt checkpoint.",
-    )
+    parser.add_argument("--run-dir", default=None)
+    parser.add_argument("--resume-from", default=None)
 
 
-def apply_model_size_preset(args):
+def apply_model_size_preset(args) -> None:
     preset = MODEL_SIZE_PRESETS[args.model_size]
     for key, value in preset.items():
         if getattr(args, key, None) is None:
             setattr(args, key, value)
 
 
-def validate_model_args(args):
+def validate_model_args(args) -> None:
     apply_model_size_preset(args)
+    if args.n_layer < 1 or args.n_head < 1 or args.n_embd < 1:
+        raise ValueError("model dimensions must be positive")
+    if args.n_embd % args.n_head != 0:
+        raise ValueError("--n-embd must be divisible by --n-head")
 
     if args.architecture == "transformer":
         args.pass_loss_weights = None
         args.inference_mode = "recompute"
         return
 
-    if getattr(args, "n_pass", None) is None:
-        args.n_pass = 4
     if args.n_pass < 2:
         raise ValueError("--n-pass must be at least 2 for multi-pass architectures")
-    if args.architecture == "memory_tape":
-        args.memory_tape_gate = MemoryTapeConfig.normalize_gate(args.memory_tape_gate)
-    if getattr(args, "pass_loss_weights", None) is None:
+    if args.pass_loss_weights is None:
         args.pass_loss_weights = [1.0] * args.n_pass
     if len(args.pass_loss_weights) != args.n_pass:
         raise ValueError("--pass-loss-weights must match --n-pass")
+    weights = torch.tensor(args.pass_loss_weights, dtype=torch.float64)
+    if not torch.isfinite(weights).all():
+        raise ValueError("--pass-loss-weights must be finite")
+    if (weights < 0).any() or weights.sum() <= 0:
+        raise ValueError("--pass-loss-weights must be non-negative with a positive sum")
+
+
+def validate_training_args(args) -> None:
+    if args.batch_size < 1:
+        raise ValueError("--batch-size must be at least 1")
+    if args.train_steps < 1:
+        raise ValueError("--train-steps must be at least 1")
+    if args.eval_interval < 1 or args.eval_batches < 1:
+        raise ValueError("--eval-interval and --eval-batches must be at least 1")
+    if args.lr <= 0:
+        raise ValueError("--lr must be positive")
+    if args.weight_decay < 0:
+        raise ValueError("--weight-decay must be non-negative")
 
 
 def build_model_and_optimizer(args, *, vocab_size: int, block_size: int):
@@ -114,41 +119,68 @@ def build_model_and_optimizer(args, *, vocab_size: int, block_size: int):
     return model, optimizer
 
 
-def set_seed(seed: int):
+def set_seed(seed: int) -> None:
     random.seed(seed)
     torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
 
 
 def auto_device() -> str:
     if torch.cuda.is_available():
         return "cuda"
-    mps_backend = getattr(torch.backends, "mps", None)
-    if mps_backend is not None and mps_backend.is_available():
+    mps = getattr(torch.backends, "mps", None)
+    if mps is not None and mps.is_available():
         return "mps"
     return "cpu"
 
 
-def resolve_device_arg(args):
+def resolve_device_arg(args) -> None:
     if getattr(args, "device", None) is None:
         args.device = auto_device()
 
 
-def build_run_rngs(seed: int) -> tuple[random.Random, random.Random, random.Random]:
-    return (
-        random.Random(seed + 10),
-        random.Random(seed + 20),
-        random.Random(seed + 30),
-    )
-
-
-def synchronize_device(device: str | None):
-    if device is None:
+def synchronize_device(device: str | None) -> None:
+    if not device:
         return
-    device_name = str(device)
-    if device_name.startswith("cuda") and torch.cuda.is_available():
+    if str(device).startswith("cuda") and torch.cuda.is_available():
         torch.cuda.synchronize()
-    elif device_name == "mps" and hasattr(torch, "mps") and hasattr(torch.mps, "synchronize"):
+    elif str(device).startswith("mps") and hasattr(torch, "mps") and hasattr(torch.mps, "synchronize"):
         torch.mps.synchronize()
+
+
+def stable_seed(base_seed: int, *parts: object) -> int:
+    text = "|".join([str(base_seed), *(str(part) for part in parts)])
+    digest = hashlib.sha256(text.encode("utf-8")).digest()
+    return int.from_bytes(digest[:8], "little") % (2**31 - 1)
+
+
+@contextmanager
+def isolated_torch_rng(seed: int) -> Iterator[None]:
+    """Use deterministic sampling during evaluation without perturbing training RNG."""
+    cpu_state = torch.get_rng_state()
+    cuda_states = torch.cuda.get_rng_state_all() if torch.cuda.is_available() else None
+    mps_available = (
+        hasattr(torch, "mps")
+        and hasattr(torch.mps, "get_rng_state")
+        and hasattr(torch.mps, "set_rng_state")
+        and getattr(torch.backends, "mps", None) is not None
+        and torch.backends.mps.is_available()
+    )
+    mps_state = torch.mps.get_rng_state() if mps_available else None
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
+    if mps_available and hasattr(torch.mps, "manual_seed"):
+        torch.mps.manual_seed(seed)
+    try:
+        yield
+    finally:
+        torch.set_rng_state(cpu_state)
+        if cuda_states is not None:
+            torch.cuda.set_rng_state_all(cuda_states)
+        if mps_state is not None:
+            torch.mps.set_rng_state(mps_state)
 
 
 def token_selection_is_sampling(args) -> bool:
@@ -156,25 +188,23 @@ def token_selection_is_sampling(args) -> bool:
 
 
 def effective_inference_mode(args, requested_mode: str | None = None) -> str:
-    requested = requested_mode or args.inference_mode
     if args.architecture == "transformer":
         return "recompute"
-    return requested
+    return requested_mode or args.inference_mode
 
 
 def forward_and_loss(model, batch, args):
+    output = model(batch.idx)
     if not is_multi_pass_architecture(args.architecture):
-        logits = model(batch.idx)
-        loss = model.calc_loss(logits, batch.targets)
-        return loss, logits, [loss.detach()]
+        loss = model.calc_loss(output.logits, batch.targets)
+        return loss, output, (loss.detach(),)
 
-    logits_per_pass = model(batch.idx, return_all_logits=True)
-    loss, losses = model.calc_total_loss(
-        logits_per_pass,
+    loss_output = model.calc_total_loss(
+        output,
         batch.targets,
         loss_weights=args.pass_loss_weights,
     )
-    return loss, logits_per_pass[-1], [item.detach() for item in losses]
+    return loss_output.loss, output, tuple(item.detach() for item in loss_output.pass_losses)
 
 
 @torch.no_grad()
@@ -184,26 +214,27 @@ def basic_generation_metrics(
     args,
     *,
     inference_mode: str | None = None,
-) -> dict[str, float | None]:
+) -> dict[str, float]:
     exact_matches = []
     token_accuracies = []
     mode = effective_inference_mode(args, inference_mode)
     do_sample = token_selection_is_sampling(args)
 
-    for row in range(batch.idx.size(0)):
+    for row in range(batch.idx.shape[0]):
         prompt_len = int(batch.prompt_lengths[row].item())
         output_len = int(batch.output_lengths[row].item())
-        prompt = batch.idx[row:row + 1, :prompt_len]
-        target_suffix = batch.targets[row:row + 1, prompt_len - 1:prompt_len - 1 + output_len]
-
+        prompt = batch.idx[row : row + 1, :prompt_len]
+        target_suffix = batch.targets[
+            row : row + 1,
+            prompt_len - 1 : prompt_len - 1 + output_len,
+        ]
         generated = model.generate(
             prompt,
             max_new_tokens=output_len,
             do_sample=do_sample,
             inference_mode=mode,
-            cache_source=getattr(args, "cache_source", "penultimate"),
         )
-        generated_suffix = generated[:, prompt_len:prompt_len + output_len]
+        generated_suffix = generated[:, prompt_len : prompt_len + output_len]
         correct = generated_suffix == target_suffix
         exact_matches.append(correct.all(dim=1).float().mean())
         token_accuracies.append(correct.float().mean())
@@ -218,14 +249,19 @@ def basic_generation_metrics(
 def evaluate_prebuilt_batches(
     model,
     args,
-    batches: list[object],
+    batches: Sequence[object],
     *,
-    generation_metrics_fn: Callable,
+    generation_metrics_fn: Callable = basic_generation_metrics,
     inference_mode: str | None = None,
+    generation_seed: int | None = None,
 ) -> dict[str, float]:
+    if not batches:
+        raise ValueError("evaluate_prebuilt_batches requires at least one batch")
+
+    was_training = model.training
     model.eval()
     synchronize_device(getattr(args, "device", None))
-    start_time = time.perf_counter()
+    start = time.perf_counter()
     total_loss = 0.0
     totals: dict[str, float] = {}
     counts: dict[str, int] = {}
@@ -233,173 +269,94 @@ def evaluate_prebuilt_batches(
     input_token_count = 0
     output_token_count = 0
 
-    if not batches:
-        raise ValueError("evaluate_prebuilt_batches requires at least one batch")
-
-    for batch in batches:
-        sequence_count += int(batch.idx.size(0))
-        input_token_count += int(batch.idx.numel())
-        output_token_count += int(batch.output_lengths.sum().item())
-        loss, _, _ = forward_and_loss(model, batch, args)
-        batch_metrics = generation_metrics_fn(
-            model,
-            batch,
-            args,
-            inference_mode=inference_mode,
-        )
-        total_loss += float(loss.detach().item())
-        for key, value in batch_metrics.items():
-            if value is None:
-                continue
-            totals[key] = totals.get(key, 0.0) + float(value)
-            counts[key] = counts.get(key, 0) + 1
+    seed = generation_seed if generation_seed is not None else stable_seed(args.seed, "generation")
+    try:
+        with isolated_torch_rng(seed):
+            for batch in batches:
+                sequence_count += int(batch.idx.shape[0])
+                input_token_count += int(batch.idx.numel())
+                output_token_count += int(batch.output_lengths.sum().item())
+                loss, _output, _pass_losses = forward_and_loss(model, batch, args)
+                metrics = generation_metrics_fn(
+                    model,
+                    batch,
+                    args,
+                    inference_mode=inference_mode,
+                )
+                total_loss += float(loss.item())
+                for key, value in metrics.items():
+                    totals[key] = totals.get(key, 0.0) + float(value)
+                    counts[key] = counts.get(key, 0) + 1
+    finally:
+        model.train(was_training)
 
     synchronize_device(getattr(args, "device", None))
-    elapsed_s = time.perf_counter() - start_time
-    metrics = {"loss": total_loss / float(len(batches))}
-    metrics.update({key: total / counts[key] for key, total in totals.items()})
-    if elapsed_s > 0.0:
-        metrics.update(
+    elapsed = time.perf_counter() - start
+    result = {"loss": total_loss / len(batches)}
+    result.update({key: total / counts[key] for key, total in totals.items()})
+    if elapsed > 0:
+        result.update(
             {
-                "eval_time_s": elapsed_s,
-                "eval_seq_per_s": sequence_count / elapsed_s,
-                "eval_input_tok_per_s": input_token_count / elapsed_s,
-                "eval_output_tok_per_s": output_token_count / elapsed_s,
+                "eval_time_s": elapsed,
+                "eval_seq_per_s": sequence_count / elapsed,
+                "eval_input_tok_per_s": input_token_count / elapsed,
+                "eval_output_tok_per_s": output_token_count / elapsed,
             }
         )
-    return metrics
-
-
-@torch.no_grad()
-def evaluate_batches(
-    model,
-    args,
-    batch_builder: Callable[[random.Random], object],
-    rng: random.Random,
-    *,
-    generation_metrics_fn: Callable = basic_generation_metrics,
-    inference_mode: str | None = None,
-) -> dict[str, float]:
-    batches = [batch_builder(rng) for _ in range(args.eval_batches)]
-    return evaluate_prebuilt_batches(
-        model,
-        args,
-        batches,
-        generation_metrics_fn=generation_metrics_fn,
-        inference_mode=inference_mode,
-    )
+    return result
 
 
 def format_default_eval_metrics(metrics: dict[str, float]) -> str:
-    return (
-        f"seq_acc {float(metrics['exact_match']):.3f} | "
-        f"token_acc {float(metrics['token_accuracy']):.3f}"
-    )
+    return f"seq_acc {metrics['exact_match']:.3f} | token_acc {metrics['token_accuracy']:.3f}"
 
 
-def format_checkpoint_line(prefix: str, fields: list[str | None]) -> str:
-    parts = [f"{prefix:<{CHECKPOINT_LABEL_WIDTH}}"]
-    parts.extend(field for field in fields if field)
-    return " | ".join(parts)
+def format_checkpoint_line(prefix: str, fields: Sequence[str | None]) -> str:
+    return " | ".join([f"{prefix:<{CHECKPOINT_LABEL_WIDTH}}", *(field for field in fields if field)])
 
 
-def format_pass_losses(pass_losses: list[torch.Tensor]) -> str:
+def format_pass_losses(pass_losses: Sequence[torch.Tensor]) -> str:
     if len(pass_losses) == 1:
         return f"{pass_losses[0].item():.4f}"
     return "[" + ", ".join(f"{loss.item():.4f}" for loss in pass_losses) + "]"
 
 
-def memory_gate_stats(model) -> dict[str, float | str | list[float]] | None:
-    model_stats = getattr(model, "memory_gate_stats", None)
-    if model_stats is None:
-        return None
-    return model_stats()
+def memory_gate_stats(model) -> dict | None:
+    method = getattr(model, "memory_gate_stats", None)
+    return None if method is None else method()
 
 
-def format_memory_gate_stats(stats: dict[str, float | str | list[float]]) -> str:
-    effective_values = stats.get("effective")
-    if not isinstance(effective_values, list):
-        raise TypeError("memory gate stats must contain a list under 'effective'")
-    mean_abs = stats.get("mean_abs_effective")
-    max_abs = stats.get("max_abs_effective")
-    if mean_abs is None or max_abs is None:
-        raise TypeError("memory gate stats must contain mean/max effective magnitudes")
-    effective_text = "[" + ", ".join(f"{value:.4f}" for value in effective_values) + "]"
+def format_memory_gate_stats(stats: dict) -> str:
+    values = stats.get("effective")
+    if not isinstance(values, list):
+        raise TypeError("memory gate stats must contain an effective list")
+    text = "[" + ", ".join(f"{float(value):.4f}" for value in values) + "]"
     return (
-        f"mode {stats.get('mode', 'unknown')} | "
-        f"effective {effective_text} | "
-        f"mean_abs {float(mean_abs):.4f} | "
-        f"max_abs {float(max_abs):.4f}"
+        f"effective {text} | mean_abs {float(stats['mean_abs_effective']):.4f} | "
+        f"max_abs {float(stats['max_abs_effective']):.4f}"
     )
 
 
-def maybe_report_memory_gates(model, artifacts: RunArtifacts | None, step: int):
-    stats = memory_gate_stats(model)
-    if stats is None:
-        return None
-    print(f"  memory_gates | {format_memory_gate_stats(stats)}")
-    if artifacts is not None:
-        append_jsonl(
-            artifacts.metrics_path,
-            {
-                "event": "memory_gate_stats",
-                "step": step,
-                "stats": stats,
-            },
-        )
-    return stats
-
-
-def _json_default(value):
-    if isinstance(value, Path):
-        return str(value)
-    if isinstance(value, set):
-        return sorted(value)
-    raise TypeError(f"Object of type {type(value).__name__} is not JSON serializable")
-
-
-def write_json(path: Path, payload: dict):
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("w", encoding="utf-8") as handle:
-        json.dump(payload, handle, sort_keys=True, indent=2, default=_json_default)
-        handle.write("\n")
-
-
-def append_jsonl(path: Path, event: dict):
+def append_jsonl(path: Path, event: dict) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("a", encoding="utf-8") as handle:
         handle.write(json.dumps(event, sort_keys=True, default=_json_default) + "\n")
 
 
+def write_json(path: Path, payload: dict) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload, indent=2, sort_keys=True, default=_json_default) + "\n", encoding="utf-8")
+
+
 def load_json_if_exists(path: Path) -> dict | None:
     if not path.exists():
         return None
-    with path.open("r", encoding="utf-8") as handle:
-        return json.load(handle)
-
-
-def apply_mapping_args(args, mapping: dict | None, *, preserve: set[str] | None = None):
-    if not mapping:
-        return
-    preserved = {"resume_from", "run_dir", "train_steps"}
-    if getattr(args, "device", None) is not None:
-        preserved.add("device")
-    if preserve is not None:
-        preserved.update(preserve)
-    for key, value in mapping.items():
-        if key in preserved:
-            continue
-        setattr(args, key, value)
+    return json.loads(path.read_text(encoding="utf-8"))
 
 
 def resolve_resume_artifacts(resume_from: str | Path) -> RunArtifacts:
-    resume_path = Path(resume_from).resolve()
-    if resume_path.is_dir():
-        run_dir = resume_path
-        checkpoint_path = run_dir / "latest.pt"
-    else:
-        run_dir = resume_path.parent
-        checkpoint_path = resume_path
+    path = Path(resume_from).resolve()
+    run_dir = path if path.is_dir() else path.parent
+    checkpoint_path = run_dir / "latest.pt" if path.is_dir() else path
     return RunArtifacts(
         run_dir=run_dir,
         config_path=run_dir / "config.json",
@@ -408,14 +365,104 @@ def resolve_resume_artifacts(resume_from: str | Path) -> RunArtifacts:
     )
 
 
-def load_checkpoint_payload(checkpoint_path: str | Path, *, device: str | None = None) -> dict:
-    checkpoint_path = Path(checkpoint_path)
-    if checkpoint_path.is_dir():
-        checkpoint_path = checkpoint_path / "latest.pt"
+def load_checkpoint_payload(path: str | Path, *, device: str | None = None) -> dict:
+    checkpoint = Path(path)
+    if checkpoint.is_dir():
+        checkpoint = checkpoint / "latest.pt"
     try:
-        return torch.load(checkpoint_path, map_location=device, weights_only=False)
+        return torch.load(checkpoint, map_location=device, weights_only=False)
     except TypeError:
-        return torch.load(checkpoint_path, map_location=device)
+        return torch.load(checkpoint, map_location=device)
+
+
+def restore_checkpoint_state(checkpoint: dict, *, model, optimizer=None, device: str | None = None) -> dict:
+    model.load_state_dict(checkpoint["model_state_dict"])
+    if optimizer is not None:
+        optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
+        if device is not None:
+            for state in optimizer.state.values():
+                for key, value in list(state.items()):
+                    state[key] = _move_to_device(value, device)
+    if "python_random_state" in checkpoint:
+        random.setstate(checkpoint["python_random_state"])
+    if "torch_rng_state" in checkpoint:
+        torch.set_rng_state(checkpoint["torch_rng_state"])
+    if "cuda_rng_state_all" in checkpoint and torch.cuda.is_available():
+        torch.cuda.set_rng_state_all(checkpoint["cuda_rng_state_all"])
+    return checkpoint
+
+
+def save_latest_checkpoint(
+    artifacts: RunArtifacts | None,
+    *,
+    model,
+    optimizer,
+    args,
+    step: int,
+    extra_state: dict | None = None,
+) -> Path | None:
+    if artifacts is None:
+        return None
+    payload = {
+        "step": int(step),
+        "args": dict(vars(args)),
+        "model_state_dict": model.state_dict(),
+        "optimizer_state_dict": optimizer.state_dict(),
+        "python_random_state": random.getstate(),
+        "torch_rng_state": torch.get_rng_state(),
+        "model_config": model.config.to_dict(),
+        "extra_state": dict(extra_state or {}),
+    }
+    if torch.cuda.is_available():
+        payload["cuda_rng_state_all"] = torch.cuda.get_rng_state_all()
+    temp = artifacts.checkpoint_path.with_suffix(".pt.tmp")
+    torch.save(payload, temp)
+    temp.replace(artifacts.checkpoint_path)
+    return artifacts.checkpoint_path
+
+
+def prepare_run_artifacts(
+    args,
+    *,
+    model,
+    default_root_parts: tuple[str, ...],
+    extra_config: dict | None = None,
+) -> RunArtifacts:
+    if args.run_dir:
+        run_dir = Path(args.run_dir).resolve()
+    elif args.resume_from:
+        run_dir = resolve_resume_artifacts(args.resume_from).run_dir
+    else:
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        run_dir = Path("results").joinpath(*default_root_parts, timestamp).resolve()
+    run_dir.mkdir(parents=True, exist_ok=True)
+    args.run_dir = str(run_dir)
+    artifacts = RunArtifacts(
+        run_dir=run_dir,
+        config_path=run_dir / "config.json",
+        metrics_path=run_dir / "metrics.jsonl",
+        checkpoint_path=run_dir / "latest.pt",
+    )
+    payload = {
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "cwd": str(Path.cwd()),
+        "argv": list(sys.argv),
+        "command": " ".join(shlex.quote(item) for item in sys.argv),
+        "git": _git_metadata(),
+        "args": dict(vars(args)),
+        "model_config": model.config.to_dict(),
+    }
+    if extra_config:
+        payload.update(extra_config)
+    write_json(artifacts.config_path, payload)
+    return artifacts
+
+
+def saved_args_from_run(run_dir: str | Path) -> dict:
+    payload = load_json_if_exists(Path(run_dir).resolve() / "config.json")
+    if payload is None or "args" not in payload:
+        raise FileNotFoundError(f"missing config.json with saved args in {run_dir}")
+    return dict(payload["args"])
 
 
 def _move_to_device(value, device: str):
@@ -428,52 +475,6 @@ def _move_to_device(value, device: str):
     if isinstance(value, tuple):
         return tuple(_move_to_device(item, device) for item in value)
     return value
-
-
-def restore_checkpoint_state(checkpoint: dict, *, model, optimizer, device: str | None = None) -> dict:
-    model.load_state_dict(checkpoint["model_state_dict"])
-    optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
-    if device is not None:
-        for state in optimizer.state.values():
-            for key, value in list(state.items()):
-                state[key] = _move_to_device(value, device)
-
-    python_random_state = checkpoint.get("python_random_state")
-    if python_random_state is not None:
-        random.setstate(python_random_state)
-    torch_rng_state = checkpoint.get("torch_rng_state")
-    if torch_rng_state is not None:
-        torch.set_rng_state(torch_rng_state)
-    cuda_rng_state_all = checkpoint.get("cuda_rng_state_all")
-    if cuda_rng_state_all is not None and torch.cuda.is_available():
-        torch.cuda.set_rng_state_all(cuda_rng_state_all)
-    return checkpoint
-
-
-def save_latest_checkpoint(artifacts: RunArtifacts | None, *, model, optimizer, args, step: int, extra_state=None):
-    if artifacts is None:
-        return None
-
-    payload = {
-        "step": int(step),
-        "args": dict(vars(args)),
-        "model_state_dict": model.state_dict(),
-        "optimizer_state_dict": optimizer.state_dict(),
-        "python_random_state": random.getstate(),
-        "torch_rng_state": torch.get_rng_state(),
-    }
-    model_config = getattr(model, "config", None)
-    if model_config is not None and hasattr(model_config, "to_dict"):
-        payload["model_config"] = model_config.to_dict()
-    if torch.cuda.is_available():
-        payload["cuda_rng_state_all"] = torch.cuda.get_rng_state_all()
-    if extra_state:
-        payload["extra_state"] = dict(extra_state)
-
-    tmp_path = artifacts.checkpoint_path.with_suffix(".pt.tmp")
-    torch.save(payload, tmp_path)
-    tmp_path.replace(artifacts.checkpoint_path)
-    return artifacts.checkpoint_path
 
 
 def _git_metadata() -> dict[str, str | None]:
@@ -489,56 +490,14 @@ def _git_metadata() -> dict[str, str | None]:
             return None
         return result.stdout.strip() or None
 
-    return {
-        "branch": run_git("branch", "--show-current"),
-        "commit": run_git("rev-parse", "HEAD"),
-    }
+    return {"branch": run_git("branch", "--show-current"), "commit": run_git("rev-parse", "HEAD")}
 
 
-def _default_run_dir(*parts: str) -> Path:
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    return Path("results").joinpath(*parts, timestamp).resolve()
-
-
-def build_run_config(args, *, model=None, extra: dict | None = None) -> dict:
-    payload = {
-        "created_at": datetime.now(timezone.utc).isoformat(),
-        "cwd": str(Path.cwd()),
-        "argv": list(sys.argv),
-        "command": " ".join(shlex.quote(arg) for arg in sys.argv),
-        "git": _git_metadata(),
-        "args": dict(vars(args)),
-    }
-    model_config = getattr(model, "config", None)
-    if model_config is not None and hasattr(model_config, "to_dict"):
-        payload["model_config"] = model_config.to_dict()
-    if extra:
-        payload.update(extra)
-    return payload
-
-
-def prepare_run_artifacts(
-    args,
-    *,
-    model=None,
-    default_root_parts: tuple[str, ...],
-    extra_config: dict | None = None,
-) -> RunArtifacts:
-    if getattr(args, "run_dir", None):
-        run_dir = Path(args.run_dir).resolve()
-    elif getattr(args, "resume_from", None):
-        run_dir = resolve_resume_artifacts(args.resume_from).run_dir
-    else:
-        run_dir = _default_run_dir(*default_root_parts)
-
-    run_dir.mkdir(parents=True, exist_ok=True)
-    args.run_dir = str(run_dir)
-
-    artifacts = RunArtifacts(
-        run_dir=run_dir,
-        config_path=run_dir / "config.json",
-        metrics_path=run_dir / "metrics.jsonl",
-        checkpoint_path=run_dir / "latest.pt",
-    )
-    write_json(artifacts.config_path, build_run_config(args, model=model, extra=extra_config))
-    return artifacts
+def _json_default(value):
+    if isinstance(value, Path):
+        return str(value)
+    if isinstance(value, set):
+        return sorted(value)
+    if isinstance(value, tuple):
+        return list(value)
+    raise TypeError(f"Object of type {type(value).__name__} is not JSON serializable")

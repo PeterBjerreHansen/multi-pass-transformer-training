@@ -10,6 +10,7 @@ SEP_TOKEN = "<sep>"
 EOS_TOKEN = "<eos>"
 QUERY_TOKEN = "<query>"
 
+
 @dataclass
 class SymbolicBatch:
     idx: torch.Tensor
@@ -17,6 +18,7 @@ class SymbolicBatch:
     metric_mask: torch.Tensor
     prompt_lengths: torch.Tensor
     output_lengths: torch.Tensor
+
 
 def build_vocab(tokens: Iterable[str]) -> Tuple[list[str], Dict[str, int], Dict[int, str]]:
     seen = set()

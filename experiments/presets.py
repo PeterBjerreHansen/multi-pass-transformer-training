@@ -1,466 +1,185 @@
+from __future__ import annotations
+
 import argparse
 from copy import deepcopy
 from dataclasses import dataclass
 
-from tasks.bbh import permutation, pointer_chasing, state_machine, tracking
+from tasks.bbh import permutation, state_machine, tracking
 from tasks.trace import othello, random_graph_walk
-from experiments.common import load_json_if_exists, resolve_resume_artifacts
 
 
 @dataclass(frozen=True)
 class ExperimentPreset:
-    name: str
     description: str
     values: dict[str, object]
 
 
-TRACE_PRESETS = {
-    "random_graph_walk_main": ExperimentPreset(
-        name="random_graph_walk_main",
-        description="Main random-graph-walk trace training setup.",
-        values={
-            "task": "random_graph_walk",
-            "architecture": "transformer",
-            "model_size": "small",
-            "n_pass": 4,
-            "pass_loss_weights": [0.0, 0.0, 1.0, 1.0],
-            "memory_tape_gate": "scalar",
-            "memory_update_gate": "off",
-            "memory_gate_bias": -1.0,
-            "inference_mode": "final_pass",
-            "token_selection": "sample",
-            "cache_source": "penultimate",
-            "batch_size": 64,
-            "train_steps": 50_000,
-            "eval_interval": 1_000,
-            "eval_batches": 4,
-            "lr": 3e-4,
-            "weight_decay": 0.0,
-            "seed": 1337,
-            "num_states": random_graph_walk.DEFAULT_NUM_STATES,
-            "label_pool_size": random_graph_walk.DEFAULT_LABEL_POOL_SIZE,
-            "max_level": 32,
-            "run_dir": None,
-            "resume_from": None,
-            "device": None,
-            "block_size": None,
-        },
-    ),
-    "random_graph_walk_smoke": ExperimentPreset(
-        name="random_graph_walk_smoke",
-        description="Tiny random-graph-walk smoke test preset.",
-        values={
-            "task": "random_graph_walk",
-            "architecture": "transformer",
-            "model_size": "tiny",
-            "n_layer": 1,
-            "n_head": 1,
-            "n_embd": 8,
-            "n_pass": 3,
-            "pass_loss_weights": [0.0, 0.0, 1.0],
-            "memory_tape_gate": "scalar",
-            "memory_update_gate": "off",
-            "memory_gate_bias": -1.0,
-            "inference_mode": "final_pass",
-            "token_selection": "sample",
-            "cache_source": "last",
-            "batch_size": 1,
-            "train_steps": 1,
-            "eval_interval": 1,
-            "eval_batches": 1,
-            "lr": 3e-4,
-            "weight_decay": 0.0,
-            "seed": 1337,
-            "num_states": 4,
-            "label_pool_size": 4,
-            "max_level": 2,
-            "run_dir": None,
-            "resume_from": None,
-            "device": None,
-            "block_size": None,
-        },
-    ),
-    "othello_main": ExperimentPreset(
-        name="othello_main",
-        description="Main Othello trace training setup.",
-        values={
-            "task": "othello",
-            "architecture": "transformer",
-            "model_size": "small",
-            "n_pass": 4,
-            "pass_loss_weights": [0.0, 0.0, 1.0, 1.0],
-            "memory_tape_gate": "scalar",
-            "memory_update_gate": "off",
-            "memory_gate_bias": -1.0,
-            "inference_mode": "final_pass",
-            "token_selection": "sample",
-            "cache_source": "penultimate",
-            "batch_size": 128,
-            "train_steps": 500_000,
-            "eval_interval": 5_000,
-            "eval_batches": 1,
-            "lr": 3e-4,
-            "weight_decay": 0.0,
-            "seed": 1337,
-            "othello_data_dir": othello.DEFAULT_DATA_DIR,
-            "othello_train_games": 5_000_000,
-            "othello_val_games": 1_024,
-            "othello_dataset_seed": 1337,
-            "othello_prepend_opening": False,
-            "run_dir": None,
-            "resume_from": None,
-            "device": None,
-            "block_size": None,
-        },
-    ),
-    "othello_smoke": ExperimentPreset(
-        name="othello_smoke",
-        description="Tiny Othello smoke test preset.",
-        values={
-            "task": "othello",
-            "architecture": "transformer",
-            "model_size": "tiny",
-            "n_layer": 1,
-            "n_head": 1,
-            "n_embd": 8,
-            "n_pass": 3,
-            "pass_loss_weights": [0.0, 0.0, 1.0],
-            "memory_tape_gate": "scalar",
-            "memory_update_gate": "off",
-            "memory_gate_bias": -1.0,
-            "inference_mode": "final_pass",
-            "token_selection": "sample",
-            "cache_source": "last",
-            "batch_size": 1,
-            "train_steps": 1,
-            "eval_interval": 1,
-            "eval_batches": 1,
-            "lr": 1e-4,
-            "weight_decay": 0.0,
-            "seed": 1337,
-            "othello_data_dir": othello.DEFAULT_DATA_DIR,
-            "othello_train_games": 16,
-            "othello_val_games": 8,
-            "othello_dataset_seed": 9,
-            "othello_prepend_opening": False,
-            "run_dir": None,
-            "resume_from": None,
-            "device": None,
-            "block_size": None,
-        },
-    ),
-}
+def _shared(
+    *,
+    task: str,
+    smoke: bool,
+    inference_mode: str,
+    token_selection: str,
+) -> dict[str, object]:
+    n_pass = 3 if smoke else 4
+    return {
+        "task": task,
+        "architecture": "transformer",
+        "model_size": "tiny" if smoke else "small",
+        "n_layer": 1 if smoke else None,
+        "n_head": 1 if smoke else None,
+        "n_embd": 16 if smoke else None,
+        "n_pass": n_pass,
+        "pass_loss_weights": [0.0] * (n_pass - 1) + [1.0] if smoke else [0.0, 0.0, 1.0, 1.0],
+        "memory_update_gate": "off",
+        "memory_gate_bias": -1.0,
+        "inference_mode": inference_mode,
+        "token_selection": token_selection,
+        "batch_size": 1 if smoke else 64,
+        "train_steps": 1 if smoke else 50_000,
+        "eval_interval": 1 if smoke else 1_000,
+        "eval_batches": 1 if smoke else 4,
+        "lr": 1e-4 if smoke else 3e-4,
+        "weight_decay": 0.0,
+        "seed": 1337,
+        "run_dir": None,
+        "resume_from": None,
+        "device": None,
+        "block_size": None,
+    }
 
 
-BBH_PRESETS = {
-    "pointer_chasing_main": ExperimentPreset(
-        name="pointer_chasing_main",
-        description="Main pointer-chasing curriculum setup.",
-        values={
-            "task": "pointer_chasing",
-            "architecture": "transformer",
-            "model_size": "small",
-            "n_pass": 4,
-            "pass_loss_weights": [0.0, 0.0, 1.0, 1.0],
-            "memory_tape_gate": "scalar",
-            "memory_update_gate": "off",
-            "memory_gate_bias": -1.0,
-            "inference_mode": "recompute",
-            "token_selection": "argmax",
-            "cache_source": "penultimate",
-            "batch_size": 64,
-            "train_steps": 50_000,
-            "eval_interval": 5_000,
-            "eval_batches": 4,
-            "lr": 1e-4,
-            "weight_decay": 0.0,
-            "seed": 1337,
-            "num_nodes": 8,
-            "max_level": 64,
-            "curriculum_start_level": 0,
-            "curriculum_threshold": 0.95,
-            "review_easier_every": 2,
-            "run_dir": None,
-            "resume_from": None,
-            "device": None,
-            "block_size": None,
-        },
-    ),
-    "tracking_main": ExperimentPreset(
-        name="tracking_main",
-        description="Main tracking curriculum setup.",
-        values={
-            "task": "tracking",
-            "architecture": "transformer",
-            "model_size": "small",
-            "n_pass": 4,
-            "pass_loss_weights": [0.0, 0.0, 1.0, 1.0],
-            "memory_tape_gate": "scalar",
-            "memory_update_gate": "off",
-            "memory_gate_bias": -1.0,
-            "inference_mode": "recompute",
-            "token_selection": "argmax",
-            "cache_source": "penultimate",
-            "batch_size": 64,
-            "train_steps": 50_000,
-            "eval_interval": 5_000,
-            "eval_batches": 4,
-            "lr": 1e-4,
-            "weight_decay": 0.0,
-            "seed": 1337,
-            "num_objects": tracking.DEFAULT_NUM_OBJECTS,
-            "max_level": 64,
-            "curriculum_start_level": 1,
-            "curriculum_threshold": 0.95,
-            "review_easier_every": 2,
-            "run_dir": None,
-            "resume_from": None,
-            "device": None,
-            "block_size": None,
-        },
-    ),
-    "permutation_main": ExperimentPreset(
-        name="permutation_main",
-        description="Main permutation curriculum setup.",
-        values={
-            "task": "permutation",
-            "architecture": "transformer",
-            "model_size": "small",
-            "n_pass": 4,
-            "pass_loss_weights": [0.0, 0.0, 1.0, 1.0],
-            "memory_tape_gate": "scalar",
-            "memory_update_gate": "off",
-            "memory_gate_bias": -1.0,
-            "inference_mode": "recompute",
-            "token_selection": "argmax",
-            "cache_source": "penultimate",
-            "batch_size": 64,
-            "train_steps": 50_000,
-            "eval_interval": 5_000,
-            "eval_batches": 4,
-            "lr": 1e-4,
-            "weight_decay": 0.0,
-            "seed": 1337,
-            "num_objects": permutation.DEFAULT_NUM_OBJECTS,
-            "max_level": 64,
-            "curriculum_start_level": 1,
-            "curriculum_threshold": 0.95,
-            "review_easier_every": 2,
-            "run_dir": None,
-            "resume_from": None,
-            "device": None,
-            "block_size": None,
-        },
-    ),
-    "state_machine_main": ExperimentPreset(
-        name="state_machine_main",
-        description="Main state-machine curriculum setup.",
-        values={
-            "task": "state_machine",
-            "architecture": "transformer",
-            "model_size": "small",
-            "n_pass": 4,
-            "pass_loss_weights": [0.0, 0.0, 1.0, 1.0],
-            "memory_tape_gate": "scalar",
-            "memory_update_gate": "off",
-            "memory_gate_bias": -1.0,
-            "inference_mode": "recompute",
-            "token_selection": "argmax",
-            "cache_source": "penultimate",
-            "batch_size": 64,
-            "train_steps": 50_000,
-            "eval_interval": 5_000,
-            "eval_batches": 4,
-            "lr": 1e-4,
-            "weight_decay": 0.0,
-            "seed": 1337,
-            "num_states": state_machine.DEFAULT_NUM_STATES,
-            "alphabet_size": state_machine.DEFAULT_ALPHABET_SIZE,
-            "max_level": 64,
-            "curriculum_start_level": 0,
-            "curriculum_threshold": 0.95,
-            "review_easier_every": 2,
-            "run_dir": None,
-            "resume_from": None,
-            "device": None,
-            "block_size": None,
-        },
-    ),
-    "pointer_chasing_smoke": ExperimentPreset(
-        name="pointer_chasing_smoke",
-        description="Tiny pointer-chasing smoke test preset.",
-        values={
-            "task": "pointer_chasing",
-            "architecture": "transformer",
-            "model_size": "tiny",
-            "n_layer": 1,
-            "n_head": 1,
-            "n_embd": 8,
-            "n_pass": 3,
-            "pass_loss_weights": [0.0, 0.0, 1.0],
-            "memory_tape_gate": "scalar",
-            "memory_update_gate": "off",
-            "memory_gate_bias": -1.0,
-            "inference_mode": "recompute",
-            "token_selection": "argmax",
-            "cache_source": "last",
-            "batch_size": 1,
-            "train_steps": 1,
-            "eval_interval": 1,
-            "eval_batches": 1,
-            "lr": 1e-4,
-            "weight_decay": 0.0,
-            "seed": 1337,
-            "num_nodes": 4,
-            "max_level": 2,
-            "curriculum_start_level": 0,
-            "curriculum_threshold": 0.95,
-            "review_easier_every": 2,
-            "run_dir": None,
-            "resume_from": None,
-            "device": None,
-            "block_size": None,
-        },
-    ),
-    "tracking_smoke": ExperimentPreset(
-        name="tracking_smoke",
-        description="Tiny tracking smoke test preset.",
-        values={
-            "task": "tracking",
-            "architecture": "transformer",
-            "model_size": "tiny",
-            "n_layer": 1,
-            "n_head": 1,
-            "n_embd": 8,
-            "n_pass": 3,
-            "pass_loss_weights": [0.0, 0.0, 1.0],
-            "memory_tape_gate": "scalar",
-            "memory_update_gate": "off",
-            "memory_gate_bias": -1.0,
-            "inference_mode": "recompute",
-            "token_selection": "argmax",
-            "cache_source": "last",
-            "batch_size": 1,
-            "train_steps": 1,
-            "eval_interval": 1,
-            "eval_batches": 1,
-            "lr": 1e-4,
-            "weight_decay": 0.0,
-            "seed": 1337,
-            "num_objects": 4,
-            "max_level": 2,
-            "curriculum_start_level": 1,
-            "curriculum_threshold": 0.95,
-            "review_easier_every": 2,
-            "run_dir": None,
-            "resume_from": None,
-            "device": None,
-            "block_size": None,
-        },
-    ),
-    "permutation_smoke": ExperimentPreset(
-        name="permutation_smoke",
-        description="Tiny permutation smoke test preset.",
-        values={
-            "task": "permutation",
-            "architecture": "transformer",
-            "model_size": "tiny",
-            "n_layer": 1,
-            "n_head": 1,
-            "n_embd": 8,
-            "n_pass": 3,
-            "pass_loss_weights": [0.0, 0.0, 1.0],
-            "memory_tape_gate": "scalar",
-            "memory_update_gate": "off",
-            "memory_gate_bias": -1.0,
-            "inference_mode": "recompute",
-            "token_selection": "argmax",
-            "cache_source": "last",
-            "batch_size": 1,
-            "train_steps": 1,
-            "eval_interval": 1,
-            "eval_batches": 1,
-            "lr": 1e-4,
-            "weight_decay": 0.0,
-            "seed": 1337,
-            "num_objects": 4,
-            "max_level": 2,
-            "curriculum_start_level": 1,
-            "curriculum_threshold": 0.95,
-            "review_easier_every": 2,
-            "run_dir": None,
-            "resume_from": None,
-            "device": None,
-            "block_size": None,
-        },
-    ),
-    "state_machine_smoke": ExperimentPreset(
-        name="state_machine_smoke",
-        description="Tiny state-machine smoke test preset.",
-        values={
-            "task": "state_machine",
-            "architecture": "transformer",
-            "model_size": "tiny",
-            "n_layer": 1,
-            "n_head": 1,
-            "n_embd": 8,
-            "n_pass": 3,
-            "pass_loss_weights": [0.0, 0.0, 1.0],
-            "memory_tape_gate": "scalar",
-            "memory_update_gate": "off",
-            "memory_gate_bias": -1.0,
-            "inference_mode": "recompute",
-            "token_selection": "argmax",
-            "cache_source": "last",
-            "batch_size": 1,
-            "train_steps": 1,
-            "eval_interval": 1,
-            "eval_batches": 1,
-            "lr": 1e-4,
-            "weight_decay": 0.0,
-            "seed": 1337,
-            "num_states": 4,
-            "alphabet_size": 2,
-            "max_level": 2,
-            "curriculum_start_level": 0,
-            "curriculum_threshold": 0.95,
-            "review_easier_every": 2,
-            "run_dir": None,
-            "resume_from": None,
-            "device": None,
-            "block_size": None,
-        },
-    ),
-}
+TRACE_PRESETS: dict[str, ExperimentPreset] = {}
+
+rgw_main = _shared(
+    task="random_graph_walk",
+    smoke=False,
+    inference_mode="append_recurrent",
+    token_selection="sample",
+)
+rgw_main.update(
+    num_states=random_graph_walk.DEFAULT_NUM_STATES,
+    label_pool_size=random_graph_walk.DEFAULT_LABEL_POOL_SIZE,
+    max_level=32,
+)
+TRACE_PRESETS["random_graph_walk_main"] = ExperimentPreset(
+    "Main random-graph-walk trace setup.",
+    rgw_main,
+)
+
+rgw_smoke = _shared(
+    task="random_graph_walk",
+    smoke=True,
+    inference_mode="append_recurrent",
+    token_selection="argmax",
+)
+rgw_smoke.update(num_states=4, label_pool_size=4, max_level=2)
+TRACE_PRESETS["random_graph_walk_smoke"] = ExperimentPreset(
+    "Tiny random-graph-walk smoke setup.",
+    rgw_smoke,
+)
+
+othello_main = _shared(
+    task="othello",
+    smoke=False,
+    inference_mode="append_recurrent",
+    token_selection="sample",
+)
+othello_main.update(
+    batch_size=128,
+    train_steps=500_000,
+    eval_interval=5_000,
+    eval_batches=1,
+    othello_data_dir=othello.DEFAULT_DATA_DIR,
+    othello_train_games=othello.DEFAULT_TRAIN_GAMES,
+    othello_val_games=othello.DEFAULT_VAL_GAMES,
+    othello_dataset_seed=othello.DEFAULT_DATASET_SEED,
+    othello_prepend_opening=othello.DEFAULT_PREPEND_OPENING,
+)
+TRACE_PRESETS["othello_main"] = ExperimentPreset("Main Othello trace setup.", othello_main)
+
+othello_smoke = _shared(
+    task="othello",
+    smoke=True,
+    inference_mode="append_recurrent",
+    token_selection="argmax",
+)
+othello_smoke.update(
+    othello_data_dir="data/othello_smoke",
+    othello_train_games=16,
+    othello_val_games=8,
+    othello_dataset_seed=9,
+    othello_prepend_opening=False,
+)
+TRACE_PRESETS["othello_smoke"] = ExperimentPreset("Tiny Othello smoke setup.", othello_smoke)
+
+
+BBH_PRESETS: dict[str, ExperimentPreset] = {}
+
+
+def _add_bbh_pair(task: str, main_values: dict[str, object], smoke_values: dict[str, object]) -> None:
+    main = _shared(task=task, smoke=False, inference_mode="recompute", token_selection="argmax")
+    main.update(
+        max_level=64,
+        curriculum_start_level=main_values.pop("curriculum_start_level"),
+        curriculum_threshold=0.95,
+        review_easier_every=2,
+        **main_values,
+    )
+    smoke = _shared(task=task, smoke=True, inference_mode="recompute", token_selection="argmax")
+    smoke.update(
+        max_level=2,
+        curriculum_start_level=smoke_values.pop("curriculum_start_level"),
+        curriculum_threshold=0.95,
+        review_easier_every=2,
+        **smoke_values,
+    )
+    BBH_PRESETS[f"{task}_main"] = ExperimentPreset(f"Main {task} curriculum setup.", main)
+    BBH_PRESETS[f"{task}_smoke"] = ExperimentPreset(f"Tiny {task} smoke setup.", smoke)
+
+
+_add_bbh_pair(
+    "pointer_chasing",
+    {"num_nodes": 32, "curriculum_start_level": 0},
+    {"num_nodes": 4, "curriculum_start_level": 0},
+)
+_add_bbh_pair(
+    "tracking",
+    {"num_objects": tracking.DEFAULT_NUM_OBJECTS, "curriculum_start_level": 1},
+    {"num_objects": 4, "curriculum_start_level": 1},
+)
+_add_bbh_pair(
+    "permutation",
+    {"num_objects": permutation.DEFAULT_NUM_OBJECTS, "curriculum_start_level": 1},
+    {"num_objects": 4, "curriculum_start_level": 1},
+)
+_add_bbh_pair(
+    "state_machine",
+    {
+        "num_states": state_machine.DEFAULT_NUM_STATES,
+        "alphabet_size": state_machine.DEFAULT_ALPHABET_SIZE,
+        "curriculum_start_level": 0,
+    },
+    {"num_states": 4, "alphabet_size": 2, "curriculum_start_level": 0},
+)
+
+
+def resolve_preset_args(
+    raw_args: argparse.Namespace,
+    presets: dict[str, ExperimentPreset],
+    *,
+    default_preset: str,
+    parser: argparse.ArgumentParser,
+) -> argparse.Namespace:
+    overrides = vars(raw_args).copy()
+    preset_name = str(overrides.pop("preset", default_preset))
+    if preset_name not in presets:
+        parser.error(f"unknown preset: {preset_name}")
+    values = deepcopy(presets[preset_name].values)
+    values.update(overrides)
+    values["preset"] = preset_name
+    return argparse.Namespace(**values)
 
 
 def preset_help_text(presets: dict[str, ExperimentPreset]) -> str:
-    return "; ".join(f"{name}: {preset.description}" for name, preset in sorted(presets.items()))
-
-
-def resolve_preset_args(raw_args, presets: dict[str, ExperimentPreset], *, parser: argparse.ArgumentParser):
-    cli_values = vars(raw_args)
-    preset_name = cli_values.get("preset")
-    resume_from = cli_values.get("resume_from")
-
-    if preset_name is None and resume_from is None:
-        parser.error("--preset is required unless --resume-from is provided")
-
-    merged: dict[str, object] = {}
-    if preset_name is not None:
-        merged.update(deepcopy(presets[preset_name].values))
-        merged["preset"] = preset_name
-
-    if resume_from is not None:
-        resume_artifacts = resolve_resume_artifacts(resume_from)
-        saved_config = load_json_if_exists(resume_artifacts.config_path)
-        if saved_config is None or "args" not in saved_config:
-            if preset_name is None:
-                raise FileNotFoundError(f"Missing config.json with saved args in {resume_artifacts.run_dir}")
-        else:
-            merged.update(deepcopy(saved_config["args"]))
-            if "preset" in saved_config["args"] and preset_name is None:
-                merged["preset"] = saved_config["args"]["preset"]
-
-    merged.update(cli_values)
-    return argparse.Namespace(**merged)
+    return " ".join(f"{name}: {preset.description}" for name, preset in sorted(presets.items()))

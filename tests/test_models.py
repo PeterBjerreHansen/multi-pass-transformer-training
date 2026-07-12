@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 from types import SimpleNamespace
 
 import pytest
@@ -5,6 +7,7 @@ import torch
 
 from model_factory import build_model
 from models import (
+    CausalCrossAttention,
     CausalTransformer,
     MemoryBlock,
     MemoryConcatTransformer,
@@ -14,307 +17,256 @@ from models import (
     MemoryUpdateTransformer,
     MultiPassConfig,
     TransformerConfig,
+    normalize_pass_weights,
+    sample_next_token,
+    shift_right,
 )
 
 
-def _finite_nonzero_gradient_exists(model) -> bool:
-    found = False
-    for parameter in model.parameters():
-        if parameter.grad is None:
-            continue
-        assert torch.isfinite(parameter.grad).all()
-        found = found or parameter.grad.abs().sum().item() > 0
-    return found
-
-
-def test_causal_transformer_forward_loss_backward_and_generate():
-    torch.manual_seed(11)
-    config = TransformerConfig(
-        block_size=8,
-        vocab_size=17,
-        n_layer=1,
-        n_head=2,
-        n_embd=8,
-    )
-    model = CausalTransformer(config)
-    idx = torch.randint(0, config.vocab_size, (2, 6))
-    targets = torch.randint(0, config.vocab_size, (2, 6))
-
-    logits = model(idx)
-    assert logits.shape == (2, 6, config.vocab_size)
-
-    loss = model.calc_loss(logits, targets)
-    assert torch.isfinite(loss)
-    loss.backward()
-    assert _finite_nonzero_gradient_exists(model)
-
-    generated = model.generate(idx[:, :4], max_new_tokens=2, do_sample=False)
-    assert generated.shape == (2, 6)
-
-
-def test_multipass_transformers_forward_loss_and_backward():
-    cases = (
-        (MemoryTapeTransformer, MemoryTapeConfig, {}),
-        (MemoryTapeTransformer, MemoryTapeConfig, {"memory_tape_gate": "none"}),
-        (MemoryTapeTransformer, MemoryTapeConfig, {"memory_tape_gate": "scalar"}),
-        (MemoryConcatTransformer, MultiPassConfig, {}),
-        (MemoryUpdateTransformer, MemoryUpdateConfig, {}),
-        (MemoryUpdateTransformer, MemoryUpdateConfig, {"use_memory_gate": False}),
-    )
-
-    for model_cls, config_cls, config_kwargs in cases:
-        torch.manual_seed(23)
-        config = config_cls(
-            block_size=8,
-            vocab_size=17,
-            n_layer=1,
-            n_head=2,
-            n_embd=8,
-            n_pass=3,
-            **config_kwargs,
-        )
-        model = model_cls(config)
-        idx = torch.randint(0, config.vocab_size, (2, 6))
-        targets = torch.randint(0, config.vocab_size, (2, 6))
-
-        logits_per_pass = model(idx, return_all_logits=True)
-        assert len(logits_per_pass) == config.n_pass
-        for logits in logits_per_pass:
-            assert logits.shape == (2, 6, config.vocab_size)
-
-        pass_logits, pass_memories = model.forward_passes(idx)
-        assert len(pass_logits) == config.n_pass
-        assert len(pass_memories) == config.n_pass
-        for logits, memory in zip(pass_logits, pass_memories):
-            assert logits.shape == (2, 6, config.vocab_size)
-            assert memory.shape == (2, 6, config.n_embd)
-
-        loss, pass_losses = model.calc_total_loss(
-            logits_per_pass,
-            targets,
-            loss_weights=[0.1, 0.5, 1.0],
-        )
-        assert len(pass_losses) == config.n_pass
-        assert torch.isfinite(loss)
-        loss.backward()
-        assert _finite_nonzero_gradient_exists(model)
-
-
-def test_memory_tape_gate_modes():
-    torch.manual_seed(29)
-    n_embd = 8
-    x = torch.randn(2, 6, n_embd)
-    memory_a = torch.randn(2, 6, n_embd)
-    memory_b = torch.randn(2, 6, n_embd)
-
-    config = MemoryTapeConfig(
-        block_size=8,
-        vocab_size=17,
-        n_layer=1,
-        n_head=2,
-        n_embd=n_embd,
-        n_pass=2,
-        memory_tape_gate="tanh",
-    )
-    block = MemoryBlock(config)
-    assert block.memory_tape_gate == "tanh"
-    assert block.memory_gate.item() == 0.0
-    out_a = block(x, memory_a)
-    out_b = block(x, memory_b)
-    assert torch.allclose(out_a, out_b)
-
-    config = MemoryTapeConfig(
-        block_size=8,
-        vocab_size=17,
-        n_layer=1,
-        n_head=2,
-        n_embd=n_embd,
-        n_pass=2,
-        memory_tape_gate="scalar",
-    )
-    block = MemoryBlock(config)
-    assert block.memory_tape_gate == "scalar"
-    assert block.memory_gate.item() == pytest.approx(0.2)
-    out_a = block(x, memory_a)
-    out_b = block(x, memory_b)
-    assert not torch.allclose(out_a, out_b)
-
-    config = MemoryTapeConfig(
-        block_size=8,
-        vocab_size=17,
-        n_layer=1,
-        n_head=2,
-        n_embd=n_embd,
-        n_pass=2,
-        memory_tape_gate="none",
-    )
-    block = MemoryBlock(config)
-    assert block.memory_tape_gate == "none"
-    assert block.memory_gate is None
-    out_a = block(x, memory_a)
-    out_b = block(x, memory_b)
-    assert not torch.allclose(out_a, out_b)
-
-
-def test_closed_memory_tape_first_pass_matches_causal_transformer_initialization():
-    seed = 31
-    transformer_config = TransformerConfig(block_size=8, vocab_size=17, n_layer=2, n_head=2, n_embd=8)
-    idx = torch.tensor(
-        [
-            [0, 1, 2, 3, 4, 5],
-            [6, 7, 8, 9, 10, 11],
-        ],
-        dtype=torch.long,
-    )
-
-    for gate_mode in ("none", "tanh", "scalar"):
-        multipass_config = MemoryTapeConfig(
-            block_size=8,
-            vocab_size=17,
+def tiny_memory_model(*, block_size: int = 12, n_pass: int = 3) -> MemoryTapeTransformer:
+    torch.manual_seed(7)
+    return MemoryTapeTransformer(
+        MemoryTapeConfig(
+            block_size=block_size,
+            vocab_size=19,
             n_layer=2,
             n_head=2,
             n_embd=8,
-            n_pass=3,
-            memory_tape_gate=gate_mode,
+            n_pass=n_pass,
         )
-
-        torch.manual_seed(seed)
-        baseline = CausalTransformer(transformer_config)
-        torch.manual_seed(seed)
-        memory_tape = MemoryTapeTransformer(multipass_config)
-
-        with torch.no_grad():
-            baseline_logits = baseline(idx)
-            memory_tape_logits = memory_tape(idx, return_all_logits=True)[0]
-
-        assert torch.equal(baseline.transformer.wte.weight, memory_tape.transformer.wte.weight)
-        assert torch.equal(baseline.transformer.wpe.weight, memory_tape.transformer.wpe.weight)
-        assert torch.equal(baseline.lm_head.weight, memory_tape.lm_head.weight)
-        for baseline_block, memory_block in zip(baseline.transformer.h, memory_tape.transformer.h):
-            assert torch.equal(baseline_block.attn.c_attn.weight, memory_block.attn.c_attn.weight)
-            assert torch.equal(baseline_block.attn.c_proj.weight, memory_block.attn.c_proj.weight)
-            assert torch.equal(baseline_block.mlp.c_fc.weight, memory_block.mlp.c_fc.weight)
-            assert torch.equal(baseline_block.mlp.c_proj.weight, memory_block.mlp.c_proj.weight)
-        assert torch.equal(baseline_logits, memory_tape_logits)
-
-
-def test_config_round_trips_for_future_checkpointing():
-    config = TransformerConfig(block_size=8, vocab_size=17, n_layer=1, n_head=2, n_embd=8)
-    restored = TransformerConfig.from_dict(config.to_dict())
-    assert restored.to_dict() == config.to_dict()
-
-    multipass_config = MultiPassConfig(block_size=8, vocab_size=17, n_layer=1, n_head=2, n_embd=8, n_pass=3)
-    restored_multipass = MultiPassConfig.from_dict(multipass_config.to_dict())
-    assert restored_multipass.to_dict() == multipass_config.to_dict()
-
-    memory_tape_config = MemoryTapeConfig(
-        block_size=8,
-        vocab_size=17,
-        n_layer=1,
-        n_head=2,
-        n_embd=8,
-        n_pass=3,
-        memory_tape_gate="scalar",
     )
-    restored_memory_tape = MemoryTapeConfig.from_dict(memory_tape_config.to_dict())
-    assert restored_memory_tape.to_dict() == memory_tape_config.to_dict()
-    legacy_memory_tape = MemoryTapeConfig.from_dict(
-        {
-            "block_size": 8,
-            "vocab_size": 17,
-            "n_layer": 1,
-            "n_head": 2,
-            "n_embd": 8,
-            "n_pass": 3,
-        }
-    )
-    assert legacy_memory_tape.memory_tape_gate == "tanh"
-    with pytest.raises(ValueError, match="memory_tape_gate must be one of"):
-        MemoryTapeConfig(
-            block_size=8,
-            vocab_size=17,
-            n_layer=1,
-            n_head=2,
-            n_embd=8,
-            n_pass=3,
-            memory_tape_gate="bad_gate",
-        )
-    none_memory_tape = MemoryTapeConfig(
-        block_size=8,
-        vocab_size=17,
-        n_layer=1,
-        n_head=2,
-        n_embd=8,
-        n_pass=3,
-        memory_tape_gate="None",
-    )
-    assert none_memory_tape.memory_tape_gate == "none"
+
+
+def test_shift_right_is_exact():
+    memory = torch.arange(2 * 4 * 3).reshape(2, 4, 3)
+    shifted = shift_right(memory)
+    assert torch.equal(shifted[:, 0], torch.zeros_like(shifted[:, 0]))
+    assert torch.equal(shifted[:, 1:], memory[:, :-1])
+
+
+def test_pass_weights_are_always_normalized():
+    a = normalize_pass_weights([0, 0, 1, 1], 4, device=torch.device("cpu"), dtype=torch.float32)
+    b = normalize_pass_weights([0, 0, 0.5, 0.5], 4, device=torch.device("cpu"), dtype=torch.float32)
+    assert torch.equal(a, b)
+    assert a.sum().item() == pytest.approx(1.0)
+    with pytest.raises(ValueError):
+        normalize_pass_weights([0, 0, 0], 3, device=torch.device("cpu"), dtype=torch.float32)
+    with pytest.raises(ValueError):
+        normalize_pass_weights([1, -1], 2, device=torch.device("cpu"), dtype=torch.float32)
+
+
+def test_equivalent_relative_pass_weights_give_identical_loss():
+    model = tiny_memory_model(n_pass=4)
+    tokens = torch.randint(0, 19, (2, 7))
+    targets = torch.randint(0, 19, (2, 7))
+    output = model(tokens)
+    loss_a = model.calc_total_loss(output, targets, [0, 0, 1, 1]).loss
+    loss_b = model.calc_total_loss(output, targets, [0, 0, 0.5, 0.5]).loss
+    assert torch.equal(loss_a, loss_b)
+
+
+def test_zero_memory_produces_exact_zero_cross_attention_output():
+    config = MemoryTapeConfig(8, 17, 1, 2, 8, 2)
+    attention = CausalCrossAttention(config)
+    query = torch.randn(2, 6, 8)
+    output = attention(query, torch.zeros_like(query))
+    assert torch.equal(output, torch.zeros_like(output))
+
+
+def test_cross_attention_manual_and_sdpa_paths_agree():
+    config = MemoryTapeConfig(8, 17, 1, 2, 8, 2)
+    attention = CausalCrossAttention(config)
+    if not attention.flash:
+        pytest.skip("scaled_dot_product_attention is unavailable")
+    query = torch.randn(2, 6, 8)
+    memory = torch.randn(2, 6, 8)
+    expected = attention(query, memory)
+    attention.flash = False
+    actual = attention(query, memory)
+    assert torch.allclose(actual, expected, atol=1e-6, rtol=1e-5)
+
+
+def test_memory_block_has_no_first_pass_intercept():
+    config = MemoryTapeConfig(8, 17, 1, 2, 8, 2)
+    block = MemoryBlock(config)
+    block.eval()
+    hidden = torch.randn(2, 6, 8)
+    after_self = hidden + block.attn(block.ln_self(hidden))
+    expected = after_self + block.mlp(block.ln_mlp(after_self))
+    actual = block(hidden, torch.zeros_like(hidden))
+    assert torch.equal(actual, expected)
+
+
+def test_causal_transformer_structured_output_and_generation():
+    model = CausalTransformer(TransformerConfig(8, 17, 1, 1, 8))
+    tokens = torch.randint(0, 17, (2, 6))
+    output = model(tokens)
+    assert len(output.passes) == 1
+    assert output.logits.shape == (2, 6, 17)
+    generated = model.generate(tokens[:, :4], 2, do_sample=False)
+    assert generated.shape == (2, 6)
+    with pytest.raises(ValueError):
+        model.generate(tokens[:, :4], 1, inference_mode="append_recurrent")
+
+
+def test_multipass_variants_return_all_passes_and_finite_losses():
+    cases = [
+        (MemoryTapeTransformer, MemoryTapeConfig(8, 17, 1, 1, 8, 3)),
+        (MemoryConcatTransformer, MultiPassConfig(8, 17, 1, 1, 8, 3)),
+        (MemoryUpdateTransformer, MemoryUpdateConfig(8, 17, 1, 1, 8, 3)),
+    ]
+    tokens = torch.randint(0, 17, (2, 6))
+    targets = torch.randint(0, 17, (2, 6))
+    for cls, config in cases:
+        model = cls(config)
+        output = model(tokens)
+        assert len(output.passes) == 3
+        assert all(item.memory_states is not None for item in output.passes)
+        loss_output = model.calc_total_loss(output, targets, [0, 0, 1])
+        assert torch.isfinite(loss_output.loss)
+        assert loss_output.normalized_pass_weights.tolist() == [0.0, 0.0, 1.0]
+
+
+def test_memory_tape_is_causal_in_tokens_and_emitted_memory():
+    model = tiny_memory_model()
+    model.eval()
+    prefix = torch.tensor([[1, 2, 3, 4]])
+    a = torch.cat((prefix, torch.tensor([[5, 6, 7, 8]])), dim=1)
+    b = torch.cat((prefix, torch.tensor([[9, 10, 11, 12]])), dim=1)
+    out_a = model(a)
+    out_b = model(b)
+    for pass_a, pass_b in zip(out_a.passes, out_b.passes):
+        assert torch.allclose(pass_a.logits[:, :4], pass_b.logits[:, :4], atol=1e-6, rtol=0)
+        assert pass_a.memory_states is not None and pass_b.memory_states is not None
+        assert torch.allclose(pass_a.memory_states[:, :4], pass_b.memory_states[:, :4], atol=1e-6, rtol=0)
+
+
+def test_previous_memory_at_t_cannot_affect_position_t():
+    model = tiny_memory_model(n_pass=2)
+    model.eval()
+    tokens = torch.tensor([[1, 2, 3, 4, 5, 6]])
+    token_stream = model.embed_tokens(tokens)
+    base = torch.zeros_like(token_stream)
+    changed = base.clone()
+    changed[:, 2, :] = torch.randn_like(changed[:, 2, :])
+    out_base = model.forward_pass(token_stream, base)
+    out_changed = model.forward_pass(token_stream, changed)
+    assert torch.allclose(out_base.logits[:, :3], out_changed.logits[:, :3], atol=1e-6, rtol=0)
+    assert not torch.allclose(out_base.logits[:, 3:], out_changed.logits[:, 3:])
+
+
+def test_final_pass_loss_reaches_memory_writer_and_reader():
+    model = tiny_memory_model(n_pass=3)
+    tokens = torch.randint(0, 19, (2, 8))
+    targets = torch.randint(0, 19, (2, 8))
+    output = model(tokens)
+    loss = model.calc_total_loss(output, targets, [0, 0, 1]).loss
+    loss.backward()
+    assert model.mem_head.weight.grad is not None
+    assert model.mem_head.weight.grad.abs().sum().item() > 0
+    reader = model.transformer.h[0].cross_attn.c_kv.weight
+    assert reader.grad is not None
+    assert reader.grad.abs().sum().item() > 0
+
+
+def test_written_memories_are_normalized_per_token():
+    model = tiny_memory_model()
+    memory = model(torch.randint(0, 19, (2, 8))).final_memory
+    means = memory.mean(dim=-1)
+    variances = memory.var(dim=-1, unbiased=False)
+    assert means.abs().max().item() < 1e-5
+    assert torch.allclose(variances, torch.ones_like(variances), atol=1e-2, rtol=0)
+
+
+def test_final_pass_can_be_reproduced_from_previous_pass_memory_input():
+    model = tiny_memory_model()
+    tokens = torch.randint(0, 19, (2, 8))
+    output = model(tokens)
+    previous = output.passes[-2].memory_states
+    assert previous is not None
+    reproduced = model.forward_pass(model.embed_tokens(tokens), previous)
+    assert torch.equal(reproduced.logits, output.logits)
+    assert reproduced.memory_states is not None
+    assert torch.equal(reproduced.memory_states, output.final_memory)
+
+
+def test_recurrent_prefill_uses_last_pass_memory_and_append_is_immutable():
+    model = tiny_memory_model(block_size=10)
+    tokens = torch.randint(0, 19, (2, 5))
+    output = model(tokens)
+    state = model.prefill_recurrent(tokens)
+    assert torch.equal(state.memory_states, output.final_memory)
+    old_memory = state.memory_states.clone()
+    next_token = state.next_token_logits.argmax(dim=-1, keepdim=True)
+    next_state = model.recurrent_step(state, next_token)
+    assert next_state.memory_states.shape[1] == old_memory.shape[1] + 1
+    assert torch.equal(next_state.memory_states[:, :-1], old_memory)
+
+
+def test_append_recurrent_matches_manual_two_token_rollout():
+    model = tiny_memory_model(block_size=10)
+    prompt = torch.tensor([[1, 2, 3, 4]])
+    state = model.prefill_recurrent(prompt)
+    first = state.next_token_logits.argmax(dim=-1, keepdim=True)
+    state = model.recurrent_step(state, first)
+    second = state.next_token_logits.argmax(dim=-1, keepdim=True)
+    expected = torch.cat((prompt, first, second), dim=1)
+    actual = model.generate(prompt, 2, do_sample=False, inference_mode="append_recurrent")
+    assert torch.equal(actual, expected)
+
+
+def test_append_recurrent_context_guard_allows_final_unprocessed_token():
+    model = tiny_memory_model(block_size=8)
+    prompt = torch.tensor([[1, 2, 3, 4, 5, 6]])
+    allowed = model.generate(prompt, 3, do_sample=False, inference_mode="append_recurrent")
+    assert allowed.shape[1] == 9
+    with pytest.raises(ValueError, match="prompt_length"):
+        model.generate(prompt, 4, do_sample=False, inference_mode="append_recurrent")
+
+
+def test_generation_restores_mode_and_validates_sampling_even_for_zero_tokens():
+    model = tiny_memory_model()
+    model.train()
+    tokens = torch.tensor([[1, 2]])
+    returned = model.generate(tokens, 0, inference_mode="append_recurrent")
+    assert returned is tokens
+    assert model.training
+    with pytest.raises(ValueError, match="temperature"):
+        model.generate(tokens, 0, temperature=-1)
+    with pytest.raises(ValueError, match="top_k"):
+        sample_next_token(torch.randn(1, 3), top_k=0)
 
 
 @pytest.mark.parametrize(
-    "architecture,extra_args,model_cls,config_cls",
-    (
-        ("transformer", {}, CausalTransformer, TransformerConfig),
-        ("memory_concat", {}, MemoryConcatTransformer, MultiPassConfig),
-        ("memory_tape", {}, MemoryTapeTransformer, MemoryTapeConfig),
-        ("memory_tape", {"memory_tape_gate": "none"}, MemoryTapeTransformer, MemoryTapeConfig),
-        ("memory_tape", {"memory_tape_gate": "scalar"}, MemoryTapeTransformer, MemoryTapeConfig),
-        ("memory_update", {}, MemoryUpdateTransformer, MemoryUpdateConfig),
-        ("memory_update", {"memory_update_gate": "on"}, MemoryUpdateTransformer, MemoryUpdateConfig),
-    ),
+    "model",
+    [
+        MemoryTapeTransformer(MemoryTapeConfig(8, 17, 1, 1, 8, 3)),
+        MemoryConcatTransformer(MultiPassConfig(8, 17, 1, 1, 8, 3)),
+        MemoryUpdateTransformer(MemoryUpdateConfig(8, 17, 1, 1, 8, 3)),
+    ],
 )
-def test_build_model_constructs_expected_model_and_config_classes(
-    architecture,
-    extra_args,
-    model_cls,
-    config_cls,
-):
-    arg_values = dict(
-        architecture=architecture,
+def test_all_multipass_variants_support_append_recurrent(model):
+    prompt = torch.tensor([[1, 2, 3]])
+    generated = model.generate(prompt, 2, do_sample=False, inference_mode="append_recurrent")
+    assert generated.shape == (1, 5)
+
+
+def test_model_factory_constructs_all_variants():
+    base = dict(
         n_layer=1,
-        n_head=2,
+        n_head=1,
         n_embd=8,
         n_pass=3,
-        memory_tape_gate="tanh",
+        pass_loss_weights=[0, 0, 1],
         memory_update_gate="off",
         memory_gate_bias=-1.0,
     )
-    arg_values.update(extra_args)
-    args = SimpleNamespace(**arg_values)
-
-    model = build_model(args, vocab_size=17, block_size=8, device="cpu")
-    assert isinstance(model, model_cls)
-    assert isinstance(model.config, config_cls)
-
-    idx = torch.randint(0, model.config.vocab_size, (2, 6))
-    logits = model(idx)
-    assert logits.shape == (2, 6, model.config.vocab_size)
-
-    if architecture == "memory_tape":
-        assert model.transformer.h[0].memory_tape_gate == model.config.memory_tape_gate
-
-    memory_update_config = MemoryUpdateConfig(
-        block_size=8,
-        vocab_size=17,
-        n_layer=1,
-        n_head=2,
-        n_embd=8,
-        n_pass=3,
-        memory_gate_bias=-2.0,
-        use_memory_gate=False,
-    )
-    restored_memory_update = MemoryUpdateConfig.from_dict(memory_update_config.to_dict())
-    assert restored_memory_update.to_dict() == memory_update_config.to_dict()
-
-    legacy_memory_update = MemoryUpdateConfig.from_dict(
-        {
-            "block_size": 8,
-            "vocab_size": 17,
-            "n_layer": 1,
-            "n_head": 2,
-            "n_embd": 8,
-            "n_pass": 3,
-        }
-    )
-    assert legacy_memory_update.memory_gate_bias == -1.0
-    assert legacy_memory_update.use_memory_gate is True
+    expected = {
+        "transformer": CausalTransformer,
+        "memory_tape": MemoryTapeTransformer,
+        "memory_concat": MemoryConcatTransformer,
+        "memory_update": MemoryUpdateTransformer,
+    }
+    for architecture, cls in expected.items():
+        model = build_model(SimpleNamespace(architecture=architecture, **base), 17, 8, "cpu")
+        assert isinstance(model, cls)

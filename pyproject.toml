@@ -1,34 +1,27 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
 [project]
 name = "multipass-transformer-training"
-version = "0.1.0"
-description = "Research code for multi-pass transformer training on synthetic state-tracking tasks."
+version = "0.2.0"
+description = "Research code for multi-pass transformer training on symbolic state-tracking tasks."
 requires-python = ">=3.10"
 dependencies = [
     "torch>=2.0",
+    "numpy>=1.24",
 ]
 
 [project.optional-dependencies]
-test = [
-    "pytest>=7",
-]
-plot = [
-    "matplotlib>=3.7",
-]
+test = ["pytest>=7"]
+plot = ["matplotlib>=3.7"]
 
 [tool.setuptools]
-py-modules = [
-    "model_factory",
-    "models",
-]
+py-modules = ["model_factory", "models"]
 
 [tool.setuptools.packages.find]
 include = ["tasks*", "experiments*"]
-exclude = [
-    "figures*",
-    "papers*",
-    "runs*",
-    "tests*",
-]
+exclude = ["tests*", "results*", "data*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

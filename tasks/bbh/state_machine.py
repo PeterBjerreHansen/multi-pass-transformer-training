@@ -1,8 +1,8 @@
 """State-machine task: read a transition table, start in a given state, apply an action sequence,
 and predict the final state.
 
-Example sequence: 
-<bos> <states> s0 s1 s2 <alphabet> a0 a1 <table> s0 a0 s1 s0 a1 s2 s1 a0 s2 s1 a1 s0 s2 a0 s0 s2 a1 s1 <start> s0 <actions> a1 <sep> s2 <eos>
+Example sequence:
+<bos> <states> s0 s1 s2 <alphabet> a0 a1 <table> s0 a0 s1 ... <start> s0 <actions> a1 <sep> s2 <eos>
 """
 
 from typing import Dict, List, Sequence, Tuple
@@ -44,11 +44,7 @@ def action_token(index: int) -> str:
     return f"a{index}"
 
 
-def required_block_size(
-    num_states: int,
-    alphabet_size: int,
-    num_steps: int,
-) -> int:
+def required_block_size(num_states: int, alphabet_size: int, num_steps: int) -> int:
     _validate_sizes(num_states, alphabet_size, num_steps)
     effective_steps = max(1, num_steps)
     prompt_tokens = 6 + num_states + alphabet_size + 3 * num_states * alphabet_size + effective_steps
@@ -107,11 +103,7 @@ def solve_state_machine(
     return trace, state
 
 
-def sample_transition_table(
-    num_states: int,
-    alphabet_size: int,
-    rng: random.Random,
-) -> list[list[int]]:
+def sample_transition_table(num_states: int, alphabet_size: int, rng: random.Random) -> list[list[int]]:
     """Sample a balanced DFA table with no one-step majority shortcut."""
     _validate_sizes(num_states, alphabet_size, num_steps=1)
     rows: list[list[int]] = [[] for _ in range(num_states)]
@@ -128,11 +120,7 @@ def sample_transition_table(
     return rows
 
 
-def _sample_cyclic_transition_table(
-    num_states: int,
-    alphabet_size: int,
-    rng: random.Random,
-) -> list[list[int]]:
+def _sample_cyclic_transition_table(num_states: int, alphabet_size: int, rng: random.Random) -> list[list[int]]:
     source_ranks = list(range(num_states))
     target_labels = list(range(num_states))
     offsets = rng.sample(range(num_states), k=alphabet_size)
@@ -140,29 +128,18 @@ def _sample_cyclic_transition_table(
     rng.shuffle(target_labels)
     rng.shuffle(offsets)
     return [
-        [
-            target_labels[(source_ranks[source] + offset) % num_states]
-            for offset in offsets
-        ]
+        [target_labels[(source_ranks[source] + offset) % num_states] for offset in offsets]
         for source in range(num_states)
     ]
 
 
-def _sample_source_only_transition_table(
-    num_states: int,
-    alphabet_size: int,
-    rng: random.Random,
-) -> list[list[int]]:
+def _sample_source_only_transition_table(num_states: int, alphabet_size: int, rng: random.Random) -> list[list[int]]:
     targets = list(range(num_states))
     rng.shuffle(targets)
     return [[targets[source]] * alphabet_size for source in range(num_states)]
 
 
-def _sample_fixed_source_action_lookup_table(
-    num_states: int,
-    alphabet_size: int,
-    rng: random.Random,
-) -> list[list[int]]:
+def _sample_fixed_source_action_lookup_table(num_states: int, alphabet_size: int, rng: random.Random) -> list[list[int]]:
     active_row = rng.sample(range(num_states), k=alphabet_size)
     rows = [list(active_row)]
     for _ in range(1, num_states):

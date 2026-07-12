@@ -1,168 +1,83 @@
+from __future__ import annotations
+
 from dataclasses import asdict, dataclass
 import math
+from typing import Sequence
+
 import torch
 import torch.nn as nn
-from torch.nn import functional as F
+import torch.nn.functional as F
 
 
-class LayerNorm(nn.Module):
-    
-    def __init__(self, ndim):
-        super().__init__()
-        self.weight = nn.Parameter(torch.ones(ndim))
+# -----------------------------------------------------------------------------
+# Outputs and recurrent state
+# -----------------------------------------------------------------------------
 
-    def forward(self, x):
-        return F.layer_norm(x, self.weight.shape, self.weight, None, 1e-5)
 
-class MLP(nn.Module):
+@dataclass(frozen=True)
+class PassOutput:
+    logits: torch.Tensor
+    hidden_states: torch.Tensor
+    memory_states: torch.Tensor | None = None
 
-    def __init__(self, config):
-        super().__init__()
-        self.c_fc    = nn.Linear(config.n_embd, 4 * config.n_embd, bias=False)
-        self.gelu    = nn.GELU()
-        self.c_proj  = nn.Linear(4 * config.n_embd, config.n_embd, bias=False)
 
-    def forward(self, x):
-        x = self.c_fc(x)
-        x = self.gelu(x)
-        x = self.c_proj(x)
-        return x
- 
+@dataclass(frozen=True)
+class MultiPassOutput:
+    passes: tuple[PassOutput, ...]
 
-#------------------------------------------------------------
-#--             Regular Causal Transformer                 --
-#------------------------------------------------------------
+    def __post_init__(self) -> None:
+        if not self.passes:
+            raise ValueError("MultiPassOutput requires at least one pass")
 
-class CausalSelfAttention(nn.Module):
+    @property
+    def logits(self) -> torch.Tensor:
+        return self.passes[-1].logits
 
-    def __init__(self, config):
-        super().__init__()
-        assert config.n_embd % config.n_head == 0
-        # key, query, value projections for all heads, but in a batch
-        self.c_attn = nn.Linear(config.n_embd, 3 * config.n_embd, bias=False)
-        # output projection
-        self.c_proj = nn.Linear(config.n_embd, config.n_embd, bias=False)
-        self.n_head = config.n_head
-        self.n_embd = config.n_embd
-        self.head_dim = config.n_embd // config.n_head
+    @property
+    def hidden_states(self) -> torch.Tensor:
+        return self.passes[-1].hidden_states
 
-        # flash attention make GPU go brrrrr but support is only in PyTorch >= 2.0
-        self.flash = hasattr(torch.nn.functional, 'scaled_dot_product_attention')
+    @property
+    def final_memory(self) -> torch.Tensor:
+        memory = self.passes[-1].memory_states
+        if memory is None:
+            raise RuntimeError("this model output does not contain memory states")
+        return memory
 
-    def forward(self, x):
-        B, T, C = x.size()
-        q, k, v = self.c_attn(x).split(self.n_embd, dim=2)
-        k = k.view(B, T, self.n_head, self.head_dim).transpose(1, 2)  # (B,H,T,hs)
-        q = q.view(B, T, self.n_head, self.head_dim).transpose(1, 2)
-        v = v.view(B, T, self.n_head, self.head_dim).transpose(1, 2)
+    @property
+    def logits_per_pass(self) -> tuple[torch.Tensor, ...]:
+        return tuple(item.logits for item in self.passes)
 
-        if self.flash:
-            y = torch.nn.functional.scaled_dot_product_attention(
-                q, k, v, attn_mask=None,
-                dropout_p = 0.0,
-                is_causal=True
-            )  # (B,H,T,hs)
-        else:
-            att = (q @ k.transpose(-2, -1)) * (1.0 / math.sqrt(k.size(-1)))  # (B,H,T,T)
-            att = att.masked_fill(torch.triu(torch.ones(T, T, device=x.device), 1).bool(), float('-inf'))
-            att = F.softmax(att, dim=-1)
-            y = att @ v  # (B,H,T,hs)
+    @property
+    def hidden_states_per_pass(self) -> tuple[torch.Tensor, ...]:
+        return tuple(item.hidden_states for item in self.passes)
 
-        y = y.transpose(1, 2).contiguous().view(B, T, C)   # (B,T,C)
-        y = self.c_proj(y)
-        return y 
+    @property
+    def memory_states_per_pass(self) -> tuple[torch.Tensor, ...]:
+        memories = tuple(item.memory_states for item in self.passes)
+        if any(memory is None for memory in memories):
+            raise RuntimeError("not every pass contains memory states")
+        return tuple(memory for memory in memories if memory is not None)
 
-class Block(nn.Module):
 
-    def __init__(self, config):
-        super().__init__()
-        self.ln_1 = LayerNorm(config.n_embd) 
-        self.attn = CausalSelfAttention(config)
-        self.ln_2 = LayerNorm(config.n_embd)
-        self.mlp = MLP(config)
+@dataclass(frozen=True)
+class RecurrentState:
+    tokens: torch.Tensor
+    memory_states: torch.Tensor
+    next_token_logits: torch.Tensor
 
-    def forward(self, x):
-        x = x + self.attn(self.ln_1(x))
-        x = x + self.mlp(self.ln_2(x))
-        return x 
 
-class CausalTransformer(nn.Module):
+@dataclass(frozen=True)
+class LossOutput:
+    loss: torch.Tensor
+    pass_losses: tuple[torch.Tensor, ...]
+    normalized_pass_weights: torch.Tensor
 
-    def __init__(self, config):
-        super().__init__()
-        assert config.vocab_size is not None
-        assert config.block_size is not None
-        self.config = config
 
-        modules = dict(
-            wte=nn.Embedding(config.vocab_size, config.n_embd),
-            h=nn.ModuleList([Block(config) for _ in range(config.n_layer)]),
-            wpe=nn.Embedding(config.block_size, config.n_embd),
-            ln_f=LayerNorm(config.n_embd)
-        )
-        self.transformer = nn.ModuleDict(modules)
-        self.lm_head = nn.Linear(config.n_embd, config.vocab_size, bias=False)
+# -----------------------------------------------------------------------------
+# Configs
+# -----------------------------------------------------------------------------
 
-        # init all weights
-        self.apply(self._init_weights)
-        for pn, p in self.named_parameters():
-            if pn.endswith('c_proj.weight'):
-                torch.nn.init.normal_(p, mean=0.0, std=0.02/math.sqrt(2 * config.n_layer))
-
-    def get_num_params(self, non_embedding=True):
-        n_params = sum(p.numel() for p in self.parameters())
-        if non_embedding:
-            n_params -= self.transformer.wpe.weight.numel()
-        return n_params
-
-    def _init_weights(self, module):
-        if isinstance(module, nn.Linear):
-            torch.nn.init.normal_(module.weight, mean=0.0, std=0.02)
-        elif isinstance(module, nn.Embedding):
-            torch.nn.init.normal_(module.weight, mean=0.0, std=0.02)
-
-    def calc_loss(self, logits, targets): 
-        loss = F.cross_entropy(logits.view(-1, logits.size(-1)), targets.view(-1), ignore_index=-1)
-        return loss
-    
-    def forward(self, idx):
-        device = idx.device
-        b, t = idx.size()
-        assert t <= self.config.block_size, f"Cannot forward sequence of length {t}, block size is only {self.config.block_size}"
-        # Encoding...
-        x = self.transformer.wte(idx)
-        pos = torch.arange(0, t, dtype=torch.long, device=device)
-        x = x + self.transformer.wpe(pos)
-        # Applying blocks...
-        for block in self.transformer.h:
-            x = block(x)
-        # Unembedding..
-        logits = self.lm_head(self.transformer.ln_f(x))
-        return logits
- 
-    def generate(
-            self, 
-            ids: torch.Tensor,
-            max_new_tokens:int, 
-            temperature=1.0, 
-            do_sample=True,
-            inference_mode="recompute",
-            cache_source="penultimate",
-        ):
-        if inference_mode != "recompute":
-            raise ValueError("CausalTransformer only supports inference_mode='recompute'")
-        for _ in range(max_new_tokens):
-            # if the sequence context is growing too long we must crop it at block_size
-            ids_cond = ids if ids.size(1) <= self.config.block_size else ids[:, -self.config.block_size:]
-            logits = self.forward(ids_cond)
-            last_token_logits = logits[:, -1, :] / temperature
-            if do_sample:
-                probs = F.softmax(last_token_logits, dim=-1)
-                ids_next = torch.multinomial(probs, num_samples=1)
-            else:
-                ids_next = torch.argmax(last_token_logits, dim=-1, keepdim=True)
-            ids = torch.cat((ids, ids_next), dim=1)
-        return ids
 
 @dataclass
 class TransformerConfig:
@@ -172,7 +87,13 @@ class TransformerConfig:
     n_head: int
     n_embd: int
 
-    def __post_init__(self):
+    def __post_init__(self) -> None:
+        if self.block_size < 1:
+            raise ValueError("block_size must be positive")
+        if self.vocab_size < 1:
+            raise ValueError("vocab_size must be positive")
+        if self.n_layer < 1 or self.n_head < 1 or self.n_embd < 1:
+            raise ValueError("n_layer, n_head, and n_embd must be positive")
         if self.n_embd % self.n_head != 0:
             raise ValueError(f"n_embd ({self.n_embd}) must be divisible by n_head ({self.n_head})")
 
@@ -180,219 +101,15 @@ class TransformerConfig:
         return asdict(self)
 
     @classmethod
-    def from_dict(cls, d: dict) -> "TransformerConfig":
-        return cls(**d)
+    def from_dict(cls, values: dict) -> "TransformerConfig":
+        return cls(**values)
 
-
-#------------------------------------------------------------
-#--          MultiPass Transformer (Parent Class)          --
-#------------------------------------------------------------
-
-class MultiPassTransformer(nn.Module):
-    block_cls = None
-
-    """Shared outer loop for recurrent multi-pass transformer variants.
-
-    Why this fits:
-    the recurrent architectures all share the same outer recurrence:
-
-        prev_memory = zeros
-        for pass_idx in range(n_pass):
-            memory_tape = shift_right(prev_memory)
-            hidden = run_architecture_specific_pass(token_stream, memory_tape)
-            logits, memory = project_outputs(hidden)
-            prev_memory = memory
-
-    They differ in what one architecture-specific pass means. MemoryTape lets the
-    token stream attend to a shifted memory tape through cross-attention.
-    MemoryConcat fuses token embeddings and shifted memory at the input.
-    MemoryUpdate treats shifted memory as the main stream, seeds it with token
-    embeddings, then updates it through token-history attention.
-
-    So this parent owns multi-pass scheduling and generation loops; subclasses
-    own the question, "what does one pass mean?"
-    """
-
-    def __init__(self, config):
-        super().__init__()
-        assert config.vocab_size is not None
-        assert config.block_size is not None
-        assert config.n_pass >= 2
-        self.config = config
-
-        if self.block_cls is None:
-            raise ValueError(f"{type(self).__name__} must define block_cls")
-
-        modules = dict(
-            wte=nn.Embedding(config.vocab_size, config.n_embd),
-            h=nn.ModuleList([self.block_cls(config) for _ in range(config.n_layer)]),
-            wpe=nn.Embedding(config.block_size, config.n_embd),
-            ln_f=LayerNorm(config.n_embd),
-        )
-        self.transformer = nn.ModuleDict(modules)
-        self.lm_head = nn.Linear(config.n_embd, config.vocab_size, bias=False)
-        self.ln_mem = LayerNorm(config.n_embd)
-        self.mem_head = nn.Linear(config.n_embd, config.n_embd, bias=False)
-
-    def _finish_initialization(self):
-        self.apply(self._init_weights)
-        for pn, p in self.named_parameters():
-            if pn.endswith('c_proj.weight'):
-                torch.nn.init.normal_(p, mean=0.0, std=0.02/math.sqrt(2 * self.config.n_layer))
-
-    def get_num_params(self, non_embedding=True):
-        n_params = sum(p.numel() for p in self.parameters())
-        if non_embedding:
-            n_params -= self.transformer.wpe.weight.numel()
-        return n_params
-
-    def _init_weights(self, module):
-        if isinstance(module, nn.Linear):
-            torch.nn.init.normal_(module.weight, mean=0.0, std=0.02)
-            if module.bias is not None:
-                torch.nn.init.zeros_(module.bias)
-        elif isinstance(module, nn.Embedding):
-            torch.nn.init.normal_(module.weight, mean=0.0, std=0.02)
-
-    def calc_loss(self, logits, targets):
-        loss = F.cross_entropy(logits.view(-1, logits.size(-1)), targets.view(-1), ignore_index=-1)
-        return loss
-
-    def calc_total_loss(self, logits_per_pass, targets, loss_weights=None):
-        if loss_weights is None:
-            loss_weights = [1.0] * len(logits_per_pass)
-        if len(loss_weights) != len(logits_per_pass):
-            raise ValueError("loss_weights must match number of recurrent passes")
-        losses = [self.calc_loss(logits, targets) for logits in logits_per_pass]
-        total_loss = sum(weight * loss for weight, loss in zip(loss_weights, losses))
-        return total_loss, losses
-
-    def _embed_tokens(self, idx):
-        device = idx.device
-        b, t = idx.size()
-        assert t <= self.config.block_size, f"Cannot forward sequence of length {t}, block size is only {self.config.block_size}"
-        x = self.transformer.wte(idx)
-        pos = torch.arange(0, t, dtype=torch.long, device=device)
-        x = x + self.transformer.wpe(pos)
-        return x
-
-    def forward_passes(self, idx):
-        """Return logits and memory states for every recurrent pass."""
-        token_stream = self._embed_tokens(idx)
-        prev_memory_states = torch.zeros_like(token_stream)
-        logits_per_pass = []
-        memory_per_pass = []
-
-        for _ in range(self.config.n_pass):
-            memory_tape = torch.zeros_like(prev_memory_states)
-            memory_tape[:, 1:, :] = prev_memory_states[:, :-1, :]
-            hidden_states = self._run_full_pass(token_stream, memory_tape)
-            logits = self.lm_head(self.transformer.ln_f(hidden_states))
-            memory_states = self.mem_head(self.ln_mem(hidden_states))
-            logits_per_pass.append(logits)
-            memory_per_pass.append(memory_states)
-            prev_memory_states = memory_states
-
-        return logits_per_pass, memory_per_pass
-
-    def forward(
-            self,
-            idx,
-            return_all_logits=False,
-        ):
-        logits_per_pass, _ = self.forward_passes(idx)
-        return logits_per_pass if return_all_logits else logits_per_pass[-1]
-
-    def generate(
-            self,
-            ids: torch.Tensor,
-            max_new_tokens: int,
-            temperature=1.0,
-            do_sample=True,
-            inference_mode="recompute",
-            cache_source="penultimate",
-        ):
-        if inference_mode == "recompute":
-            for _ in range(max_new_tokens):
-                ids_cond = ids if ids.size(1) <= self.config.block_size else ids[:, -self.config.block_size:]
-                logits = self.forward(ids_cond)
-                last_token_logits = logits[:, -1, :] / temperature
-                if do_sample:
-                    probs = F.softmax(last_token_logits, dim=-1)
-                    ids_next = torch.multinomial(probs, num_samples=1)
-                else:
-                    ids_next = torch.argmax(last_token_logits, dim=-1, keepdim=True)
-                ids = torch.cat((ids, ids_next), dim=1)
-            return ids
-        if inference_mode == "final_pass":
-            return self._generate_final_pass(
-                ids,
-                max_new_tokens,
-                temperature=temperature,
-                do_sample=do_sample,
-                cache_source=cache_source,
-            )
-        raise ValueError(f"Unsupported inference_mode: {inference_mode}")
-
-    def _generate_final_pass(
-            self,
-            ids: torch.Tensor,
-            max_new_tokens: int,
-            temperature=1.0,
-            do_sample=True,
-            cache_source="penultimate",
-        ):
-        if max_new_tokens <= 0:
-            return ids
-        if cache_source == "penultimate":
-            cache_pass_idx = self.config.n_pass - 2
-        elif cache_source == "last":
-            cache_pass_idx = self.config.n_pass - 1
-        else:
-            raise ValueError("cache_source must be 'penultimate' or 'last'")
-
-        ids_window = ids if ids.size(1) <= self.config.block_size else ids[:, -self.config.block_size:]
-        token_stream = self._embed_tokens(ids_window)
-        prev_memory_states = torch.zeros_like(token_stream)
-        final_pass_memory_history = None
-
-        for pass_idx in range(self.config.n_pass):
-            memory_tape = torch.zeros_like(prev_memory_states)
-            memory_tape[:, 1:, :] = prev_memory_states[:, :-1, :]
-            hidden_states = self._run_full_pass(token_stream, memory_tape)
-            logits = self.lm_head(self.transformer.ln_f(hidden_states))
-            memory_states = self.mem_head(self.ln_mem(hidden_states))
-            if pass_idx == cache_pass_idx:
-                final_pass_memory_history = memory_states
-            prev_memory_states = memory_states
-
-        for _ in range(max_new_tokens):
-            last_token_logits = logits[:, -1, :] / temperature
-            if do_sample:
-                probs = F.softmax(last_token_logits, dim=-1)
-                ids_next = torch.multinomial(probs, num_samples=1)
-            else:
-                ids_next = torch.argmax(last_token_logits, dim=-1, keepdim=True)
-            ids = torch.cat((ids, ids_next), dim=1)
-
-            ids_window = ids if ids.size(1) <= self.config.block_size else ids[:, -self.config.block_size:]
-            token_stream = self._embed_tokens(ids_window)
-            memory_tape = torch.zeros_like(token_stream)
-            if token_stream.size(1) > 1:
-                memory_tape[:, 1:, :] = final_pass_memory_history[:, -(token_stream.size(1) - 1):, :]
-            hidden_states = self._run_full_pass(token_stream, memory_tape)
-            logits = self.lm_head(self.transformer.ln_f(hidden_states))
-            memory_states = self.mem_head(self.ln_mem(hidden_states))
-            final_pass_memory_history = torch.cat((final_pass_memory_history, memory_states[:, -1:, :]), dim=1)
-            final_pass_memory_history = final_pass_memory_history[:, -self.config.block_size:, :]
-
-        return ids
 
 @dataclass
 class MultiPassConfig(TransformerConfig):
-    n_pass: int
+    n_pass: int = 4
 
-    def __post_init__(self):
+    def __post_init__(self) -> None:
         super().__post_init__()
         if self.n_pass < 2:
             raise ValueError(f"n_pass ({self.n_pass}) must be at least 2 for multi-pass models")
@@ -400,330 +117,13 @@ class MultiPassConfig(TransformerConfig):
 
 @dataclass
 class MemoryTapeConfig(MultiPassConfig):
-    memory_tape_gate: str = "tanh"
+    memory_gate_init: float = 0.1
 
-    @staticmethod
-    def normalize_gate(memory_tape_gate) -> str:
-        if memory_tape_gate is None:
-            return "none"
-        normalized = str(memory_tape_gate).lower()
-        options = ("none", "tanh", "scalar")
-        if normalized not in options:
-            raise ValueError(f"memory_tape_gate must be one of: {', '.join(options)}")
-        return normalized
-
-    def __post_init__(self):
+    def __post_init__(self) -> None:
         super().__post_init__()
-        self.memory_tape_gate = self.normalize_gate(self.memory_tape_gate)
+        if not math.isfinite(self.memory_gate_init):
+            raise ValueError("memory_gate_init must be finite")
 
-
-#------------------------------------------------------------
-#--               MemoryConcat Transformer                 --
-#------------------------------------------------------------
-
-class MemoryConcatTransformer(MultiPassTransformer):
-    """Recurrent model that feeds shifted memory by concatenating it with token embeddings."""
-    block_cls = Block
-
-    def __init__(self, config):
-        super().__init__(config)
-        self.mem_in_ln = LayerNorm(config.n_embd)
-        self.mem_fuse = nn.Linear(2 * config.n_embd, config.n_embd, bias=False)
-        self._finish_initialization()
-        self._init_memory_fuse_weights()
-
-    def _init_memory_fuse_weights(self):
-        with torch.no_grad():
-            n_embd = self.config.n_embd
-            self.mem_fuse.weight.zero_()
-            eye = torch.eye(
-                n_embd,
-                device=self.mem_fuse.weight.device,
-                dtype=self.mem_fuse.weight.dtype,
-            )
-            self.mem_fuse.weight[:, :n_embd].copy_(eye)
-            torch.nn.init.normal_(self.mem_fuse.weight[:, n_embd:], mean=0.0, std=0.02)
-
-    def _fuse_token_and_memory(self, token_stream, memory_tape):
-        if token_stream.shape != memory_tape.shape:
-            raise ValueError("token_stream and memory_tape must have the same shape for concat fusion")
-        memory_tape = self.mem_in_ln(memory_tape)
-        return self.mem_fuse(torch.cat((token_stream, memory_tape), dim=-1))
-
-    def _run_full_pass(self, token_stream, memory_tape):
-        x = self._fuse_token_and_memory(token_stream, memory_tape)
-        for block in self.transformer.h:
-            x = block(x)
-        return x
-
-
-#------------------------------------------------------------
-#--                 MemoryTape Transformer                 --
-#------------------------------------------------------------
-
-class CausalCrossAttention(nn.Module):
-
-    def __init__(self, config):
-        super().__init__()
-        assert config.n_embd % config.n_head == 0
-        self.c_q = nn.Linear(config.n_embd, config.n_embd, bias=False)
-        self.c_kv = nn.Linear(config.n_embd, 2 * config.n_embd, bias=False)
-        self.c_proj = nn.Linear(config.n_embd, config.n_embd, bias=False)
-        self.n_head = config.n_head
-        self.n_embd = config.n_embd
-        self.head_dim = config.n_embd // config.n_head
-        self.flash = hasattr(torch.nn.functional, 'scaled_dot_product_attention')
-
-    def forward(self, x, memory):
-        B, T, C = x.size()
-        Bm, Tm, Cm = memory.size()
-        if (B, C) != (Bm, Cm):
-            raise ValueError("x and memory must share batch size and embedding dimension")
-        if Tm != T:
-            raise ValueError("x and memory must share sequence length in this first recurrent design")
-
-        q = self.c_q(x)
-        k, v = self.c_kv(memory).split(self.n_embd, dim=2)
-        q = q.view(B, T, self.n_head, self.head_dim).transpose(1, 2)
-        k = k.view(B, Tm, self.n_head, self.head_dim).transpose(1, 2)
-        v = v.view(B, Tm, self.n_head, self.head_dim).transpose(1, 2)
-
-        if self.flash:
-            y = torch.nn.functional.scaled_dot_product_attention(
-                q,
-                k,
-                v,
-                attn_mask=None,
-                dropout_p=0.0,
-                is_causal=True,
-            )
-        else:
-            att = (q @ k.transpose(-2, -1)) * (1.0 / math.sqrt(k.size(-1)))
-            att = att.masked_fill(torch.triu(torch.ones(T, Tm, device=x.device), 1).bool(), float('-inf'))
-            att = F.softmax(att, dim=-1)
-            y = att @ v
-
-        y = y.transpose(1, 2).contiguous().view(B, T, C)
-        y = self.c_proj(y)
-        return y
-    
-class MemoryBlock(nn.Module):
-
-    def __init__(self, config):
-        super().__init__()
-        self.ln_1 = LayerNorm(config.n_embd)
-        self.attn = CausalSelfAttention(config)
-        self.ln_2 = LayerNorm(config.n_embd)
-        self.mlp = MLP(config)
-        self.ln_mem_q = LayerNorm(config.n_embd)
-        self.ln_mem_kv = LayerNorm(config.n_embd)
-        self.cross_attn = CausalCrossAttention(config)
-        self.memory_tape_gate = config.memory_tape_gate
-        self.memory_gate = None if self.memory_tape_gate == "none" else nn.Parameter(
-            torch.tensor(0.2 if self.memory_tape_gate == "scalar" else 0.0)
-        )
-        self._memory_gate_scale = {
-            "none": self._ungated_memory_scale,
-            "tanh": self._tanh_memory_scale,
-            "scalar": self._scalar_memory_scale,
-        }[self.memory_tape_gate]
-
-    def _ungated_memory_scale(self):
-        return 1.0
-
-    def _tanh_memory_scale(self):
-        return torch.tanh(self.memory_gate)
-
-    def _scalar_memory_scale(self):
-        return self.memory_gate
-
-    def memory_gate_stats(self):
-        if self.memory_gate is None:
-            return None
-        raw = self.memory_gate.detach()
-        effective = self._memory_gate_scale().detach()
-        return {
-            "mode": self.memory_tape_gate,
-            "raw": float(raw.cpu().item()),
-            "effective": float(effective.cpu().item()),
-        }
-
-    def forward(self, x, memory_states):
-        x = x + self.attn(self.ln_1(x))
-        memory_delta = self.cross_attn(
-            self.ln_mem_q(x),
-            self.ln_mem_kv(memory_states),
-        )
-        x = x + self._memory_gate_scale() * memory_delta
-        x = x + self.mlp(self.ln_2(x))
-        return x
-
-class MemoryTapeTransformer(MultiPassTransformer):
-    block_cls = MemoryBlock
-
-    def __init__(self, config):
-        object.__setattr__(self, "_rng_state_before_construction", torch.get_rng_state())
-        super().__init__(config)
-        self._finish_initialization()
-        del self._rng_state_before_construction
-
-    def _causal_transformer_apply_start_rng_state(self):
-        current_state = torch.get_rng_state()
-        torch.set_rng_state(self._rng_state_before_construction)
-        try:
-            nn.ModuleDict(
-                dict(
-                    wte=nn.Embedding(self.config.vocab_size, self.config.n_embd),
-                    h=nn.ModuleList([Block(self.config) for _ in range(self.config.n_layer)]),
-                    wpe=nn.Embedding(self.config.block_size, self.config.n_embd),
-                    ln_f=LayerNorm(self.config.n_embd),
-                )
-            )
-            nn.Linear(self.config.n_embd, self.config.vocab_size, bias=False)
-            return torch.get_rng_state()
-        finally:
-            torch.set_rng_state(current_state)
-
-    def _init_active_path_weights(self):
-        self._init_weights(self.transformer.wte)
-        for block in self.transformer.h:
-            block.attn.apply(self._init_weights)
-            block.mlp.apply(self._init_weights)
-        self._init_weights(self.transformer.wpe)
-        self._init_weights(self.lm_head)
-
-    def _init_active_path_residual_projections(self):
-        std = 0.02 / math.sqrt(2 * self.config.n_layer)
-        for block in self.transformer.h:
-            torch.nn.init.normal_(block.attn.c_proj.weight, mean=0.0, std=std)
-            torch.nn.init.normal_(block.mlp.c_proj.weight, mean=0.0, std=std)
-
-    def _init_memory_path_weights(self):
-        for block in self.transformer.h:
-            block.cross_attn.apply(self._init_weights)
-        self._init_weights(self.mem_head)
-
-    def _init_memory_path_residual_projections(self):
-        std = 0.02 / math.sqrt(2 * self.config.n_layer)
-        for block in self.transformer.h:
-            torch.nn.init.normal_(block.cross_attn.c_proj.weight, mean=0.0, std=std)
-
-    def _finish_initialization(self):
-        torch.set_rng_state(self._causal_transformer_apply_start_rng_state())
-        self._init_active_path_weights()
-        self._init_active_path_residual_projections()
-        self._init_memory_path_weights()
-        self._init_memory_path_residual_projections()
-
-    def memory_gate_stats(self):
-        block_stats = [
-            stats
-            for block in self.transformer.h
-            for stats in [block.memory_gate_stats()]
-            if stats is not None
-        ]
-        if not block_stats:
-            return None
-
-        raw_values = [stats["raw"] for stats in block_stats]
-        effective_values = [stats["effective"] for stats in block_stats]
-        effective = torch.tensor(effective_values)
-        modes = [stats["mode"] for stats in block_stats]
-        mode = modes[0] if len(set(modes)) == 1 else "mixed"
-        return {
-            "mode": mode,
-            "raw": raw_values,
-            "effective": effective_values,
-            "mean_abs_effective": float(effective.abs().mean().item()),
-            "max_abs_effective": float(effective.abs().max().item()),
-        }
-
-    def _run_full_pass(self, token_stream, memory_tape):
-        x = token_stream
-        for block in self.transformer.h:
-            x = block(x, memory_tape)
-        return x
-
-#------------------------------------------------------------
-#--               MemoryUpdate Transformer                 --
-#------------------------------------------------------------
-
-class MemoryUpdateBlock(nn.Module):
-    """Memory-stream block where memory queries token evidence and optionally gates the write."""
-
-    def __init__(self, config):
-        super().__init__()
-        self.ln_mem_q = LayerNorm(config.n_embd)
-        self.ln_tok_kv = LayerNorm(config.n_embd)
-        self.token_attn = CausalCrossAttention(config)
-        self.use_memory_gate = config.use_memory_gate
-        self.token_gate = nn.Linear(3 * config.n_embd, config.n_embd, bias=True) if self.use_memory_gate else None
-        self.ln_1 = LayerNorm(config.n_embd)
-        self.attn = CausalSelfAttention(config)
-        self.ln_2 = LayerNorm(config.n_embd)
-        self.mlp = MLP(config)
-
-    def set_gate_bias(self, bias: float):
-        if self.token_gate is not None:
-            nn.init.constant_(self.token_gate.bias, bias)
-
-    def _apply_token_update(self, memory_states, token_stream, token_delta):
-        if not self.use_memory_gate:
-            return memory_states + token_delta
-        gate_input = torch.cat((memory_states, token_stream, token_delta), dim=-1)
-        gate = torch.sigmoid(self.token_gate(gate_input))
-        return memory_states + gate * token_delta
-
-    def forward(self, memory_states, token_stream):
-        token_delta = self.token_attn(
-            self.ln_mem_q(memory_states),
-            self.ln_tok_kv(token_stream),
-        )
-        memory_states = self._apply_token_update(memory_states, token_stream, token_delta)
-        memory_states = memory_states + self.attn(self.ln_1(memory_states))
-        memory_states = memory_states + self.mlp(self.ln_2(memory_states))
-        return memory_states
-
-class MemoryUpdateTransformer(MultiPassTransformer):
-    """Recurrent model that treats shifted memory as the state being updated by tokens."""
-    block_cls = MemoryUpdateBlock
-
-    def __init__(self, config):
-        super().__init__(config)
-        self.mem_in_ln = LayerNorm(config.n_embd)
-        self.token_in_ln = LayerNorm(config.n_embd)
-        self.token_to_memory = nn.Linear(config.n_embd, config.n_embd, bias=False)
-        self._finish_initialization()
-        self._init_token_to_memory_weights()
-        self._init_gate_biases()
-
-    def _init_token_to_memory_weights(self):
-        with torch.no_grad():
-            n_embd = self.config.n_embd
-            self.token_to_memory.weight.copy_(
-                torch.eye(
-                    n_embd,
-                    device=self.token_to_memory.weight.device,
-                    dtype=self.token_to_memory.weight.dtype,
-                )
-            )
-
-    def _init_gate_biases(self):
-        for block in self.transformer.h:
-            block.set_gate_bias(self.config.memory_gate_bias)
-
-    def _seed_memory_stream(self, token_stream, memory_tape):
-        if token_stream.shape != memory_tape.shape:
-            raise ValueError("token_stream and memory_tape must have the same shape for memory updates")
-        memory_base = self.mem_in_ln(memory_tape)
-        token_seed = self.token_to_memory(self.token_in_ln(token_stream))
-        return memory_base + token_seed
-
-    def _run_full_pass(self, token_stream, memory_tape):
-        memory_states = self._seed_memory_stream(token_stream, memory_tape)
-        for block in self.transformer.h:
-            memory_states = block(memory_states, token_stream)
-        return memory_states
 
 @dataclass
 class MemoryUpdateConfig(MultiPassConfig):
@@ -731,14 +131,663 @@ class MemoryUpdateConfig(MultiPassConfig):
     use_memory_gate: bool = True
 
     @classmethod
-    def from_dict(cls, d: dict) -> "MemoryUpdateConfig":
+    def from_dict(cls, values: dict) -> "MemoryUpdateConfig":
         return cls(
-            block_size=d["block_size"],
-            vocab_size=d["vocab_size"],
-            n_layer=d["n_layer"],
-            n_head=d["n_head"],
-            n_embd=d["n_embd"],
-            n_pass=d["n_pass"],
-            memory_gate_bias=d.get("memory_gate_bias", -1.0),
-            use_memory_gate=d.get("use_memory_gate", True),
+            block_size=values["block_size"],
+            vocab_size=values["vocab_size"],
+            n_layer=values["n_layer"],
+            n_head=values["n_head"],
+            n_embd=values["n_embd"],
+            n_pass=values["n_pass"],
+            memory_gate_bias=values.get("memory_gate_bias", -1.0),
+            use_memory_gate=values.get("use_memory_gate", True),
         )
+
+
+# -----------------------------------------------------------------------------
+# Shared components
+# -----------------------------------------------------------------------------
+
+
+class LayerNorm(nn.Module):
+    """LayerNorm with a learned scale and no learned bias."""
+
+    def __init__(self, ndim: int):
+        super().__init__()
+        self.weight = nn.Parameter(torch.ones(ndim))
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return F.layer_norm(x, self.weight.shape, self.weight, None, 1e-5)
+
+
+class NonAffineLayerNorm(nn.Module):
+    def __init__(self, ndim: int):
+        super().__init__()
+        self.ndim = ndim
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return F.layer_norm(x, (self.ndim,), None, None, 1e-5)
+
+
+class MLP(nn.Module):
+    def __init__(self, config: TransformerConfig):
+        super().__init__()
+        self.c_fc = nn.Linear(config.n_embd, 4 * config.n_embd, bias=False)
+        self.gelu = nn.GELU()
+        self.c_proj = nn.Linear(4 * config.n_embd, config.n_embd, bias=False)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return self.c_proj(self.gelu(self.c_fc(x)))
+
+
+class CausalSelfAttention(nn.Module):
+    def __init__(self, config: TransformerConfig):
+        super().__init__()
+        self.c_attn = nn.Linear(config.n_embd, 3 * config.n_embd, bias=False)
+        self.c_proj = nn.Linear(config.n_embd, config.n_embd, bias=False)
+        self.n_head = config.n_head
+        self.n_embd = config.n_embd
+        self.head_dim = config.n_embd // config.n_head
+        self.flash = hasattr(F, "scaled_dot_product_attention")
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        batch_size, seq_len, dim = x.shape
+        q, k, v = self.c_attn(x).split(self.n_embd, dim=-1)
+        q = q.view(batch_size, seq_len, self.n_head, self.head_dim).transpose(1, 2)
+        k = k.view(batch_size, seq_len, self.n_head, self.head_dim).transpose(1, 2)
+        v = v.view(batch_size, seq_len, self.n_head, self.head_dim).transpose(1, 2)
+
+        if self.flash:
+            y = F.scaled_dot_product_attention(q, k, v, is_causal=True, dropout_p=0.0)
+        else:
+            scores = (q @ k.transpose(-2, -1)) / math.sqrt(self.head_dim)
+            mask = torch.triu(torch.ones(seq_len, seq_len, device=x.device, dtype=torch.bool), diagonal=1)
+            scores = scores.masked_fill(mask, float("-inf"))
+            y = F.softmax(scores, dim=-1) @ v
+
+        y = y.transpose(1, 2).contiguous().view(batch_size, seq_len, dim)
+        return self.c_proj(y)
+
+
+class Block(nn.Module):
+    def __init__(self, config: TransformerConfig):
+        super().__init__()
+        self.ln_1 = LayerNorm(config.n_embd)
+        self.attn = CausalSelfAttention(config)
+        self.ln_2 = LayerNorm(config.n_embd)
+        self.mlp = MLP(config)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        x = x + self.attn(self.ln_1(x))
+        x = x + self.mlp(self.ln_2(x))
+        return x
+
+
+class CausalCrossAttention(nn.Module):
+    """Causal cross-attention into an already right-shifted memory tape."""
+
+    def __init__(self, config: TransformerConfig):
+        super().__init__()
+        self.c_q = nn.Linear(config.n_embd, config.n_embd, bias=False)
+        self.c_kv = nn.Linear(config.n_embd, 2 * config.n_embd, bias=False)
+        self.c_proj = nn.Linear(config.n_embd, config.n_embd, bias=False)
+        self.n_head = config.n_head
+        self.n_embd = config.n_embd
+        self.head_dim = config.n_embd // config.n_head
+        self.flash = hasattr(F, "scaled_dot_product_attention")
+
+    def forward(self, x: torch.Tensor, memory: torch.Tensor) -> torch.Tensor:
+        batch_size, seq_len, dim = x.shape
+        memory_batch, memory_len, memory_dim = memory.shape
+        if (batch_size, dim) != (memory_batch, memory_dim):
+            raise ValueError("x and memory must share batch size and embedding dimension")
+        if memory_len != seq_len:
+            raise ValueError("x and memory must share sequence length")
+
+        q = self.c_q(x)
+        k, v = self.c_kv(memory).split(self.n_embd, dim=-1)
+        q = q.view(batch_size, seq_len, self.n_head, self.head_dim).transpose(1, 2)
+        k = k.view(batch_size, memory_len, self.n_head, self.head_dim).transpose(1, 2)
+        v = v.view(batch_size, memory_len, self.n_head, self.head_dim).transpose(1, 2)
+
+        if self.flash:
+            y = F.scaled_dot_product_attention(q, k, v, is_causal=True, dropout_p=0.0)
+        else:
+            scores = (q @ k.transpose(-2, -1)) / math.sqrt(self.head_dim)
+            mask = torch.triu(
+                torch.ones(seq_len, memory_len, device=x.device, dtype=torch.bool),
+                diagonal=1,
+            )
+            scores = scores.masked_fill(mask, float("-inf"))
+            y = F.softmax(scores, dim=-1) @ v
+
+        y = y.transpose(1, 2).contiguous().view(batch_size, seq_len, dim)
+        return self.c_proj(y)
+
+
+def shift_right(memory: torch.Tensor) -> torch.Tensor:
+    if memory.ndim != 3:
+        raise ValueError("memory must have shape [B, T, D]")
+    shifted = torch.zeros_like(memory)
+    if memory.shape[1] > 1:
+        shifted[:, 1:, :] = memory[:, :-1, :]
+    return shifted
+
+
+def normalize_pass_weights(
+    weights: Sequence[float] | None,
+    n_pass: int,
+    *,
+    device: torch.device,
+    dtype: torch.dtype,
+) -> torch.Tensor:
+    if n_pass < 1:
+        raise ValueError("n_pass must be positive")
+    if weights is None:
+        result = torch.ones(n_pass, device=device, dtype=dtype)
+    else:
+        if len(weights) != n_pass:
+            raise ValueError("loss_weights must match number of recurrent passes")
+        result = torch.as_tensor(weights, device=device, dtype=dtype)
+
+    if not torch.isfinite(result).all():
+        raise ValueError("loss_weights must be finite")
+    if (result < 0).any():
+        raise ValueError("loss_weights must be non-negative")
+    total = result.sum()
+    if total <= 0:
+        raise ValueError("at least one loss weight must be positive")
+    return result / total
+
+
+def _validate_sampling_args(temperature: float, top_k: int | None) -> None:
+    if temperature < 0 or not math.isfinite(float(temperature)):
+        raise ValueError("temperature must be finite and non-negative")
+    if top_k is not None and top_k < 1:
+        raise ValueError("top_k must be positive")
+
+
+def sample_next_token(
+    logits: torch.Tensor,
+    *,
+    temperature: float = 1.0,
+    do_sample: bool = True,
+    top_k: int | None = None,
+) -> torch.Tensor:
+    if logits.ndim != 2:
+        raise ValueError(f"logits must have shape [B, V], got {tuple(logits.shape)}")
+    _validate_sampling_args(temperature, top_k)
+
+    if not do_sample or temperature == 0:
+        return torch.argmax(logits, dim=-1, keepdim=True)
+
+    scaled = logits / temperature
+    if top_k is not None:
+        k = min(top_k, scaled.shape[-1])
+        cutoff = torch.topk(scaled, k=k, dim=-1).values[:, -1:]
+        scaled = scaled.masked_fill(scaled < cutoff, float("-inf"))
+    probabilities = F.softmax(scaled, dim=-1)
+    return torch.multinomial(probabilities, num_samples=1)
+
+
+# -----------------------------------------------------------------------------
+# Causal transformer baseline
+# -----------------------------------------------------------------------------
+
+
+class CausalTransformer(nn.Module):
+    def __init__(self, config: TransformerConfig):
+        super().__init__()
+        self.config = config
+        self.transformer = nn.ModuleDict(
+            {
+                "wte": nn.Embedding(config.vocab_size, config.n_embd),
+                "wpe": nn.Embedding(config.block_size, config.n_embd),
+                "h": nn.ModuleList([Block(config) for _ in range(config.n_layer)]),
+                "ln_f": LayerNorm(config.n_embd),
+            }
+        )
+        self.lm_head = nn.Linear(config.n_embd, config.vocab_size, bias=False)
+        self.apply(self._init_weights)
+        self._scale_residual_projections()
+
+    def _init_weights(self, module: nn.Module) -> None:
+        if isinstance(module, nn.Linear):
+            nn.init.normal_(module.weight, mean=0.0, std=0.02)
+            if module.bias is not None:
+                nn.init.zeros_(module.bias)
+        elif isinstance(module, nn.Embedding):
+            nn.init.normal_(module.weight, mean=0.0, std=0.02)
+
+    def _scale_residual_projections(self) -> None:
+        std = 0.02 / math.sqrt(2 * self.config.n_layer)
+        for name, parameter in self.named_parameters():
+            if name.endswith("c_proj.weight"):
+                nn.init.normal_(parameter, mean=0.0, std=std)
+
+    def get_num_params(self, non_embedding: bool = True) -> int:
+        count = sum(parameter.numel() for parameter in self.parameters())
+        if non_embedding:
+            count -= self.transformer.wpe.weight.numel()
+        return count
+
+    def embed_tokens(self, idx: torch.Tensor) -> torch.Tensor:
+        if idx.ndim != 2:
+            raise ValueError("idx must have shape [B, T]")
+        seq_len = idx.shape[1]
+        if seq_len < 1:
+            raise ValueError("input sequence must be non-empty")
+        if seq_len > self.config.block_size:
+            raise ValueError(f"sequence length {seq_len} exceeds block_size {self.config.block_size}")
+        positions = torch.arange(seq_len, device=idx.device)
+        return self.transformer.wte(idx) + self.transformer.wpe(positions)[None, :, :]
+
+    def forward(self, idx: torch.Tensor) -> MultiPassOutput:
+        hidden = self.embed_tokens(idx)
+        for block in self.transformer.h:
+            hidden = block(hidden)
+        hidden = self.transformer.ln_f(hidden)
+        logits = self.lm_head(hidden)
+        return MultiPassOutput((PassOutput(logits=logits, hidden_states=hidden),))
+
+    @staticmethod
+    def calc_loss(logits: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
+        return F.cross_entropy(logits.reshape(-1, logits.shape[-1]), targets.reshape(-1), ignore_index=-1)
+
+    @torch.no_grad()
+    def generate(
+        self,
+        ids: torch.Tensor,
+        max_new_tokens: int,
+        *,
+        temperature: float = 1.0,
+        do_sample: bool = True,
+        top_k: int | None = None,
+        inference_mode: str = "recompute",
+    ) -> torch.Tensor:
+        if inference_mode != "recompute":
+            raise ValueError("CausalTransformer only supports inference_mode='recompute'")
+        _validate_generation_inputs(ids, max_new_tokens)
+        _validate_sampling_args(temperature, top_k)
+        if max_new_tokens == 0:
+            return ids
+        was_training = self.training
+        self.eval()
+        try:
+            result = ids
+            for _ in range(max_new_tokens):
+                context = result[:, -self.config.block_size :]
+                logits = self(context).logits[:, -1, :]
+                next_token = sample_next_token(
+                    logits,
+                    temperature=temperature,
+                    do_sample=do_sample,
+                    top_k=top_k,
+                )
+                result = torch.cat((result, next_token), dim=1)
+            return result
+        finally:
+            self.train(was_training)
+
+
+# -----------------------------------------------------------------------------
+# Multi-pass base and variants
+# -----------------------------------------------------------------------------
+
+
+class MultiPassTransformer(nn.Module):
+    block_cls: type[nn.Module] | None = None
+
+    def __init__(self, config: MultiPassConfig):
+        super().__init__()
+        self.config = config
+        if self.block_cls is None:
+            raise ValueError(f"{type(self).__name__} must define block_cls")
+        self.transformer = nn.ModuleDict(
+            {
+                "wte": nn.Embedding(config.vocab_size, config.n_embd),
+                "wpe": nn.Embedding(config.block_size, config.n_embd),
+                "h": nn.ModuleList([self.block_cls(config) for _ in range(config.n_layer)]),
+                "ln_f": LayerNorm(config.n_embd),
+            }
+        )
+        self.lm_head = nn.Linear(config.n_embd, config.vocab_size, bias=False)
+        self.ln_mem = LayerNorm(config.n_embd)
+        self.mem_head = nn.Linear(config.n_embd, config.n_embd, bias=False)
+
+    def finish_initialization(self) -> None:
+        self.apply(self._init_weights)
+        std = 0.02 / math.sqrt(2 * self.config.n_layer)
+        for name, parameter in self.named_parameters():
+            if name.endswith("c_proj.weight"):
+                nn.init.normal_(parameter, mean=0.0, std=std)
+
+    @staticmethod
+    def _init_weights(module: nn.Module) -> None:
+        if isinstance(module, nn.Linear):
+            nn.init.normal_(module.weight, mean=0.0, std=0.02)
+            if module.bias is not None:
+                nn.init.zeros_(module.bias)
+        elif isinstance(module, nn.Embedding):
+            nn.init.normal_(module.weight, mean=0.0, std=0.02)
+
+    def get_num_params(self, non_embedding: bool = True) -> int:
+        count = sum(parameter.numel() for parameter in self.parameters())
+        if non_embedding:
+            count -= self.transformer.wpe.weight.numel()
+        return count
+
+    def embed_tokens(self, idx: torch.Tensor) -> torch.Tensor:
+        if idx.ndim != 2:
+            raise ValueError("idx must have shape [B, T]")
+        seq_len = idx.shape[1]
+        if seq_len < 1:
+            raise ValueError("input sequence must be non-empty")
+        if seq_len > self.config.block_size:
+            raise ValueError(f"sequence length {seq_len} exceeds block_size {self.config.block_size}")
+        positions = torch.arange(seq_len, device=idx.device)
+        return self.transformer.wte(idx) + self.transformer.wpe(positions)[None, :, :]
+
+    def write_memory(self, hidden_states: torch.Tensor) -> torch.Tensor:
+        return self.mem_head(self.ln_mem(hidden_states))
+
+    def forward_pass(self, token_stream: torch.Tensor, previous_memory: torch.Tensor) -> PassOutput:
+        if token_stream.shape != previous_memory.shape:
+            raise ValueError("token_stream and previous_memory must have the same shape")
+        memory_tape = shift_right(previous_memory)
+        hidden = self._run_full_pass(token_stream, memory_tape)
+        hidden = self.transformer.ln_f(hidden)
+        logits = self.lm_head(hidden)
+        memory = self.write_memory(hidden)
+        return PassOutput(logits=logits, hidden_states=hidden, memory_states=memory)
+
+    def forward(self, idx: torch.Tensor) -> MultiPassOutput:
+        token_stream = self.embed_tokens(idx)
+        previous_memory = torch.zeros_like(token_stream)
+        passes: list[PassOutput] = []
+        for _ in range(self.config.n_pass):
+            output = self.forward_pass(token_stream, previous_memory)
+            passes.append(output)
+            previous_memory = output.memory_states
+            if previous_memory is None:
+                raise RuntimeError("multi-pass model failed to emit memory states")
+        return MultiPassOutput(tuple(passes))
+
+    def forward_passes(self, idx: torch.Tensor) -> tuple[tuple[torch.Tensor, ...], tuple[torch.Tensor, ...]]:
+        """Compatibility helper for old analysis code."""
+        output = self(idx)
+        return output.logits_per_pass, output.memory_states_per_pass
+
+    @staticmethod
+    def calc_loss(logits: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
+        return F.cross_entropy(logits.reshape(-1, logits.shape[-1]), targets.reshape(-1), ignore_index=-1)
+
+    def calc_total_loss(
+        self,
+        output_or_logits: MultiPassOutput | Sequence[torch.Tensor],
+        targets: torch.Tensor,
+        loss_weights: Sequence[float] | None = None,
+    ) -> LossOutput:
+        if isinstance(output_or_logits, MultiPassOutput):
+            logits_per_pass = output_or_logits.logits_per_pass
+        else:
+            logits_per_pass = tuple(output_or_logits)
+        losses = tuple(self.calc_loss(logits, targets) for logits in logits_per_pass)
+        weights = normalize_pass_weights(
+            loss_weights,
+            len(losses),
+            device=losses[0].device,
+            dtype=losses[0].dtype,
+        )
+        total = torch.stack(losses).mul(weights).sum()
+        return LossOutput(loss=total, pass_losses=losses, normalized_pass_weights=weights)
+
+    @torch.no_grad()
+    def prefill_recurrent(self, ids: torch.Tensor) -> RecurrentState:
+        if ids.ndim != 2 or ids.shape[1] < 1:
+            raise ValueError("ids must have shape [B, T] with T >= 1")
+        if ids.shape[1] > self.config.block_size:
+            raise ValueError("prompt length exceeds block_size")
+        output = self(ids)
+        return RecurrentState(
+            tokens=ids,
+            memory_states=output.final_memory,
+            next_token_logits=output.logits[:, -1, :],
+        )
+
+    @torch.no_grad()
+    def recurrent_step(self, state: RecurrentState, next_token: torch.Tensor) -> RecurrentState:
+        if state.tokens.ndim != 2 or state.memory_states.ndim != 3:
+            raise ValueError("invalid recurrent state shapes")
+        if state.memory_states.shape[:2] != state.tokens.shape:
+            raise ValueError("recurrent memory must align with recurrent tokens")
+        if state.memory_states.shape[2] != self.config.n_embd:
+            raise ValueError("recurrent memory has the wrong embedding dimension")
+        if next_token.ndim != 2 or next_token.shape != (state.tokens.shape[0], 1):
+            raise ValueError("next_token must have shape [B, 1]")
+        tokens = torch.cat((state.tokens, next_token), dim=1)
+        if tokens.shape[1] > self.config.block_size:
+            raise ValueError("append_recurrent cannot exceed block_size")
+
+        placeholder = torch.zeros(
+            state.memory_states.shape[0],
+            1,
+            state.memory_states.shape[2],
+            device=state.memory_states.device,
+            dtype=state.memory_states.dtype,
+        )
+        previous_memory = torch.cat((state.memory_states, placeholder), dim=1)
+        token_stream = self.embed_tokens(tokens)
+        output = self.forward_pass(token_stream, previous_memory)
+        if output.memory_states is None:
+            raise RuntimeError("recurrent pass failed to emit memory states")
+        appended_memory = output.memory_states[:, -1:, :]
+        memory_states = torch.cat((state.memory_states, appended_memory), dim=1)
+        return RecurrentState(
+            tokens=tokens,
+            memory_states=memory_states,
+            next_token_logits=output.logits[:, -1, :],
+        )
+
+    @torch.no_grad()
+    def generate(
+        self,
+        ids: torch.Tensor,
+        max_new_tokens: int,
+        *,
+        temperature: float = 1.0,
+        do_sample: bool = True,
+        top_k: int | None = None,
+        inference_mode: str = "recompute",
+    ) -> torch.Tensor:
+        _validate_generation_inputs(ids, max_new_tokens)
+        _validate_sampling_args(temperature, top_k)
+        if inference_mode not in {"recompute", "append_recurrent"}:
+            raise ValueError("inference_mode must be 'recompute' or 'append_recurrent'")
+        if max_new_tokens == 0:
+            return ids
+
+        was_training = self.training
+        self.eval()
+        try:
+            if inference_mode == "recompute":
+                result = ids
+                for _ in range(max_new_tokens):
+                    context = result[:, -self.config.block_size :]
+                    logits = self(context).logits[:, -1, :]
+                    next_token = sample_next_token(
+                        logits,
+                        temperature=temperature,
+                        do_sample=do_sample,
+                        top_k=top_k,
+                    )
+                    result = torch.cat((result, next_token), dim=1)
+                return result
+
+            # The final sampled token does not need a recurrent update.  Every
+            # context used to compute logits must fit, so a returned sequence may
+            # be one token longer than block_size.
+            if ids.shape[1] + max_new_tokens - 1 > self.config.block_size:
+                raise ValueError(
+                    "append_recurrent requires prompt_length + max_new_tokens - 1 <= block_size"
+                )
+            state = self.prefill_recurrent(ids)
+            for step in range(max_new_tokens):
+                next_token = sample_next_token(
+                    state.next_token_logits,
+                    temperature=temperature,
+                    do_sample=do_sample,
+                    top_k=top_k,
+                )
+                if step == max_new_tokens - 1:
+                    return torch.cat((state.tokens, next_token), dim=1)
+                state = self.recurrent_step(state, next_token)
+            return state.tokens
+        finally:
+            self.train(was_training)
+
+    def memory_gate_stats(self) -> dict[str, float | str | list[float]] | None:
+        return None
+
+    def _run_full_pass(self, token_stream: torch.Tensor, memory_tape: torch.Tensor) -> torch.Tensor:
+        raise NotImplementedError
+
+
+class MemoryConcatTransformer(MultiPassTransformer):
+    block_cls = Block
+
+    def __init__(self, config: MultiPassConfig):
+        super().__init__(config)
+        self.mem_in_ln = LayerNorm(config.n_embd)
+        self.mem_fuse = nn.Linear(2 * config.n_embd, config.n_embd, bias=False)
+        self.finish_initialization()
+        with torch.no_grad():
+            self.mem_fuse.weight.zero_()
+            eye = torch.eye(config.n_embd, device=self.mem_fuse.weight.device, dtype=self.mem_fuse.weight.dtype)
+            self.mem_fuse.weight[:, : config.n_embd].copy_(eye)
+            nn.init.normal_(self.mem_fuse.weight[:, config.n_embd :], mean=0.0, std=0.02)
+
+    def _run_full_pass(self, token_stream: torch.Tensor, memory_tape: torch.Tensor) -> torch.Tensor:
+        memory_tape = self.mem_in_ln(memory_tape)
+        hidden = self.mem_fuse(torch.cat((token_stream, memory_tape), dim=-1))
+        for block in self.transformer.h:
+            hidden = block(hidden)
+        return hidden
+
+
+class MemoryBlock(nn.Module):
+    def __init__(self, config: MemoryTapeConfig):
+        super().__init__()
+        self.ln_self = LayerNorm(config.n_embd)
+        self.attn = CausalSelfAttention(config)
+        self.ln_mem_q = LayerNorm(config.n_embd)
+        self.ln_mem_kv = NonAffineLayerNorm(config.n_embd)
+        self.cross_attn = CausalCrossAttention(config)
+        self.memory_gate = nn.Parameter(torch.tensor(float(config.memory_gate_init)))
+        self.ln_mlp = LayerNorm(config.n_embd)
+        self.mlp = MLP(config)
+
+    def forward(self, x: torch.Tensor, memory_states: torch.Tensor) -> torch.Tensor:
+        x = x + self.attn(self.ln_self(x))
+        memory_delta = self.cross_attn(self.ln_mem_q(x), self.ln_mem_kv(memory_states))
+        x = x + self.memory_gate * memory_delta
+        x = x + self.mlp(self.ln_mlp(x))
+        return x
+
+    def memory_gate_stats(self) -> dict[str, float]:
+        value = float(self.memory_gate.detach().cpu().item())
+        return {"raw": value, "effective": value}
+
+
+class MemoryTapeTransformer(MultiPassTransformer):
+    block_cls = MemoryBlock
+
+    def __init__(self, config: MemoryTapeConfig):
+        super().__init__(config)
+        self.memory_out_norm = NonAffineLayerNorm(config.n_embd)
+        self.finish_initialization()
+
+    def write_memory(self, hidden_states: torch.Tensor) -> torch.Tensor:
+        raw_memory = self.mem_head(self.ln_mem(hidden_states))
+        return self.memory_out_norm(raw_memory)
+
+    def _run_full_pass(self, token_stream: torch.Tensor, memory_tape: torch.Tensor) -> torch.Tensor:
+        hidden = token_stream
+        for block in self.transformer.h:
+            hidden = block(hidden, memory_tape)
+        return hidden
+
+    def memory_gate_stats(self) -> dict[str, float | str | list[float]]:
+        values = [float(block.memory_gate.detach().cpu().item()) for block in self.transformer.h]
+        tensor = torch.tensor(values)
+        return {
+            "mode": "scalar",
+            "raw": values,
+            "effective": values,
+            "mean_abs_effective": float(tensor.abs().mean().item()),
+            "max_abs_effective": float(tensor.abs().max().item()),
+        }
+
+
+class MemoryUpdateBlock(nn.Module):
+    def __init__(self, config: MemoryUpdateConfig):
+        super().__init__()
+        self.ln_mem_q = LayerNorm(config.n_embd)
+        self.ln_tok_kv = LayerNorm(config.n_embd)
+        self.token_attn = CausalCrossAttention(config)
+        self.use_memory_gate = config.use_memory_gate
+        self.token_gate = (
+            nn.Linear(3 * config.n_embd, config.n_embd, bias=True)
+            if self.use_memory_gate
+            else None
+        )
+        self.ln_1 = LayerNorm(config.n_embd)
+        self.attn = CausalSelfAttention(config)
+        self.ln_2 = LayerNorm(config.n_embd)
+        self.mlp = MLP(config)
+
+    def set_gate_bias(self, bias: float) -> None:
+        if self.token_gate is not None:
+            nn.init.constant_(self.token_gate.bias, bias)
+
+    def forward(self, memory_states: torch.Tensor, token_stream: torch.Tensor) -> torch.Tensor:
+        token_delta = self.token_attn(self.ln_mem_q(memory_states), self.ln_tok_kv(token_stream))
+        if self.token_gate is None:
+            memory_states = memory_states + token_delta
+        else:
+            gate_input = torch.cat((memory_states, token_stream, token_delta), dim=-1)
+            memory_states = memory_states + torch.sigmoid(self.token_gate(gate_input)) * token_delta
+        memory_states = memory_states + self.attn(self.ln_1(memory_states))
+        return memory_states + self.mlp(self.ln_2(memory_states))
+
+
+class MemoryUpdateTransformer(MultiPassTransformer):
+    block_cls = MemoryUpdateBlock
+
+    def __init__(self, config: MemoryUpdateConfig):
+        super().__init__(config)
+        self.mem_in_ln = LayerNorm(config.n_embd)
+        self.token_in_ln = LayerNorm(config.n_embd)
+        self.token_to_memory = nn.Linear(config.n_embd, config.n_embd, bias=False)
+        self.finish_initialization()
+        with torch.no_grad():
+            self.token_to_memory.weight.copy_(
+                torch.eye(config.n_embd, device=self.token_to_memory.weight.device, dtype=self.token_to_memory.weight.dtype)
+            )
+        for block in self.transformer.h:
+            block.set_gate_bias(config.memory_gate_bias)
+
+    def _run_full_pass(self, token_stream: torch.Tensor, memory_tape: torch.Tensor) -> torch.Tensor:
+        memory_states = self.mem_in_ln(memory_tape) + self.token_to_memory(self.token_in_ln(token_stream))
+        for block in self.transformer.h:
+            memory_states = block(memory_states, token_stream)
+        return memory_states
+
+
+def _validate_generation_inputs(ids: torch.Tensor, max_new_tokens: int) -> None:
+    if ids.ndim != 2:
+        raise ValueError("ids must have shape [B, T]")
+    if ids.shape[1] < 1:
+        raise ValueError("generation requires a non-empty prompt")
+    if max_new_tokens < 0:
+        raise ValueError("max_new_tokens must be non-negative")

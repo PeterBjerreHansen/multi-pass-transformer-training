@@ -1,7 +1,7 @@
 """Tracking task: start from an ordered list of objects, apply swaps or segment operations,
 query one position, and predict which object ends up there.
 
-Example full sequence: 
+Example full sequence:
 <bos> o0 o1 o2 o3 swap p0 p2 <query> p0 <sep> o2 <eos>
 """
 
@@ -46,16 +46,7 @@ def required_block_size(num_objects: int, num_ops: int) -> int:
 def build_tracking_vocab(num_objects: int) -> Tuple[List[str], Dict[str, int], Dict[int, str]]:
     if num_objects < 2:
         raise ValueError("num_objects must be at least 2")
-    tokens = [
-        PAD_TOKEN,
-        BOS_TOKEN,
-        SEP_TOKEN,
-        EOS_TOKEN,
-        QUERY_TOKEN,
-        SWAP_TOKEN,
-        ROTL_TOKEN,
-        REV_TOKEN,
-    ]
+    tokens = [PAD_TOKEN, BOS_TOKEN, SEP_TOKEN, EOS_TOKEN, QUERY_TOKEN, SWAP_TOKEN, ROTL_TOKEN, REV_TOKEN]
     tokens.extend(obj_token(index) for index in range(num_objects))
     tokens.extend(pos_token(index) for index in range(num_objects))
     return build_vocab(tokens)
@@ -103,7 +94,7 @@ def sample_tracking_example(
         ops.append((op_name, i, j))
         prompt.extend([stoi[op_name], stoi[pos_token(i)], stoi[pos_token(j)]])
 
-    trace, final_state = solve_tracking(num_objects, ops)
+    _, final_state = solve_tracking(num_objects, ops)
     query_pos = rng.randrange(num_objects)
     final_object = final_state[query_pos]
     prompt.extend([stoi[QUERY_TOKEN], stoi[pos_token(query_pos)]])
@@ -123,12 +114,7 @@ def build_tracking_batch(
     rng = rng or random.Random()
     rows = []
     for _ in range(batch_size):
-        prompt, answer, _, _, _ = sample_tracking_example(
-            num_objects,
-            num_ops,
-            stoi,
-            rng,
-        )
+        prompt, answer, _, _, _ = sample_tracking_example(num_objects, num_ops, stoi, rng)
         rows.append(make_sequence(prompt, answer, stoi))
     return build_batch_from_sequences(rows, pad_id=stoi[PAD_TOKEN], device=device)
 

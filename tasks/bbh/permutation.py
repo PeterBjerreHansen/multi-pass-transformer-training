@@ -39,10 +39,6 @@ def required_block_size(num_objects: int, num_swaps: int) -> int:
         raise ValueError("num_objects must be at least 2")
     if num_swaps < 0:
         raise ValueError("num_swaps must be non-negative")
-    # Full sequence is:
-    # BOS, initial permutation, swap p_i p_j repeated num_swaps times,
-    # SEP, final permutation, EOS.
-    # The autoregressive input drops the final token.
     return 2 * num_objects + 3 * num_swaps + 2
 
 
@@ -55,10 +51,7 @@ def build_permutation_vocab(num_objects: int) -> Tuple[List[str], Dict[str, int]
     return build_vocab(tokens)
 
 
-def solve_permutation(
-    num_objects: int,
-    swaps: List[tuple[int, int]],
-) -> list[int]:
+def solve_permutation(num_objects: int, swaps: List[tuple[int, int]]) -> list[int]:
     if num_objects < 2:
         raise ValueError("num_objects must be at least 2")
     state = list(range(num_objects))
@@ -107,12 +100,10 @@ def build_permutation_batch(
     if num_swaps < 0:
         raise ValueError("num_swaps must be non-negative")
     rng = rng or random.Random()
-
     rows = []
     for _ in range(batch_size):
         prompt, answer, _, _ = sample_permutation_example(num_objects, num_swaps, stoi, rng)
         rows.append(make_sequence(prompt, answer, stoi))
-
     return build_batch_from_sequences(rows, pad_id=stoi[PAD_TOKEN], device=device)
 
 

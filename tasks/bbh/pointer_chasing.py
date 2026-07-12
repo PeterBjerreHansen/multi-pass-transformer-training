@@ -45,24 +45,12 @@ def required_block_size(num_nodes: int, num_hops: int) -> int:
 def build_pointer_chasing_vocab(num_nodes: int) -> Tuple[List[str], Dict[str, int], Dict[int, str]]:
     if num_nodes < 2:
         raise ValueError("num_nodes must be at least 2")
-    tokens = [
-        PAD_TOKEN,
-        BOS_TOKEN,
-        SEP_TOKEN,
-        EOS_TOKEN,
-        QUERY_TOKEN,
-        EDGE_TOKEN,
-        STEP_TOKEN,
-    ]
+    tokens = [PAD_TOKEN, BOS_TOKEN, SEP_TOKEN, EOS_TOKEN, QUERY_TOKEN, EDGE_TOKEN, STEP_TOKEN]
     tokens.extend(node_token(index) for index in range(num_nodes))
     return build_vocab(tokens)
 
 
-def solve_pointer_chasing(
-    pointers: Sequence[int],
-    start_node: int,
-    num_hops: int,
-) -> tuple[list[int], int]:
+def solve_pointer_chasing(pointers: Sequence[int], start_node: int, num_hops: int) -> tuple[list[int], int]:
     if not pointers:
         raise ValueError("pointers must not be empty")
     if not 0 <= start_node < len(pointers):
@@ -127,12 +115,7 @@ def build_pointer_chasing_batch(
     rng = rng or random.Random()
     rows = []
     for _ in range(batch_size):
-        prompt, answer, _, _, _ = sample_pointer_chasing_example(
-            num_nodes,
-            num_hops,
-            stoi,
-            rng,
-        )
+        prompt, answer, _, _, _ = sample_pointer_chasing_example(num_nodes, num_hops, stoi, rng)
         rows.append(make_sequence(prompt, answer, stoi))
     return build_batch_from_sequences(rows, pad_id=stoi[PAD_TOKEN], device=device)
 
