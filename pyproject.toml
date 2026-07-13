@@ -14,7 +14,7 @@ dependencies = [
 
 [project.optional-dependencies]
 test = ["pytest>=7"]
-plot = ["matplotlib>=3.7"]
+plot = ["matplotlib>=3.7", "jupyter>=1", "nbformat>=5"]
 
 [tool.setuptools]
 py-modules = ["model_factory", "models"]

@@ -134,3 +134,38 @@ def test_cli_has_only_two_inference_modes_and_no_cache_source():
     assert args.inference_mode == "append_recurrent"
     assert not hasattr(args, "cache_source")
     assert not hasattr(args, "memory_tape_gate")
+
+
+def test_main_presets_preserve_established_experiment_scales():
+    from experiments.presets import BBH_PRESETS, TRACE_PRESETS
+
+    pointer = BBH_PRESETS["pointer_chasing_main"].values
+    assert pointer["num_nodes"] == 8
+    assert pointer["lr"] == 1e-4
+    assert pointer["eval_interval"] == 5_000
+    assert pointer["batch_size"] == 64
+
+    graph = TRACE_PRESETS["random_graph_walk_main"].values
+    assert graph["lr"] == 3e-4
+    assert graph["eval_interval"] == 1_000
+    assert graph["inference_mode"] == "append_recurrent"
+
+    othello_main = TRACE_PRESETS["othello_main"].values
+    assert othello_main["othello_train_games"] == 5_000_000
+    assert othello_main["othello_val_games"] == 1_024
+    assert othello_main["batch_size"] == 128
+    assert othello_main["eval_interval"] == 5_000
+
+
+def test_memory_update_direct_default_matches_experiment_default():
+    from models import MemoryUpdateConfig
+
+    config = MemoryUpdateConfig(
+        block_size=8,
+        vocab_size=13,
+        n_layer=1,
+        n_head=1,
+        n_embd=8,
+        n_pass=3,
+    )
+    assert config.use_memory_gate is False

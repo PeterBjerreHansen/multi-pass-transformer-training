@@ -128,7 +128,7 @@ class MemoryTapeConfig(MultiPassConfig):
 @dataclass
 class MemoryUpdateConfig(MultiPassConfig):
     memory_gate_bias: float = -1.0
-    use_memory_gate: bool = True
+    use_memory_gate: bool = False
 
     @classmethod
     def from_dict(cls, values: dict) -> "MemoryUpdateConfig":
@@ -140,7 +140,7 @@ class MemoryUpdateConfig(MultiPassConfig):
             n_embd=values["n_embd"],
             n_pass=values["n_pass"],
             memory_gate_bias=values.get("memory_gate_bias", -1.0),
-            use_memory_gate=values.get("use_memory_gate", True),
+            use_memory_gate=values.get("use_memory_gate", False),
         )
 
 
