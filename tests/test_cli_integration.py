@@ -43,6 +43,24 @@ def test_bbh_training_cli_writes_restorable_checkpoint(tmp_path):
     assert evaluation["gradient_norms"]["global"]["max"] > 0
 
 
+def test_variable_depth_training_logs_sampled_depth(tmp_path):
+    run_dir = tmp_path / "variable_depth"
+    _run(
+        "-m", "experiments.train_trace",
+        "--preset", "random_graph_walk_smoke",
+        "--architecture", "memory_tape",
+        "--train-pass-range", "2", "6",
+        "--sampled-tail-loss-weights", "0.3", "0.7",
+        "--device", "cpu",
+        "--run-dir", str(run_dir),
+    )
+    events = [json.loads(line) for line in (run_dir / "metrics.jsonl").read_text(encoding="utf-8").splitlines()]
+    evaluation = next(event for event in events if event["event"] == "eval")
+    assert 2 <= evaluation["sampled_n_pass"] <= 6
+    assert sum(evaluation["sampled_pass_histogram"].values()) == 1
+    assert evaluation["effective_pass_loss_weights"][-2:] == [0.3, 0.7]
+
+
 def test_trace_training_drift_and_diagnostics_cli(tmp_path):
     run_dir = tmp_path / "trace"
     _run(

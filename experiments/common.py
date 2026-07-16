@@ -84,6 +84,8 @@ def validate_model_args(args) -> None:
         raise ValueError("--n-embd must be divisible by --n-head")
 
     if args.architecture == "transformer":
+        if getattr(args, "train_pass_range", None) is not None:
+            raise ValueError("--train-pass-range requires a multi-pass architecture")
         args.pass_loss_weights = None
         args.inference_mode = "recompute"
         return
@@ -99,6 +101,14 @@ def validate_model_args(args) -> None:
         raise ValueError("--pass-loss-weights must be finite")
     if (weights < 0).any() or weights.sum() <= 0:
         raise ValueError("--pass-loss-weights must be non-negative with a positive sum")
+
+    train_pass_range = getattr(args, "train_pass_range", None)
+    tail_weights = getattr(args, "sampled_tail_loss_weights", [0.3, 0.7])
+    if train_pass_range is not None:
+        minimum, maximum = train_pass_range
+        if minimum < 2 or maximum < minimum:
+            raise ValueError("--train-pass-range must satisfy 2 <= MIN <= MAX")
+        sampled_pass_loss_weights(minimum, tail_weights)
 
 
 def validate_training_args(args) -> None:
@@ -227,8 +237,27 @@ def effective_inference_mode(args, requested_mode: str | None = None) -> str:
     return requested_mode or args.inference_mode
 
 
-def forward_and_loss(model, batch, args):
-    output = model(batch.idx)
+def sampled_pass_loss_weights(n_pass: int, tail_weights: Sequence[float]) -> list[float]:
+    if n_pass < 2:
+        raise ValueError("sampled n_pass must be at least 2")
+    if len(tail_weights) != 2:
+        raise ValueError("sampled tail loss weights must contain exactly two values")
+    weights = torch.tensor(tail_weights, dtype=torch.float64)
+    if not torch.isfinite(weights).all() or (weights < 0).any() or weights.sum() <= 0:
+        raise ValueError("sampled tail loss weights must be finite, non-negative, and have a positive sum")
+    return [0.0] * (n_pass - 2) + [float(tail_weights[0]), float(tail_weights[1])]
+
+
+def sample_train_pass_depth(args, rng: random.Random) -> int | None:
+    train_pass_range = getattr(args, "train_pass_range", None)
+    if train_pass_range is None:
+        return None
+    minimum, maximum = train_pass_range
+    return rng.randint(minimum, maximum)
+
+
+def forward_and_loss(model, batch, args, *, n_pass: int | None = None, loss_weights=None):
+    output = model(batch.idx) if not is_multi_pass_architecture(args.architecture) else model(batch.idx, n_pass=n_pass)
     if not is_multi_pass_architecture(args.architecture):
         loss = model.calc_loss(output.logits, batch.targets)
         return loss, output, (loss.detach(),)
@@ -236,7 +265,7 @@ def forward_and_loss(model, batch, args):
     loss_output = model.calc_total_loss(
         output,
         batch.targets,
-        loss_weights=args.pass_loss_weights,
+        loss_weights=args.pass_loss_weights if loss_weights is None else loss_weights,
     )
     return loss_output.loss, output, tuple(item.detach() for item in loss_output.pass_losses)
 

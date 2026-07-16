@@ -229,6 +229,17 @@ def test_multipass_variants_return_all_passes_and_finite_losses():
         assert loss_output.normalized_pass_weights.tolist() == [0.0, 0.0, 1.0]
 
 
+def test_forward_n_pass_override_does_not_mutate_config():
+    model = tiny_memory_model(n_pass=4)
+    tokens = torch.randint(0, 19, (2, 8))
+    output = model(tokens, n_pass=6)
+    assert len(output.passes) == 6
+    assert model.config.n_pass == 4
+    assert len(model(tokens).passes) == 4
+    with pytest.raises(ValueError, match="at least 2"):
+        model(tokens, n_pass=1)
+
+
 def test_memory_tape_is_causal_in_tokens_and_emitted_memory():
     model = tiny_memory_model()
     model.eval()

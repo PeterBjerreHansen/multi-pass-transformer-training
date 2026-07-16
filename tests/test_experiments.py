@@ -14,6 +14,8 @@ from experiments.common import (
     load_checkpoint_payload,
     restore_checkpoint_state,
     runtime_resource_stats,
+    sample_train_pass_depth,
+    sampled_pass_loss_weights,
     save_latest_checkpoint,
 )
 from experiments.summarize_ablation import recommend
@@ -267,3 +269,14 @@ def test_ablation_recommendation_accepts_noninferior_efficiency_win():
     assert result["quality_noninferior"]
     assert result["efficiency_win"]
     assert result["recommend_merge"]
+
+
+def test_sampled_pass_depth_and_tail_weights_are_deterministic():
+    args = SimpleNamespace(train_pass_range=[2, 6])
+    first_rng = random.Random(91)
+    second_rng = random.Random(91)
+    first = [sample_train_pass_depth(args, first_rng) for _ in range(20)]
+    second = [sample_train_pass_depth(args, second_rng) for _ in range(20)]
+    assert first == second
+    assert set(first) <= {2, 3, 4, 5, 6}
+    assert sampled_pass_loss_weights(5, [0.3, 0.7]) == [0.0, 0.0, 0.0, 0.3, 0.7]

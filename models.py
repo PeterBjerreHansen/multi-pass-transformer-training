@@ -564,11 +564,14 @@ class MultiPassTransformer(nn.Module):
         memory = self.write_memory(hidden)
         return PassOutput(logits=logits, hidden_states=hidden, memory_states=memory)
 
-    def forward(self, idx: torch.Tensor) -> MultiPassOutput:
+    def forward(self, idx: torch.Tensor, n_pass: int | None = None) -> MultiPassOutput:
+        effective_n_pass = self.config.n_pass if n_pass is None else n_pass
+        if not isinstance(effective_n_pass, int) or isinstance(effective_n_pass, bool) or effective_n_pass < 2:
+            raise ValueError("n_pass must be an integer of at least 2")
         token_stream = self.embed_tokens(idx)
         previous_memory = torch.zeros_like(token_stream)
         passes: list[PassOutput] = []
-        for _ in range(self.config.n_pass):
+        for _ in range(effective_n_pass):
             output = self.forward_pass(token_stream, previous_memory)
             passes.append(output)
             previous_memory = output.memory_states

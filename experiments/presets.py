@@ -35,6 +35,8 @@ def _base_defaults(
         "pass_loss_weights": [0.0] * (n_pass - 1) + [1.0]
         if smoke
         else [0.0, 0.0, 1.0, 1.0],
+        "train_pass_range": None,
+        "sampled_tail_loss_weights": [0.3, 0.7],
         "memory_update_gate": "off",
         "memory_gate_bias": -1.0,
         "inference_mode": inference_mode,

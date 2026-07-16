@@ -27,6 +27,8 @@ from experiments.common import (
     resolve_resume_artifacts,
     restore_checkpoint_state,
     runtime_resource_stats,
+    sample_train_pass_depth,
+    sampled_pass_loss_weights,
     save_latest_checkpoint,
     set_seed,
     stable_seed,
@@ -131,6 +133,8 @@ def parse_args(argv: list[str] | None = None):
     _add_override(parser, "--n-embd", type=int)
     _add_override(parser, "--n-pass", type=int)
     _add_override(parser, "--pass-loss-weights", type=float, nargs="*")
+    _add_override(parser, "--train-pass-range", type=int, nargs=2, metavar=("MIN", "MAX"))
+    _add_override(parser, "--sampled-tail-loss-weights", type=float, nargs=2, metavar=("EARLIER", "FINAL"))
     _add_override(parser, "--memory-update-gate", choices=["on", "off"])
     _add_override(parser, "--memory-gate-bias", type=float)
     _add_override(parser, "--num-nodes", type=int)
@@ -243,6 +247,8 @@ def run_answer_curriculum(args) -> None:
     )
 
     train_rng = random.Random(stable_seed(args.seed, "bbh", args.task, "train"))
+    depth_rng = random.Random(stable_seed(args.seed, "bbh", args.task, "pass_depth"))
+    sampled_pass_histogram: dict[int, int] = {}
     current_level = args.curriculum_start_level
     promotion_history: list[tuple[int, int, float]] = []
     if checkpoint is not None:
@@ -252,6 +258,11 @@ def run_answer_curriculum(args) -> None:
         promotion_history = [tuple(item) for item in extra.get("promotion_history", [])]
         if "train_rng_state" in extra:
             train_rng.setstate(extra["train_rng_state"])
+        if "depth_rng_state" in extra:
+            depth_rng.setstate(extra["depth_rng_state"])
+        sampled_pass_histogram = {
+            int(key): int(value) for key, value in extra.get("sampled_pass_histogram", {}).items()
+        }
 
     print(f"device: {args.device}")
     print(f"task: {args.task}")
@@ -297,7 +308,17 @@ def run_answer_curriculum(args) -> None:
             rng=train_rng,
         )
         optimizer.zero_grad(set_to_none=True)
-        loss, _output, pass_losses = forward_and_loss(model, batch, args)
+        sampled_n_pass = sample_train_pass_depth(args, depth_rng)
+        dynamic_weights = (
+            sampled_pass_loss_weights(sampled_n_pass, args.sampled_tail_loss_weights)
+            if sampled_n_pass is not None
+            else None
+        )
+        loss, _output, pass_losses = forward_and_loss(
+            model, batch, args, n_pass=sampled_n_pass, loss_weights=dynamic_weights
+        )
+        if sampled_n_pass is not None:
+            sampled_pass_histogram[sampled_n_pass] = sampled_pass_histogram.get(sampled_n_pass, 0) + 1
         loss.backward()
         update_gradient_norm_window(gradient_norm_window, gradient_norms(model))
         optimizer.step()
@@ -346,6 +367,9 @@ def run_answer_curriculum(args) -> None:
                 "memory_gate_stats": memory_gate_stats(model),
                 "train_tok_per_s": tok_per_s,
                 "resource_stats": runtime_resource_stats(args.device),
+                "sampled_n_pass": sampled_n_pass,
+                "sampled_pass_histogram": sampled_pass_histogram,
+                "effective_pass_loss_weights": dynamic_weights or args.pass_loss_weights,
             },
         )
 
@@ -365,6 +389,8 @@ def run_answer_curriculum(args) -> None:
                 "current_level": current_level,
                 "promotion_history": promotion_history,
                 "train_rng_state": train_rng.getstate(),
+                "depth_rng_state": depth_rng.getstate(),
+                "sampled_pass_histogram": sampled_pass_histogram,
             },
         )
         synchronize_device(args.device)
