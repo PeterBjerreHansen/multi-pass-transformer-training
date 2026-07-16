@@ -9,18 +9,25 @@ import torch
 
 from experiments.common import (
     RunArtifacts,
+    effective_append_train_probability,
     evaluate_prebuilt_batches,
+    forward_and_loss,
+    generation_aligned_loss,
     gradient_norms,
     load_checkpoint_payload,
+    new_append_train_stats,
     restore_checkpoint_state,
     runtime_resource_stats,
     save_latest_checkpoint,
+    update_append_train_stats,
+    validate_training_args,
 )
 from experiments.summarize_ablation import recommend
 from experiments.eval_diagnostics import memory_interventions, pass_dynamics, teacher_forced_schedule_gap
 from experiments.train_bbh import BBH_TASKS, build_fixed_eval_batches, parse_args as parse_bbh_args
 from models import JointMemoryTapeTransformer, MemoryTapeConfig, MemoryTapeTransformer, MultiPassConfig
 from tasks.bbh import pointer_chasing
+from tasks.trace import random_graph_walk
 
 
 def _args() -> SimpleNamespace:
@@ -115,6 +122,162 @@ def test_joint_memory_tape_diagnostics_return_finite_values():
     assert all(torch.isfinite(torch.tensor(value)) for value in schedule_gap["overall"].values())
 
 
+def _append_args(**overrides) -> SimpleNamespace:
+    values = {
+        "architecture": "memory_tape",
+        "append_train_prob": 1.0,
+        "append_train_microbatch_size": 2,
+        "append_train_horizon": 3,
+        "append_train_loss_weight": 1.0,
+        "append_train_warmup_steps": 0,
+        "append_train_ramp_steps": 0,
+        "batch_size": 2,
+        "train_steps": 1,
+        "eval_interval": 1,
+        "eval_batches": 1,
+        "lr": 1e-3,
+        "weight_decay": 0.0,
+        "pass_loss_weights": [0, 0, 1],
+    }
+    values.update(overrides)
+    return SimpleNamespace(**values)
+
+
+def test_append_train_probability_schedule_and_stats():
+    args = _append_args(
+        append_train_prob=0.4,
+        append_train_warmup_steps=2,
+        append_train_ramp_steps=4,
+    )
+    assert effective_append_train_probability(args, 1) == 0.0
+    assert effective_append_train_probability(args, 2) == 0.0
+    assert effective_append_train_probability(args, 3) == pytest.approx(0.1)
+    assert effective_append_train_probability(args, 6) == pytest.approx(0.4)
+    assert effective_append_train_probability(args, 20) == pytest.approx(0.4)
+
+    cumulative = new_append_train_stats(0.4)
+    step = {
+        "configured_probability": 0.4,
+        "effective_probability": 0.2,
+        "applied": True,
+        "raw_loss": 1.5,
+        "weighted_loss": 1.5,
+        "microbatch_size": 2,
+        "window_start": 3,
+        "horizon": 4,
+        "target_tokens": 8,
+        "row_indices": [0, 1],
+    }
+    update_append_train_stats(cumulative, step)
+    assert cumulative["applied_updates"] == 1
+    assert cumulative["examples"] == 2
+    assert cumulative["target_tokens"] == 8
+    assert cumulative["mean_raw_loss"] == 1.5
+    assert cumulative["mean_window_start"] == 3.0
+    assert cumulative["horizon_counts"] == {"4": 1}
+
+
+def test_generation_aligned_loss_reuses_prefix_and_trains_recurrent_path():
+    vocab, stoi, _ = random_graph_walk.build_random_graph_walk_vocab(4, 4)
+    block_size = random_graph_walk.required_block_size(4, 4, 4)
+    model = MemoryTapeTransformer(
+        MemoryTapeConfig(block_size, len(vocab), 1, 1, 8, 3)
+    )
+    batch = random_graph_walk.build_random_graph_walk_batch(
+        2,
+        4,
+        4,
+        4,
+        stoi,
+        device="cpu",
+        rng=random.Random(2),
+    )
+    output = model(batch.idx)
+    prompt_len = int(batch.prompt_lengths[0].item())
+    prompt_state = model.prefill_recurrent(batch.idx[:, :prompt_len])
+    assert torch.allclose(
+        output.final_memory[:, :prompt_len],
+        prompt_state.memory_states,
+        atol=1e-6,
+        rtol=0,
+    )
+    assert torch.allclose(
+        output.logits[:, prompt_len - 1],
+        prompt_state.next_token_logits,
+        atol=1e-6,
+        rtol=0,
+    )
+
+    model.calc_total_loss(output, batch.targets, [0, 0, 1]).loss.backward()
+    model.zero_grad(set_to_none=True)
+    aligned_loss, stats = generation_aligned_loss(
+        model,
+        batch,
+        output,
+        _append_args(append_train_horizon=2),
+        step=1,
+        rng=random.Random(9),
+    )
+    assert aligned_loss is not None and aligned_loss.requires_grad
+    assert stats["applied"]
+    assert stats["window_start"] >= 1
+    assert 1 <= stats["horizon"] <= 2
+    assert stats["target_tokens"] == stats["microbatch_size"] * stats["horizon"]
+    aligned_loss.backward()
+    assert model.mem_head.weight.grad is not None
+    assert model.mem_head.weight.grad.abs().sum().item() > 0
+    reader = model.transformer.h[0].cross_attn.c_kv.weight
+    assert reader.grad is not None
+    assert reader.grad.abs().sum().item() > 0
+
+
+def test_generation_aligned_loss_sampling_is_deterministic():
+    model = MemoryTapeTransformer(MemoryTapeConfig(24, 11, 1, 1, 8, 3))
+    _vocab, stoi, _ = pointer_chasing.build_pointer_chasing_vocab(4)
+    batch = pointer_chasing.build_pointer_chasing_batch(
+        2,
+        4,
+        3,
+        stoi,
+        device="cpu",
+        rng=random.Random(2),
+    )
+    output = model(batch.idx)
+    first_loss, first_stats = generation_aligned_loss(
+        model,
+        batch,
+        output,
+        _append_args(),
+        step=1,
+        rng=random.Random(77),
+    )
+    second_loss, second_stats = generation_aligned_loss(
+        model,
+        batch,
+        output,
+        _append_args(),
+        step=1,
+        rng=random.Random(77),
+    )
+    assert first_loss is not None and second_loss is not None
+    assert first_stats == second_stats
+    assert torch.equal(first_loss, second_loss)
+
+
+def test_append_training_argument_validation():
+    validate_training_args(_append_args())
+    with pytest.raises(ValueError, match=r"\[0, 1\]"):
+        validate_training_args(_append_args(append_train_prob=1.1))
+    with pytest.raises(ValueError, match="multi-pass"):
+        validate_training_args(_append_args(architecture="transformer"))
+    with pytest.raises(ValueError, match="microbatch"):
+        validate_training_args(_append_args(append_train_microbatch_size=0))
+    with pytest.raises(ValueError, match="horizon"):
+        validate_training_args(_append_args(append_train_horizon=0))
+    with pytest.raises(ValueError, match="loss-weight"):
+        validate_training_args(_append_args(append_train_loss_weight=0))
+
+
 def test_gradient_norms_cover_memory_subsystems_after_backward():
     model = MemoryTapeTransformer(MemoryTapeConfig(24, 11, 1, 1, 8, 3))
     _vocab, stoi, _ = pointer_chasing.build_pointer_chasing_vocab(4)
@@ -195,6 +358,81 @@ def test_checkpoint_resume_reproduces_next_optimizer_step(tmp_path):
         assert torch.equal(value, expected[name]), name
 
 
+def test_generation_aligned_rng_checkpoint_resume_reproduces_next_step(tmp_path):
+    torch.manual_seed(101)
+    config = MemoryTapeConfig(24, 11, 1, 1, 8, 3)
+    model = MemoryTapeTransformer(config)
+    optimizer = torch.optim.AdamW(model.parameters(), lr=1e-3)
+    args = _append_args()
+    _vocab, stoi, _ = pointer_chasing.build_pointer_chasing_vocab(4)
+    task_rng = random.Random(31)
+    batches = [
+        pointer_chasing.build_pointer_chasing_batch(
+            2,
+            4,
+            3,
+            stoi,
+            device="cpu",
+            rng=task_rng,
+        )
+        for _ in range(2)
+    ]
+    append_rng = random.Random(97)
+
+    def step(local_model, local_optimizer, batch, step_index, local_rng):
+        local_optimizer.zero_grad(set_to_none=True)
+        standard_loss, output, _pass_losses = forward_and_loss(
+            local_model,
+            batch,
+            args,
+        )
+        standard_loss.backward()
+        aligned_loss, _stats = generation_aligned_loss(
+            local_model,
+            batch,
+            output,
+            args,
+            step=step_index,
+            rng=local_rng,
+        )
+        assert aligned_loss is not None
+        aligned_loss.backward()
+        local_optimizer.step()
+
+    step(model, optimizer, batches[0], 1, append_rng)
+    artifacts = RunArtifacts(
+        tmp_path,
+        tmp_path / "config.json",
+        tmp_path / "metrics.jsonl",
+        tmp_path / "latest.pt",
+    )
+    save_latest_checkpoint(
+        artifacts,
+        model=model,
+        optimizer=optimizer,
+        args=args,
+        step=1,
+        extra_state={"append_train_rng_state": append_rng.getstate()},
+    )
+    step(model, optimizer, batches[1], 2, append_rng)
+    expected = {name: value.detach().clone() for name, value in model.state_dict().items()}
+
+    restored_model = MemoryTapeTransformer(config)
+    restored_optimizer = torch.optim.AdamW(restored_model.parameters(), lr=1e-3)
+    checkpoint = load_checkpoint_payload(tmp_path / "latest.pt", device="cpu")
+    restore_checkpoint_state(
+        checkpoint,
+        model=restored_model,
+        optimizer=restored_optimizer,
+        device="cpu",
+    )
+    restored_rng = random.Random()
+    restored_rng.setstate(checkpoint["extra_state"]["append_train_rng_state"])
+    step(restored_model, restored_optimizer, batches[1], 2, restored_rng)
+    for name, value in restored_model.state_dict().items():
+        assert torch.equal(value, expected[name]), name
+
+
 def test_cli_has_only_two_inference_modes_and_no_cache_source():
     args = parse_bbh_args([
         "--preset", "pointer_chasing_smoke",
@@ -266,4 +504,28 @@ def test_ablation_recommendation_accepts_noninferior_efficiency_win():
     result = recommend(control, treatment, mode="pareto")
     assert result["quality_noninferior"]
     assert result["efficiency_win"]
+    assert result["recommend_merge"]
+
+
+def test_generation_aligned_recommendation_accepts_schedule_gap_win_with_quality_retained():
+    control = {
+        str(seed): {
+            "drift.append_recurrent.token_legality": 0.80,
+            "drift.recompute.token_legality": 0.82,
+            "diagnostics.teacher_forced_schedule_gap.overall.nll_delta": 0.20,
+        }
+        for seed in range(3)
+    }
+    treatment = {
+        str(seed): {
+            "drift.append_recurrent.token_legality": 0.798,
+            "drift.recompute.token_legality": 0.819,
+            "diagnostics.teacher_forced_schedule_gap.overall.nll_delta": 0.10,
+        }
+        for seed in range(3)
+    }
+    result = recommend(control, treatment, mode="generation-aligned")
+    assert result["quality_noninferior"]
+    assert result["recompute_quality_noninferior"]
+    assert result["schedule_gap_improved"]
     assert result["recommend_merge"]

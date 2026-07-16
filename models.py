@@ -605,8 +605,7 @@ class MultiPassTransformer(nn.Module):
         total = torch.stack(losses).mul(weights).sum()
         return LossOutput(loss=total, pass_losses=losses, normalized_pass_weights=weights)
 
-    @torch.no_grad()
-    def prefill_recurrent(self, ids: torch.Tensor) -> RecurrentState:
+    def _prefill_recurrent_impl(self, ids: torch.Tensor) -> RecurrentState:
         if ids.ndim != 2 or ids.shape[1] < 1:
             raise ValueError("ids must have shape [B, T] with T >= 1")
         if ids.shape[1] > self.config.block_size:
@@ -619,7 +618,14 @@ class MultiPassTransformer(nn.Module):
         )
 
     @torch.no_grad()
-    def recurrent_step(self, state: RecurrentState, next_token: torch.Tensor) -> RecurrentState:
+    def prefill_recurrent(self, ids: torch.Tensor) -> RecurrentState:
+        return self._prefill_recurrent_impl(ids)
+
+    def _recurrent_step_impl(
+        self,
+        state: RecurrentState,
+        next_token: torch.Tensor,
+    ) -> RecurrentState:
         if state.tokens.ndim != 2 or state.memory_states.ndim != 3:
             raise ValueError("invalid recurrent state shapes")
         if state.memory_states.shape[:2] != state.tokens.shape:
@@ -650,6 +656,18 @@ class MultiPassTransformer(nn.Module):
             tokens=tokens,
             memory_states=memory_states,
             next_token_logits=output.logits[:, -1, :],
+        )
+
+    @torch.no_grad()
+    def recurrent_step(self, state: RecurrentState, next_token: torch.Tensor) -> RecurrentState:
+        return self._recurrent_step_impl(state, next_token)
+
+    @staticmethod
+    def detach_recurrent_state(state: RecurrentState) -> RecurrentState:
+        return RecurrentState(
+            tokens=state.tokens.detach(),
+            memory_states=state.memory_states.detach(),
+            next_token_logits=state.next_token_logits.detach(),
         )
 
     @torch.no_grad()

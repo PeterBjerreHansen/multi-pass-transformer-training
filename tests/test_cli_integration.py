@@ -49,6 +49,11 @@ def test_trace_training_drift_and_diagnostics_cli(tmp_path):
         "-m", "experiments.train_trace",
         "--preset", "random_graph_walk_smoke",
         "--architecture", "joint_memory_tape",
+        "--append-train-prob", "1",
+        "--append-train-microbatch-size", "1",
+        "--append-train-horizon", "2",
+        "--append-train-warmup-steps", "0",
+        "--append-train-ramp-steps", "0",
         "--device", "cpu",
         "--run-dir", str(run_dir),
     )
@@ -72,6 +77,8 @@ def test_trace_training_drift_and_diagnostics_cli(tmp_path):
     trace_events = [json.loads(line) for line in (run_dir / "metrics.jsonl").read_text(encoding="utf-8").splitlines()]
     trace_evaluation = next(event for event in trace_events if event["event"] == "eval")
     assert trace_evaluation["gradient_norms"]["global"]["mean"] > 0
+    assert trace_evaluation["append_train_stats"]["applied_updates"] == 1
+    assert trace_evaluation["append_train_stats"]["target_tokens"] > 0
 
     drift_dir = tmp_path / "drift"
     _run(

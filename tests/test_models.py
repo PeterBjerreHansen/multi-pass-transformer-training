@@ -328,6 +328,38 @@ def test_recurrent_prefill_uses_last_pass_memory_and_append_is_immutable():
     assert torch.equal(next_state.memory_states[:, :-1], old_memory)
 
 
+def test_internal_recurrent_primitives_enable_training_gradients():
+    model = tiny_memory_model(block_size=10)
+    prompt = torch.randint(0, 19, (2, 4))
+
+    training_prefill = model._prefill_recurrent_impl(prompt)
+    assert training_prefill.next_token_logits.requires_grad
+    assert training_prefill.memory_states.requires_grad
+
+    inference_prefill = model.prefill_recurrent(prompt)
+    assert not inference_prefill.next_token_logits.requires_grad
+    assert not inference_prefill.memory_states.requires_grad
+
+    detached = model.detach_recurrent_state(training_prefill)
+    assert torch.equal(detached.memory_states, training_prefill.memory_states)
+    assert not detached.memory_states.requires_grad
+    next_token = torch.randint(0, 19, (2, 1))
+    training_step = model._recurrent_step_impl(detached, next_token)
+    assert training_step.next_token_logits.requires_grad
+    assert training_step.memory_states.requires_grad
+    second_step = model._recurrent_step_impl(
+        training_step,
+        torch.randint(0, 19, (2, 1)),
+    )
+    model.calc_loss(second_step.next_token_logits, torch.randint(0, 19, (2,))).backward()
+    assert model.mem_head.weight.grad is not None
+    assert model.mem_head.weight.grad.abs().sum().item() > 0
+
+    inference_step = model.recurrent_step(detached, next_token)
+    assert not inference_step.next_token_logits.requires_grad
+    assert not inference_step.memory_states.requires_grad
+
+
 def test_append_recurrent_matches_manual_two_token_rollout():
     model = tiny_memory_model(block_size=10)
     prompt = torch.tensor([[1, 2, 3, 4]])

@@ -18,6 +18,7 @@ from typing import Callable, Iterator, Sequence
 import torch
 
 from model_factory import ARCHITECTURES, build_model, is_multi_pass_architecture
+from models import MultiPassOutput, RecurrentState
 
 
 MODEL_SIZE_PRESETS = {
@@ -65,6 +66,12 @@ def add_shared_training_args(parser) -> None:
     parser.add_argument("--eval-interval", type=int, default=200)
     parser.add_argument("--eval-batches", type=int, default=4)
     parser.add_argument("--seed", type=int, default=1337)
+    parser.add_argument("--append-train-prob", type=float, default=0.0)
+    parser.add_argument("--append-train-microbatch-size", type=int, default=8)
+    parser.add_argument("--append-train-horizon", type=int, default=4)
+    parser.add_argument("--append-train-loss-weight", type=float, default=1.0)
+    parser.add_argument("--append-train-warmup-steps", type=int, default=5_000)
+    parser.add_argument("--append-train-ramp-steps", type=int, default=5_000)
     parser.add_argument("--run-dir", default=None)
     parser.add_argument("--resume-from", default=None)
 
@@ -102,6 +109,18 @@ def validate_model_args(args) -> None:
 
 
 def validate_training_args(args) -> None:
+    if not hasattr(args, "append_train_prob"):
+        args.append_train_prob = 0.0
+    if not hasattr(args, "append_train_microbatch_size"):
+        args.append_train_microbatch_size = 8
+    if not hasattr(args, "append_train_horizon"):
+        args.append_train_horizon = 4
+    if not hasattr(args, "append_train_loss_weight"):
+        args.append_train_loss_weight = 1.0
+    if not hasattr(args, "append_train_warmup_steps"):
+        args.append_train_warmup_steps = 5_000
+    if not hasattr(args, "append_train_ramp_steps"):
+        args.append_train_ramp_steps = 5_000
     if args.batch_size < 1:
         raise ValueError("--batch-size must be at least 1")
     if args.train_steps < 1:
@@ -112,6 +131,18 @@ def validate_training_args(args) -> None:
         raise ValueError("--lr must be positive")
     if args.weight_decay < 0:
         raise ValueError("--weight-decay must be non-negative")
+    if not math.isfinite(args.append_train_prob) or not 0.0 <= args.append_train_prob <= 1.0:
+        raise ValueError("--append-train-prob must be finite and in [0, 1]")
+    if args.append_train_prob > 0 and args.architecture == "transformer":
+        raise ValueError("--append-train-prob requires a multi-pass architecture")
+    if args.append_train_microbatch_size < 1:
+        raise ValueError("--append-train-microbatch-size must be at least 1")
+    if args.append_train_horizon < 1:
+        raise ValueError("--append-train-horizon must be at least 1")
+    if not math.isfinite(args.append_train_loss_weight) or args.append_train_loss_weight <= 0:
+        raise ValueError("--append-train-loss-weight must be finite and positive")
+    if args.append_train_warmup_steps < 0 or args.append_train_ramp_steps < 0:
+        raise ValueError("--append-train warmup and ramp steps must be non-negative")
 
 
 def build_model_and_optimizer(args, *, vocab_size: int, block_size: int):
@@ -239,6 +270,164 @@ def forward_and_loss(model, batch, args):
         loss_weights=args.pass_loss_weights,
     )
     return loss_output.loss, output, tuple(item.detach() for item in loss_output.pass_losses)
+
+
+def effective_append_train_probability(args, step: int) -> float:
+    if step < 1:
+        raise ValueError("step must be positive")
+    probability = float(args.append_train_prob)
+    warmup_steps = int(args.append_train_warmup_steps)
+    ramp_steps = int(args.append_train_ramp_steps)
+    if probability == 0 or step <= warmup_steps:
+        return 0.0
+    if ramp_steps == 0:
+        return probability
+    progress = min(1.0, (step - warmup_steps) / ramp_steps)
+    return probability * progress
+
+
+def new_append_train_stats(configured_probability: float) -> dict:
+    return {
+        "configured_probability": float(configured_probability),
+        "last_effective_probability": 0.0,
+        "opportunity_steps": 0,
+        "applied_updates": 0,
+        "examples": 0,
+        "target_tokens": 0,
+        "raw_loss_sum": 0.0,
+        "mean_raw_loss": 0.0,
+        "window_start_sum": 0,
+        "mean_window_start": 0.0,
+        "horizon_counts": {},
+    }
+
+
+def update_append_train_stats(cumulative: dict, step_stats: dict) -> None:
+    cumulative["configured_probability"] = float(step_stats["configured_probability"])
+    cumulative["last_effective_probability"] = float(step_stats["effective_probability"])
+    cumulative["opportunity_steps"] = int(cumulative.get("opportunity_steps", 0)) + int(
+        step_stats["effective_probability"] > 0
+    )
+    if not step_stats["applied"]:
+        return
+    cumulative["applied_updates"] = int(cumulative.get("applied_updates", 0)) + 1
+    cumulative["examples"] = int(cumulative.get("examples", 0)) + int(
+        step_stats["microbatch_size"]
+    )
+    cumulative["target_tokens"] = int(cumulative.get("target_tokens", 0)) + int(
+        step_stats["target_tokens"]
+    )
+    cumulative["raw_loss_sum"] = float(cumulative.get("raw_loss_sum", 0.0)) + float(
+        step_stats["raw_loss"]
+    )
+    cumulative["window_start_sum"] = int(cumulative.get("window_start_sum", 0)) + int(
+        step_stats["window_start"]
+    )
+    horizon_counts = cumulative.setdefault("horizon_counts", {})
+    horizon_key = str(step_stats["horizon"])
+    horizon_counts[horizon_key] = int(horizon_counts.get(horizon_key, 0)) + 1
+    applied = int(cumulative["applied_updates"])
+    cumulative["mean_raw_loss"] = float(cumulative["raw_loss_sum"]) / applied
+    cumulative["mean_window_start"] = float(cumulative["window_start_sum"]) / applied
+
+
+def generation_aligned_loss(
+    model,
+    batch,
+    standard_output: MultiPassOutput,
+    args,
+    *,
+    step: int,
+    rng: random.Random,
+) -> tuple[torch.Tensor | None, dict]:
+    """Return a truncated teacher-forced append loss for this optimizer step.
+
+    The standard K-pass output supplies a detached prompt prefill, which is
+    exact by causality. Burn-in uses the deployment append schedule without
+    gradients. The differentiable window begins after at least one generated
+    token, so each supervised logit is produced by a recurrent append step and
+    each step's emitted memory can affect later losses inside the window.
+    """
+    probability = effective_append_train_probability(args, step)
+    stats = {
+        "configured_probability": float(args.append_train_prob),
+        "effective_probability": probability,
+        "applied": False,
+        "raw_loss": None,
+        "weighted_loss": None,
+        "microbatch_size": 0,
+        "window_start": None,
+        "horizon": 0,
+        "target_tokens": 0,
+        "row_indices": [],
+    }
+    if probability == 0 or rng.random() >= probability:
+        return None, stats
+    if not is_multi_pass_architecture(args.architecture):
+        raise ValueError("generation-aligned loss requires a multi-pass architecture")
+
+    eligible_rows = [
+        row
+        for row in range(batch.idx.shape[0])
+        if int(batch.output_lengths[row].item()) >= 2
+    ]
+    if not eligible_rows:
+        return None, stats
+
+    anchor = eligible_rows[rng.randrange(len(eligible_rows))]
+    prompt_len = int(batch.prompt_lengths[anchor].item())
+    compatible_rows = [
+        row
+        for row in eligible_rows
+        if int(batch.prompt_lengths[row].item()) == prompt_len
+    ]
+    rng.shuffle(compatible_rows)
+    selected_rows = tuple(
+        compatible_rows[: min(int(args.append_train_microbatch_size), len(compatible_rows))]
+    )
+    row_index = torch.tensor(selected_rows, device=batch.idx.device, dtype=torch.long)
+    minimum_output_len = min(int(batch.output_lengths[row].item()) for row in selected_rows)
+    horizon = min(int(args.append_train_horizon), minimum_output_len - 1)
+    window_start = rng.randint(1, minimum_output_len - horizon)
+
+    selected_targets = batch.targets.index_select(0, row_index)
+    prompt = batch.idx.index_select(0, row_index)[:, :prompt_len]
+    state = RecurrentState(
+        tokens=prompt.detach(),
+        memory_states=standard_output.final_memory.index_select(0, row_index)[:, :prompt_len].detach(),
+        next_token_logits=standard_output.logits.index_select(0, row_index)[:, prompt_len - 1].detach(),
+    )
+
+    with torch.no_grad():
+        for target_offset in range(window_start - 1):
+            target = selected_targets[:, prompt_len - 1 + target_offset]
+            state = model._recurrent_step_impl(state, target[:, None])
+    state = model.detach_recurrent_state(state)
+
+    losses = []
+    for previous_target_offset in range(window_start - 1, window_start + horizon - 1):
+        input_token = selected_targets[:, prompt_len - 1 + previous_target_offset]
+        state = model._recurrent_step_impl(state, input_token[:, None])
+        target = selected_targets[:, prompt_len + previous_target_offset]
+        if (target < 0).any():
+            raise ValueError("generation-aligned window encountered an ignored target")
+        losses.append(model.calc_loss(state.next_token_logits, target))
+
+    raw_loss = torch.stack(losses).mean()
+    weighted_loss = raw_loss * float(args.append_train_loss_weight)
+    stats.update(
+        {
+            "applied": True,
+            "raw_loss": float(raw_loss.detach().item()),
+            "weighted_loss": float(weighted_loss.detach().item()),
+            "microbatch_size": len(selected_rows),
+            "window_start": window_start,
+            "horizon": horizon,
+            "target_tokens": len(selected_rows) * horizon,
+            "row_indices": list(selected_rows),
+        }
+    )
+    return weighted_loss, stats
 
 
 def gradient_norms(model) -> dict[str, float]:
