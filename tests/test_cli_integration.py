@@ -43,6 +43,29 @@ def test_bbh_training_cli_writes_restorable_checkpoint(tmp_path):
     assert evaluation["gradient_norms"]["global"]["max"] > 0
 
 
+def test_null_slot_checkpoint_and_diagnostics(tmp_path):
+    run_dir = tmp_path / "null_slot"
+    _run(
+        "-m", "experiments.train_trace",
+        "--preset", "random_graph_walk_smoke",
+        "--architecture", "memory_tape",
+        "--null-memory-slot", "on",
+        "--device", "cpu",
+        "--run-dir", str(run_dir),
+    )
+    output = tmp_path / "null_diagnostics.json"
+    _run(
+        "-m", "experiments.eval_diagnostics",
+        "--input-run-dir", str(run_dir),
+        "--output", str(output),
+        "--batch-size", "2",
+        "--device", "cpu",
+    )
+    payload = json.loads(output.read_text(encoding="utf-8"))
+    assert payload["memory_attention"]["mean_null_mass"] > 0
+    assert "diagnostic_precondition" in payload["memory_attention"]
+
+
 def test_trace_training_drift_and_diagnostics_cli(tmp_path):
     run_dir = tmp_path / "trace"
     _run(

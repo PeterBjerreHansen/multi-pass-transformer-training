@@ -103,6 +103,40 @@ def test_cross_attention_manual_and_sdpa_paths_agree():
     assert torch.allclose(actual, expected, atol=1e-6, rtol=1e-5)
 
 
+def test_null_slot_mask_and_manual_attention_match_sdpa():
+    config = TransformerConfig(8, 17, 1, 2, 8)
+    attention = CausalCrossAttention(config, use_null_memory_slot=True)
+    mask = attention.causal_mask(3, 3, device=torch.device("cpu"), include_null=True)
+    assert torch.equal(
+        mask,
+        torch.tensor([
+            [True, True, False, False],
+            [True, True, True, False],
+            [True, True, True, True],
+        ]),
+    )
+    query = torch.randn(2, 6, 8)
+    memory = torch.randn_like(query)
+    expected = attention(query, memory)
+    attention.flash = False
+    actual = attention(query, memory)
+    assert torch.allclose(actual, expected, atol=1e-6, rtol=1e-5)
+
+
+def test_null_slot_has_learned_key_and_fixed_zero_value():
+    attention = CausalCrossAttention(
+        TransformerConfig(8, 17, 1, 2, 8),
+        use_null_memory_slot=True,
+    )
+    assert attention.null_key is not None
+    assert "null_value" not in dict(attention.named_parameters())
+    query = torch.randn(2, 6, 8)
+    memory = torch.randn_like(query)
+    attention(query, memory).square().mean().backward()
+    assert attention.null_key.grad is not None
+    assert attention.null_key.grad.abs().sum().item() > 0
+
+
 def test_token_memory_attention_manual_and_sdpa_paths_agree():
     config = MultiPassConfig(8, 17, 1, 2, 8, 2)
     attention = CausalTokenMemoryAttention(config)
@@ -196,6 +230,19 @@ def test_memory_tape_uses_standard_memory_normalization_and_shared_writer():
     assert isinstance(model.transformer.h[0].ln_mem_kv, LayerNorm)
     hidden = torch.randn(2, 6, 8)
     assert torch.equal(model.write_memory(hidden), model.mem_head(model.ln_mem(hidden)))
+
+
+def test_null_slot_off_is_the_default_and_diagnostics_are_finite():
+    off_model = tiny_memory_model()
+    assert off_model.transformer.h[0].cross_attn.null_key is None
+    on_model = MemoryTapeTransformer(
+        MemoryTapeConfig(12, 19, 2, 2, 8, 3, use_null_memory_slot=True)
+    )
+    tokens = torch.randint(0, 19, (2, 8))
+    stats = on_model.memory_attention_diagnostics(tokens)
+    assert stats["mean_null_mass"] > 0
+    assert 0 <= stats["mean_normalized_entropy"] <= 1
+    assert len(stats["per_pass"]) == 3
 
 
 def test_causal_transformer_structured_output_and_generation():

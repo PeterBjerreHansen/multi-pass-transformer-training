@@ -118,6 +118,7 @@ class MultiPassConfig(TransformerConfig):
 @dataclass
 class MemoryTapeConfig(MultiPassConfig):
     memory_gate_init: float = 0.1
+    use_null_memory_slot: bool = False
 
     def __post_init__(self) -> None:
         super().__post_init__()
@@ -217,7 +218,7 @@ class Block(nn.Module):
 class CausalCrossAttention(nn.Module):
     """Causal cross-attention into an already right-shifted memory tape."""
 
-    def __init__(self, config: TransformerConfig):
+    def __init__(self, config: TransformerConfig, *, use_null_memory_slot: bool = False):
         super().__init__()
         self.c_q = nn.Linear(config.n_embd, config.n_embd, bias=False)
         self.c_kv = nn.Linear(config.n_embd, 2 * config.n_embd, bias=False)
@@ -226,6 +227,49 @@ class CausalCrossAttention(nn.Module):
         self.n_embd = config.n_embd
         self.head_dim = config.n_embd // config.n_head
         self.flash = hasattr(F, "scaled_dot_product_attention")
+        self.use_null_memory_slot = use_null_memory_slot
+        if use_null_memory_slot:
+            self.null_key = nn.Parameter(torch.empty(config.n_head, self.head_dim))
+            nn.init.normal_(self.null_key, mean=0.0, std=0.02)
+        else:
+            self.register_parameter("null_key", None)
+
+    @staticmethod
+    def causal_mask(
+        seq_len: int,
+        memory_len: int,
+        *,
+        device: torch.device,
+        include_null: bool,
+    ) -> torch.Tensor:
+        positions = torch.arange(seq_len, device=device)
+        memory_positions = torch.arange(memory_len, device=device)
+        allowed_memory = memory_positions.unsqueeze(0) <= positions.unsqueeze(1)
+        if not include_null:
+            return allowed_memory
+        return torch.cat(
+            (torch.ones(seq_len, 1, device=device, dtype=torch.bool), allowed_memory),
+            dim=1,
+        )
+
+    def _project_qkv(
+        self,
+        x: torch.Tensor,
+        memory: torch.Tensor,
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        batch_size, seq_len, _ = x.shape
+        memory_len = memory.shape[1]
+        q = self.c_q(x)
+        k, v = self.c_kv(memory).split(self.n_embd, dim=-1)
+        q = q.view(batch_size, seq_len, self.n_head, self.head_dim).transpose(1, 2)
+        k = k.view(batch_size, memory_len, self.n_head, self.head_dim).transpose(1, 2)
+        v = v.view(batch_size, memory_len, self.n_head, self.head_dim).transpose(1, 2)
+        if self.null_key is not None:
+            null_key = self.null_key[None, :, None, :].expand(batch_size, -1, -1, -1)
+            null_value = torch.zeros_like(null_key)
+            k = torch.cat((null_key, k), dim=-2)
+            v = torch.cat((null_value, v), dim=-2)
+        return q, k, v
 
     def forward(self, x: torch.Tensor, memory: torch.Tensor) -> torch.Tensor:
         batch_size, seq_len, dim = x.shape
@@ -235,25 +279,57 @@ class CausalCrossAttention(nn.Module):
         if memory_len != seq_len:
             raise ValueError("x and memory must share sequence length")
 
-        q = self.c_q(x)
-        k, v = self.c_kv(memory).split(self.n_embd, dim=-1)
-        q = q.view(batch_size, seq_len, self.n_head, self.head_dim).transpose(1, 2)
-        k = k.view(batch_size, memory_len, self.n_head, self.head_dim).transpose(1, 2)
-        v = v.view(batch_size, memory_len, self.n_head, self.head_dim).transpose(1, 2)
+        q, k, v = self._project_qkv(x, memory)
 
         if self.flash:
-            y = F.scaled_dot_product_attention(q, k, v, is_causal=True, dropout_p=0.0)
+            if self.use_null_memory_slot:
+                allowed = self.causal_mask(
+                    seq_len,
+                    memory_len,
+                    device=x.device,
+                    include_null=True,
+                )
+                y = F.scaled_dot_product_attention(
+                    q, k, v, attn_mask=allowed, is_causal=False, dropout_p=0.0
+                )
+            else:
+                y = F.scaled_dot_product_attention(q, k, v, is_causal=True, dropout_p=0.0)
         else:
             scores = (q @ k.transpose(-2, -1)) / math.sqrt(self.head_dim)
-            mask = torch.triu(
-                torch.ones(seq_len, memory_len, device=x.device, dtype=torch.bool),
-                diagonal=1,
+            allowed = self.causal_mask(
+                seq_len,
+                memory_len,
+                device=x.device,
+                include_null=self.use_null_memory_slot,
             )
-            scores = scores.masked_fill(mask, float("-inf"))
+            scores = scores.masked_fill(~allowed, float("-inf"))
             y = F.softmax(scores, dim=-1) @ v
 
         y = y.transpose(1, 2).contiguous().view(batch_size, seq_len, dim)
         return self.c_proj(y)
+
+    @torch.no_grad()
+    def attention_statistics(self, x: torch.Tensor, memory: torch.Tensor) -> dict[str, float]:
+        batch_size, seq_len, _ = x.shape
+        memory_len = memory.shape[1]
+        q, k, _v = self._project_qkv(x, memory)
+        scores = (q.float() @ k.float().transpose(-2, -1)) / math.sqrt(self.head_dim)
+        allowed = self.causal_mask(
+            seq_len,
+            memory_len,
+            device=x.device,
+            include_null=self.use_null_memory_slot,
+        )
+        probabilities = F.softmax(scores.masked_fill(~allowed, float("-inf")), dim=-1)
+        entropy = -(probabilities * probabilities.clamp_min(1e-12).log()).sum(dim=-1)
+        allowed_counts = allowed.sum(dim=-1).float()
+        maximum_entropy = allowed_counts.log()[None, None, :]
+        normalized = torch.where(maximum_entropy > 0, entropy / maximum_entropy, torch.zeros_like(entropy))
+        return {
+            "normalized_entropy": float(normalized.mean().item()),
+            "effective_sources": float(entropy.exp().mean().item()),
+            "null_mass": float(probabilities[..., 0].mean().item()) if self.use_null_memory_slot else 0.0,
+        }
 
 
 class CausalTokenMemoryAttention(nn.Module):
@@ -745,14 +821,27 @@ class MemoryBlock(nn.Module):
         self.attn = CausalSelfAttention(config)
         self.ln_mem_q = LayerNorm(config.n_embd)
         self.ln_mem_kv = LayerNorm(config.n_embd)
-        self.cross_attn = CausalCrossAttention(config)
+        self.cross_attn = CausalCrossAttention(
+            config,
+            use_null_memory_slot=config.use_null_memory_slot,
+        )
         self.memory_gate = nn.Parameter(torch.tensor(float(config.memory_gate_init)))
         self.ln_mlp = LayerNorm(config.n_embd)
         self.mlp = MLP(config)
 
-    def forward(self, x: torch.Tensor, memory_states: torch.Tensor) -> torch.Tensor:
+    def forward(
+        self,
+        x: torch.Tensor,
+        memory_states: torch.Tensor,
+        *,
+        attention_stats: list[dict[str, float]] | None = None,
+    ) -> torch.Tensor:
         x = x + self.attn(self.ln_self(x))
-        memory_delta = self.cross_attn(self.ln_mem_q(x), self.ln_mem_kv(memory_states))
+        memory_query = self.ln_mem_q(x)
+        memory_sources = self.ln_mem_kv(memory_states)
+        if attention_stats is not None:
+            attention_stats.append(self.cross_attn.attention_statistics(memory_query, memory_sources))
+        memory_delta = self.cross_attn(memory_query, memory_sources)
         x = x + self.memory_gate * memory_delta
         x = x + self.mlp(self.ln_mlp(x))
         return x
@@ -784,6 +873,47 @@ class MemoryTapeTransformer(MultiPassTransformer):
             "effective": values,
             "mean_abs_effective": float(tensor.abs().mean().item()),
             "max_abs_effective": float(tensor.abs().max().item()),
+        }
+
+    @torch.no_grad()
+    def memory_attention_diagnostics(self, idx: torch.Tensor) -> dict:
+        token_stream = self.embed_tokens(idx)
+        previous_memory = torch.zeros_like(token_stream)
+        per_pass = []
+        layer_entropies: list[list[float]] = [[] for _ in self.transformer.h]
+        all_effective_sources: list[float] = []
+        all_null_mass: list[float] = []
+
+        for pass_index in range(self.config.n_pass):
+            memory_tape = shift_right(previous_memory)
+            hidden = token_stream
+            pass_layers: list[dict[str, float]] = []
+            for layer_index, block in enumerate(self.transformer.h):
+                layer_stats: list[dict[str, float]] = []
+                hidden = block(hidden, memory_tape, attention_stats=layer_stats)
+                stats = layer_stats[0]
+                layer_entropies[layer_index].append(stats["normalized_entropy"])
+                all_effective_sources.append(stats["effective_sources"])
+                all_null_mass.append(stats["null_mass"])
+                pass_layers.append({"layer": layer_index, **stats})
+            hidden = self.transformer.ln_f(hidden)
+            previous_memory = self.write_memory(hidden)
+            per_pass.append({"pass": pass_index + 1, "layers": pass_layers})
+
+        layer_entropy_means = [sum(values) / len(values) for values in layer_entropies]
+        gate_stats = self.memory_gate_stats()
+        qualifying_layers = sum(value >= 0.8 for value in layer_entropy_means)
+        diagnostic_precondition = (
+            qualifying_layers * 2 >= len(layer_entropy_means)
+            and float(gate_stats["mean_abs_effective"]) >= 0.05
+        )
+        return {
+            "per_pass": per_pass,
+            "layer_normalized_entropy": layer_entropy_means,
+            "mean_normalized_entropy": sum(layer_entropy_means) / len(layer_entropy_means),
+            "mean_effective_sources": sum(all_effective_sources) / len(all_effective_sources),
+            "mean_null_mass": sum(all_null_mass) / len(all_null_mass),
+            "diagnostic_precondition": float(diagnostic_precondition),
         }
 
 

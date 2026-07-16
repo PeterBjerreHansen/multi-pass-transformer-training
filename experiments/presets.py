@@ -37,6 +37,7 @@ def _base_defaults(
         else [0.0, 0.0, 1.0, 1.0],
         "memory_update_gate": "off",
         "memory_gate_bias": -1.0,
+        "null_memory_slot": "off",
         "inference_mode": inference_mode,
         "token_selection": token_selection,
         "batch_size": 1 if smoke else 64,

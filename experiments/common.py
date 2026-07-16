@@ -78,6 +78,12 @@ def apply_model_size_preset(args) -> None:
 
 def validate_model_args(args) -> None:
     apply_model_size_preset(args)
+    if not hasattr(args, "null_memory_slot"):
+        args.null_memory_slot = "off"
+    if args.null_memory_slot not in {"off", "on"}:
+        raise ValueError("--null-memory-slot must be 'off' or 'on'")
+    if args.null_memory_slot == "on" and args.architecture != "memory_tape":
+        raise ValueError("--null-memory-slot is supported only by memory_tape")
     if args.n_layer < 1 or args.n_head < 1 or args.n_embd < 1:
         raise ValueError("model dimensions must be positive")
     if args.n_embd % args.n_head != 0:
