@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import random
 
+import pytest
+
 from tasks.bbh import permutation, pointer_chasing, state_machine, tracking
 from tasks.trace import othello, random_graph_walk
 
@@ -47,8 +49,17 @@ def test_othello_generated_games_are_legal_and_dataset_cache_is_deterministic(tm
         trace = othello.random_game_trace64(seed=seed)
         ids = [square + othello.MOVE_TOKEN_OFFSET for square in trace]
         assert othello.legal_prefix_length(ids) == (len(trace), True)
+        cut = len(ids) // 2
+        assert othello.legal_prefix_length(
+            ids[cut:],
+            prefix_move_token_ids=ids[:cut],
+        ) == (len(ids) - cut, True)
+        assert ids[cut] in othello.legal_move_token_ids_after_prefix(ids[:cut])
         padded = ids + [0] * (othello.MAX_MOVES - len(ids))
         assert othello.legal_prefix_length(padded) == (othello.MAX_MOVES, True)
+
+    with pytest.raises(ValueError, match="illegal move"):
+        othello.legal_move_token_ids_after_prefix([othello.MOVE_TOKEN_OFFSET])
 
     kwargs = dict(
         othello_data_dir=str(tmp_path),
