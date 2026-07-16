@@ -118,11 +118,17 @@ class MultiPassConfig(TransformerConfig):
 @dataclass
 class MemoryTapeConfig(MultiPassConfig):
     memory_gate_init: float = 0.1
+    memory_read_layers: tuple[int, ...] | None = None
 
     def __post_init__(self) -> None:
         super().__post_init__()
         if not math.isfinite(self.memory_gate_init):
             raise ValueError("memory_gate_init must be finite")
+        if self.memory_read_layers is not None:
+            if len(set(self.memory_read_layers)) != len(self.memory_read_layers):
+                raise ValueError("memory_read_layers must not contain duplicates")
+            if any(layer < 0 or layer >= self.n_layer for layer in self.memory_read_layers):
+                raise ValueError("memory_read_layers contains an out-of-range layer")
 
 
 @dataclass
@@ -750,10 +756,17 @@ class MemoryBlock(nn.Module):
         self.ln_mlp = LayerNorm(config.n_embd)
         self.mlp = MLP(config)
 
-    def forward(self, x: torch.Tensor, memory_states: torch.Tensor) -> torch.Tensor:
+    def forward(
+        self,
+        x: torch.Tensor,
+        memory_states: torch.Tensor,
+        *,
+        read_memory: bool = True,
+    ) -> torch.Tensor:
         x = x + self.attn(self.ln_self(x))
-        memory_delta = self.cross_attn(self.ln_mem_q(x), self.ln_mem_kv(memory_states))
-        x = x + self.memory_gate * memory_delta
+        if read_memory:
+            memory_delta = self.cross_attn(self.ln_mem_q(x), self.ln_mem_kv(memory_states))
+            x = x + self.memory_gate * memory_delta
         x = x + self.mlp(self.ln_mlp(x))
         return x
 
@@ -767,12 +780,14 @@ class MemoryTapeTransformer(MultiPassTransformer):
 
     def __init__(self, config: MemoryTapeConfig):
         super().__init__(config)
+        enabled = set(range(config.n_layer)) if config.memory_read_layers is None else set(config.memory_read_layers)
+        self.memory_read_mask = tuple(index in enabled for index in range(config.n_layer))
         self.finish_initialization()
 
     def _run_full_pass(self, token_stream: torch.Tensor, memory_tape: torch.Tensor) -> torch.Tensor:
         hidden = token_stream
-        for block in self.transformer.h:
-            hidden = block(hidden, memory_tape)
+        for block, read_memory in zip(self.transformer.h, self.memory_read_mask):
+            hidden = block(hidden, memory_tape, read_memory=read_memory)
         return hidden
 
     def memory_gate_stats(self) -> dict[str, float | str | list[float]]:
@@ -784,6 +799,7 @@ class MemoryTapeTransformer(MultiPassTransformer):
             "effective": values,
             "mean_abs_effective": float(tensor.abs().mean().item()),
             "max_abs_effective": float(tensor.abs().max().item()),
+            "read_enabled": list(self.memory_read_mask),
         }
 
 

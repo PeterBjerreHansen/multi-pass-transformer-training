@@ -78,6 +78,12 @@ def apply_model_size_preset(args) -> None:
 
 def validate_model_args(args) -> None:
     apply_model_size_preset(args)
+    if not hasattr(args, "memory_read_pattern"):
+        args.memory_read_pattern = "all"
+    if args.memory_read_pattern not in {"all", "early", "middle", "late"}:
+        raise ValueError("invalid memory read pattern")
+    if args.memory_read_pattern != "all" and args.architecture != "memory_tape":
+        raise ValueError("memory read patterns are supported only by memory_tape")
     if args.n_layer < 1 or args.n_head < 1 or args.n_embd < 1:
         raise ValueError("model dimensions must be positive")
     if args.n_embd % args.n_head != 0:

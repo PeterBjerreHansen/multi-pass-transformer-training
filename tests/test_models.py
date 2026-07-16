@@ -5,7 +5,7 @@ from types import SimpleNamespace
 import pytest
 import torch
 
-from model_factory import build_model
+from model_factory import build_model, resolve_memory_read_layers
 from models import (
     CausalCrossAttention,
     CausalTokenMemoryAttention,
@@ -196,6 +196,50 @@ def test_memory_tape_uses_standard_memory_normalization_and_shared_writer():
     assert isinstance(model.transformer.h[0].ln_mem_kv, LayerNorm)
     hidden = torch.randn(2, 6, 8)
     assert torch.equal(model.write_memory(hidden), model.mem_head(model.ln_mem(hidden)))
+
+
+def test_memory_read_patterns_resolve_to_expected_layers():
+    assert resolve_memory_read_layers("all", 4) is None
+    assert resolve_memory_read_layers("early", 4) == (0,)
+    assert resolve_memory_read_layers("middle", 4) == (2,)
+    assert resolve_memory_read_layers("late", 4) == (3,)
+    with pytest.raises(ValueError, match="unsupported"):
+        resolve_memory_read_layers("unknown", 4)
+
+
+def test_all_layer_mask_is_numerically_equivalent_and_parameter_matched():
+    torch.manual_seed(23)
+    default = MemoryTapeTransformer(MemoryTapeConfig(12, 19, 4, 1, 8, 3))
+    torch.manual_seed(23)
+    explicit = MemoryTapeTransformer(
+        MemoryTapeConfig(12, 19, 4, 1, 8, 3, memory_read_layers=(0, 1, 2, 3))
+    )
+    tokens = torch.randint(0, 19, (2, 8))
+    assert default.get_num_params() == explicit.get_num_params()
+    assert torch.equal(default(tokens).logits, explicit(tokens).logits)
+    assert explicit.memory_gate_stats()["read_enabled"] == [True, True, True, True]
+
+
+def test_inactive_memory_readers_retain_parameters_without_gradients():
+    model = MemoryTapeTransformer(
+        MemoryTapeConfig(12, 19, 4, 1, 8, 3, memory_read_layers=(0,))
+    )
+    tokens = torch.randint(0, 19, (2, 8))
+    targets = torch.randint(0, 19, (2, 8))
+    model.calc_total_loss(model(tokens), targets, [0, 0, 1]).loss.backward()
+    assert model.transformer.h[0].cross_attn.c_kv.weight.grad is not None
+    assert model.transformer.h[0].memory_gate.grad is not None
+    for block in model.transformer.h[1:]:
+        assert block.cross_attn.c_kv.weight.grad is None
+        assert block.memory_gate.grad is None
+    assert model.memory_gate_stats()["read_enabled"] == [True, False, False, False]
+
+
+def test_memory_read_layer_config_rejects_duplicates_and_bad_indices():
+    with pytest.raises(ValueError, match="duplicates"):
+        MemoryTapeConfig(12, 19, 4, 1, 8, 3, memory_read_layers=(0, 0))
+    with pytest.raises(ValueError, match="out-of-range"):
+        MemoryTapeConfig(12, 19, 4, 1, 8, 3, memory_read_layers=(4,))
 
 
 def test_causal_transformer_structured_output_and_generation():
