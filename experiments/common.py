@@ -8,6 +8,7 @@ import json
 import math
 from pathlib import Path
 import random
+import resource
 import shlex
 import subprocess
 import sys
@@ -148,6 +149,38 @@ def synchronize_device(device: str | None) -> None:
         torch.cuda.synchronize()
     elif str(device).startswith("mps") and hasattr(torch, "mps") and hasattr(torch.mps, "synchronize"):
         torch.mps.synchronize()
+
+
+def model_benchmark_stats(model) -> dict[str, int]:
+    """Return stable model-size fields for configs and benchmark reports."""
+    total = sum(parameter.numel() for parameter in model.parameters())
+    non_embedding = model.get_num_params(non_embedding=True)
+    return {
+        "total_parameters": int(total),
+        "non_embedding_parameters": int(non_embedding),
+    }
+
+
+def runtime_resource_stats(device: str | None) -> dict[str, int | float]:
+    """Best-effort process and accelerator memory statistics.
+
+    ru_maxrss is reported in bytes by macOS and KiB by Linux. Accelerator
+    fields are included only when the corresponding backend exposes them.
+    """
+    peak_rss = int(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss)
+    if not sys.platform.startswith("darwin"):
+        peak_rss *= 1024
+    result: dict[str, int | float] = {"process_peak_rss_bytes": peak_rss}
+
+    if device and str(device).startswith("cuda") and torch.cuda.is_available():
+        result["cuda_max_memory_allocated_bytes"] = int(torch.cuda.max_memory_allocated())
+        result["cuda_max_memory_reserved_bytes"] = int(torch.cuda.max_memory_reserved())
+    elif device and str(device).startswith("mps") and hasattr(torch, "mps"):
+        if hasattr(torch.mps, "current_allocated_memory"):
+            result["mps_current_allocated_bytes"] = int(torch.mps.current_allocated_memory())
+        if hasattr(torch.mps, "driver_allocated_memory"):
+            result["mps_driver_allocated_bytes"] = int(torch.mps.driver_allocated_memory())
+    return result
 
 
 def stable_seed(base_seed: int, *parts: object) -> int:
@@ -514,6 +547,7 @@ def prepare_run_artifacts(
         "git": _git_metadata(),
         "args": dict(vars(args)),
         "model_config": model.config.to_dict(),
+        "model_stats": model_benchmark_stats(model),
     }
     if extra_config:
         payload.update(extra_config)

@@ -12,8 +12,10 @@ from experiments.common import (
     gradient_norms,
     load_checkpoint_payload,
     restore_checkpoint_state,
+    runtime_resource_stats,
     save_latest_checkpoint,
 )
+from experiments.summarize_ablation import recommend
 from experiments.eval_diagnostics import memory_interventions, pass_dynamics, teacher_forced_schedule_gap
 from experiments.train_bbh import BBH_TASKS, build_fixed_eval_batches, parse_args as parse_bbh_args
 from models import JointMemoryTapeTransformer, MemoryTapeConfig, MemoryTapeTransformer, MultiPassConfig
@@ -223,3 +225,31 @@ def test_memory_update_direct_default_matches_experiment_default():
         n_pass=3,
     )
     assert config.use_memory_gate is False
+
+
+def test_runtime_resource_stats_reports_peak_rss():
+    stats = runtime_resource_stats("cpu")
+    assert stats["process_peak_rss_bytes"] > 0
+
+
+def test_ablation_recommendation_accepts_noninferior_efficiency_win():
+    control = {
+        str(seed): {
+            "drift.append_recurrent.token_legality": 0.80,
+            "train.train_tok_per_s": 100.0,
+            "model.non_embedding_parameters": 1000.0,
+        }
+        for seed in range(3)
+    }
+    treatment = {
+        str(seed): {
+            "drift.append_recurrent.token_legality": 0.795,
+            "train.train_tok_per_s": 115.0,
+            "model.non_embedding_parameters": 1000.0,
+        }
+        for seed in range(3)
+    }
+    result = recommend(control, treatment, mode="pareto")
+    assert result["quality_noninferior"]
+    assert result["efficiency_win"]
+    assert result["recommend_merge"]

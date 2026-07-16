@@ -21,10 +21,12 @@ from experiments.common import (
     gradient_norms,
     load_checkpoint_payload,
     memory_gate_stats,
+    model_benchmark_stats,
     prepare_run_artifacts,
     resolve_device_arg,
     resolve_resume_artifacts,
     restore_checkpoint_state,
+    runtime_resource_stats,
     save_latest_checkpoint,
     set_seed,
     stable_seed,
@@ -273,6 +275,7 @@ def run_answer_curriculum(args) -> None:
             "task": args.task,
             "architecture": args.architecture,
             "config": vars(args),
+            "model_stats": model_benchmark_stats(model),
         },
     )
 
@@ -341,6 +344,8 @@ def run_answer_curriculum(args) -> None:
                 "metrics": metrics,
                 "gradient_norms": gradient_summary,
                 "memory_gate_stats": memory_gate_stats(model),
+                "train_tok_per_s": tok_per_s,
+                "resource_stats": runtime_resource_stats(args.device),
             },
         )
 
