@@ -18,9 +18,12 @@ from experiments.common import (
 )
 from experiments.summarize_ablation import recommend
 from experiments.eval_diagnostics import memory_interventions, pass_dynamics, teacher_forced_schedule_gap
+from experiments.eval_othello import build_eval_examples, legal_set_step_metrics
 from experiments.train_bbh import BBH_TASKS, build_fixed_eval_batches, parse_args as parse_bbh_args
 from models import JointMemoryTapeTransformer, MemoryTapeConfig, MemoryTapeTransformer, MultiPassConfig
 from tasks.bbh import pointer_chasing
+from tasks.trace import othello, random_graph_walk
+from tasks.trace.registry import TRACE_TASKS
 
 
 def _args() -> SimpleNamespace:
@@ -228,6 +231,124 @@ def test_main_presets_preserve_established_experiment_scales():
     assert othello_main["othello_val_games"] == 1_024
     assert othello_main["batch_size"] == 128
     assert othello_main["eval_interval"] == 5_000
+
+    path = TRACE_PRESETS["shortest_path_main"].values
+    assert path["num_nodes"] == 24
+    assert path["shortest_path_length"] == 6
+    assert path["branching_factor"] == 3
+    assert path["distractor_edges"] == 40
+
+
+def test_othello_prefix_examples_and_legal_set_metrics_are_deterministic():
+    _vocab, stoi, _itos = othello.build_othello_vocab(
+        othello_train_games=1,
+        othello_val_games=1,
+    )
+    traces = [othello.random_game_trace64(seed=7), othello.random_game_trace64(seed=8)]
+    first = build_eval_examples(
+        traces,
+        stoi=stoi,
+        evaluation_mode="all",
+        prefix_fractions=(0.25, 0.5, 0.75),
+        rng=random.Random(99),
+    )
+    second = build_eval_examples(
+        traces,
+        stoi=stoi,
+        evaluation_mode="all",
+        prefix_fractions=(0.25, 0.5, 0.75),
+        rng=random.Random(99),
+    )
+    assert first == second
+    assert {example.protocol for example in first} == {
+        "full-game",
+        "random-prefix",
+        "prefix-grid-0.25",
+        "prefix-grid-0.5",
+        "prefix-grid-0.75",
+    }
+    assert all(0 <= example.cut < len(example.trace_move_ids) for example in first)
+
+    legal_ids = othello.legal_move_token_ids_after_prefix(())
+    logits = torch.zeros(len(stoi))
+    metrics = legal_set_step_metrics(logits, legal_ids, legal_ids[0])
+    assert metrics["legal_set_size"] == len(legal_ids)
+    assert metrics["legal_probability_mass"] == pytest.approx(len(legal_ids) / len(stoi))
+    assert metrics["legal_set_nll"] == pytest.approx(
+        -torch.log(torch.tensor(len(legal_ids) / len(stoi))).item()
+    )
+
+
+def test_trace_registry_preserves_seeded_task_behavior(tmp_path):
+    graph_args = SimpleNamespace(
+        num_states=4,
+        label_pool_size=4,
+        max_level=5,
+        batch_size=3,
+        device="cpu",
+    )
+    graph_task = TRACE_TASKS["random_graph_walk"]
+    direct_vocab = random_graph_walk.build_random_graph_walk_vocab(4, 4)
+    assert graph_task.build_vocab(graph_args) == direct_vocab
+    assert graph_task.required_block_size(graph_args) == random_graph_walk.required_block_size(4, 4, 5)
+    direct_graph_batch = random_graph_walk.build_random_graph_walk_batch(
+        batch_size=3,
+        num_states=4,
+        label_pool_size=4,
+        num_steps=5,
+        stoi=direct_vocab[1],
+        device="cpu",
+        rng=random.Random(2026),
+    )
+    registered_graph_batch = graph_task.build_batch(
+        graph_args,
+        direct_vocab[1],
+        random.Random(2026),
+        split="train",
+    )
+    assert torch.equal(registered_graph_batch.idx, direct_graph_batch.idx)
+    assert torch.equal(registered_graph_batch.targets, direct_graph_batch.targets)
+
+    othello_args = SimpleNamespace(
+        batch_size=3,
+        device="cpu",
+        othello_data_dir=str(tmp_path / "othello"),
+        othello_train_games=8,
+        othello_val_games=4,
+        othello_dataset_seed=31,
+        othello_prepend_opening=False,
+    )
+    othello_task = TRACE_TASKS["othello"]
+    direct_othello_vocab = othello.build_othello_vocab(
+        othello_train_games=8,
+        othello_val_games=4,
+    )
+    assert othello_task.build_vocab(othello_args) == direct_othello_vocab
+    assert othello_task.required_block_size(othello_args) == othello.required_block_size(
+        othello_prepend_opening=False,
+        othello_train_games=8,
+        othello_val_games=4,
+    )
+    direct_othello_batch = othello.build_othello_batch(
+        batch_size=3,
+        stoi=direct_othello_vocab[1],
+        device="cpu",
+        rng=random.Random(2027),
+        split="val",
+        othello_data_dir=othello_args.othello_data_dir,
+        othello_train_games=8,
+        othello_val_games=4,
+        othello_dataset_seed=31,
+        othello_prepend_opening=False,
+    )
+    registered_othello_batch = othello_task.build_batch(
+        othello_args,
+        direct_othello_vocab[1],
+        random.Random(2027),
+        split="val",
+    )
+    assert torch.equal(registered_othello_batch.idx, direct_othello_batch.idx)
+    assert torch.equal(registered_othello_batch.targets, direct_othello_batch.targets)
 
 
 def test_memory_update_direct_default_matches_experiment_default():
