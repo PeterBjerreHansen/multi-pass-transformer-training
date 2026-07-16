@@ -8,7 +8,9 @@ import torch
 from model_factory import build_model
 from models import (
     CausalCrossAttention,
+    CausalJointAttention,
     CausalTransformer,
+    JointMemoryTapeTransformer,
     LayerNorm,
     MemoryBlock,
     MemoryConcatTransformer,
@@ -28,6 +30,20 @@ def tiny_memory_model(*, block_size: int = 12, n_pass: int = 3) -> MemoryTapeTra
     torch.manual_seed(7)
     return MemoryTapeTransformer(
         MemoryTapeConfig(
+            block_size=block_size,
+            vocab_size=19,
+            n_layer=2,
+            n_head=2,
+            n_embd=8,
+            n_pass=n_pass,
+        )
+    )
+
+
+def tiny_joint_memory_model(*, block_size: int = 12, n_pass: int = 3) -> JointMemoryTapeTransformer:
+    torch.manual_seed(7)
+    return JointMemoryTapeTransformer(
+        MultiPassConfig(
             block_size=block_size,
             vocab_size=19,
             n_layer=2,
@@ -87,6 +103,20 @@ def test_cross_attention_manual_and_sdpa_paths_agree():
     assert torch.allclose(actual, expected, atol=1e-6, rtol=1e-5)
 
 
+def test_joint_attention_manual_and_sdpa_paths_agree():
+    config = MultiPassConfig(8, 17, 1, 2, 8, 2)
+    attention = CausalJointAttention(config)
+    if not attention.flash:
+        pytest.skip("scaled_dot_product_attention is unavailable")
+    query = torch.randn(2, 6, 8)
+    token_sources = torch.randn(2, 6, 8)
+    memory = torch.randn(2, 6, 8)
+    expected = attention(query, token_sources, memory)
+    attention.flash = False
+    actual = attention(query, token_sources, memory)
+    assert torch.allclose(actual, expected, atol=1e-6, rtol=1e-5)
+
+
 def test_memory_block_has_no_first_pass_intercept():
     config = MemoryTapeConfig(8, 17, 1, 2, 8, 2)
     block = MemoryBlock(config)
@@ -120,6 +150,7 @@ def test_causal_transformer_structured_output_and_generation():
 def test_multipass_variants_return_all_passes_and_finite_losses():
     cases = [
         (MemoryTapeTransformer, MemoryTapeConfig(8, 17, 1, 1, 8, 3)),
+        (JointMemoryTapeTransformer, MultiPassConfig(8, 17, 1, 1, 8, 3)),
         (MemoryConcatTransformer, MultiPassConfig(8, 17, 1, 1, 8, 3)),
         (MemoryUpdateTransformer, MemoryUpdateConfig(8, 17, 1, 1, 8, 3)),
     ]
@@ -149,8 +180,23 @@ def test_memory_tape_is_causal_in_tokens_and_emitted_memory():
         assert torch.allclose(pass_a.memory_states[:, :4], pass_b.memory_states[:, :4], atol=1e-6, rtol=0)
 
 
-def test_previous_memory_at_t_cannot_affect_position_t():
-    model = tiny_memory_model(n_pass=2)
+def test_joint_memory_tape_is_causal_in_tokens_and_emitted_memory():
+    model = tiny_joint_memory_model()
+    model.eval()
+    prefix = torch.tensor([[1, 2, 3, 4]])
+    a = torch.cat((prefix, torch.tensor([[5, 6, 7, 8]])), dim=1)
+    b = torch.cat((prefix, torch.tensor([[9, 10, 11, 12]])), dim=1)
+    out_a = model(a)
+    out_b = model(b)
+    for pass_a, pass_b in zip(out_a.passes, out_b.passes):
+        assert torch.allclose(pass_a.logits[:, :4], pass_b.logits[:, :4], atol=1e-6, rtol=0)
+        assert pass_a.memory_states is not None and pass_b.memory_states is not None
+        assert torch.allclose(pass_a.memory_states[:, :4], pass_b.memory_states[:, :4], atol=1e-6, rtol=0)
+
+
+@pytest.mark.parametrize("model_factory", [tiny_memory_model, tiny_joint_memory_model])
+def test_previous_memory_at_t_cannot_affect_position_t(model_factory):
+    model = model_factory(n_pass=2)
     model.eval()
     tokens = torch.tensor([[1, 2, 3, 4, 5, 6]])
     token_stream = model.embed_tokens(tokens)
@@ -175,6 +221,23 @@ def test_final_pass_loss_reaches_memory_writer_and_reader():
     reader = model.transformer.h[0].cross_attn.c_kv.weight
     assert reader.grad is not None
     assert reader.grad.abs().sum().item() > 0
+
+
+def test_joint_memory_tape_final_pass_loss_reaches_memory_writer_and_reader():
+    model = tiny_joint_memory_model(n_pass=3)
+    tokens = torch.randint(0, 19, (2, 8))
+    targets = torch.randint(0, 19, (2, 8))
+    output = model(tokens)
+    loss = model.calc_total_loss(output, targets, [0, 0, 1]).loss
+    loss.backward()
+    assert model.mem_head.weight.grad is not None
+    assert model.mem_head.weight.grad.abs().sum().item() > 0
+    for reader in (
+        model.transformer.h[0].joint_attn.c_tok_kv.weight,
+        model.transformer.h[0].joint_attn.c_mem_kv.weight,
+    ):
+        assert reader.grad is not None
+        assert reader.grad.abs().sum().item() > 0
 
 
 def test_final_pass_can_be_reproduced_from_previous_pass_memory_input():
@@ -240,6 +303,7 @@ def test_generation_restores_mode_and_validates_sampling_even_for_zero_tokens():
     "model",
     [
         MemoryTapeTransformer(MemoryTapeConfig(8, 17, 1, 1, 8, 3)),
+        JointMemoryTapeTransformer(MultiPassConfig(8, 17, 1, 1, 8, 3)),
         MemoryConcatTransformer(MultiPassConfig(8, 17, 1, 1, 8, 3)),
         MemoryUpdateTransformer(MemoryUpdateConfig(8, 17, 1, 1, 8, 3)),
     ],
@@ -263,6 +327,7 @@ def test_model_factory_constructs_all_variants():
     expected = {
         "transformer": CausalTransformer,
         "memory_tape": MemoryTapeTransformer,
+        "joint_memory_tape": JointMemoryTapeTransformer,
         "memory_concat": MemoryConcatTransformer,
         "memory_update": MemoryUpdateTransformer,
     }

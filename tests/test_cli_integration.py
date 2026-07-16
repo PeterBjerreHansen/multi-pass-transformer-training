@@ -29,11 +29,11 @@ def test_bbh_training_cli_writes_restorable_checkpoint(tmp_path):
     result = _run(
         "-m", "experiments.train_bbh",
         "--preset", "pointer_chasing_smoke",
-        "--architecture", "memory_tape",
+        "--architecture", "joint_memory_tape",
         "--device", "cpu",
         "--run-dir", str(run_dir),
     )
-    assert "architecture: memory_tape" in result.stdout
+    assert "architecture: joint_memory_tape" in result.stdout
     assert (run_dir / "latest.pt").exists()
     assert (run_dir / "config.json").exists()
     assert (run_dir / "metrics.jsonl").exists()
@@ -48,7 +48,7 @@ def test_trace_training_drift_and_diagnostics_cli(tmp_path):
     _run(
         "-m", "experiments.train_trace",
         "--preset", "random_graph_walk_smoke",
-        "--architecture", "memory_tape",
+        "--architecture", "joint_memory_tape",
         "--device", "cpu",
         "--run-dir", str(run_dir),
     )

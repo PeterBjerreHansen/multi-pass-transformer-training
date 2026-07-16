@@ -256,6 +256,67 @@ class CausalCrossAttention(nn.Module):
         return self.c_proj(y)
 
 
+class CausalJointAttention(nn.Module):
+    """Causal token-query attention over token and shifted-memory sources."""
+
+    def __init__(self, config: TransformerConfig):
+        super().__init__()
+        self.c_q = nn.Linear(config.n_embd, config.n_embd, bias=False)
+        self.c_tok_kv = nn.Linear(config.n_embd, 2 * config.n_embd, bias=False)
+        self.c_mem_kv = nn.Linear(config.n_embd, 2 * config.n_embd, bias=False)
+        self.c_proj = nn.Linear(config.n_embd, config.n_embd, bias=False)
+        self.n_head = config.n_head
+        self.n_embd = config.n_embd
+        self.head_dim = config.n_embd // config.n_head
+        self.flash = hasattr(F, "scaled_dot_product_attention")
+
+    def forward(
+        self,
+        query: torch.Tensor,
+        token_sources: torch.Tensor,
+        memory: torch.Tensor,
+    ) -> torch.Tensor:
+        batch_size, seq_len, dim = query.shape
+        token_batch, token_len, token_dim = token_sources.shape
+        memory_batch, memory_len, memory_dim = memory.shape
+        if (batch_size, seq_len, dim) != (token_batch, token_len, token_dim):
+            raise ValueError("query and token_sources must share shape")
+        if (batch_size, seq_len, dim) != (memory_batch, memory_len, memory_dim):
+            raise ValueError("query and memory must share shape")
+
+        q = self.c_q(query)
+        token_k, token_v = self.c_tok_kv(token_sources).split(self.n_embd, dim=-1)
+        memory_k, memory_v = self.c_mem_kv(memory).split(self.n_embd, dim=-1)
+        q = q.view(batch_size, seq_len, self.n_head, self.head_dim).transpose(1, 2)
+        token_k = token_k.view(batch_size, seq_len, self.n_head, self.head_dim).transpose(1, 2)
+        token_v = token_v.view(batch_size, seq_len, self.n_head, self.head_dim).transpose(1, 2)
+        memory_k = memory_k.view(batch_size, memory_len, self.n_head, self.head_dim).transpose(1, 2)
+        memory_v = memory_v.view(batch_size, memory_len, self.n_head, self.head_dim).transpose(1, 2)
+        k = torch.cat((token_k, memory_k), dim=-2)
+        v = torch.cat((token_v, memory_v), dim=-2)
+
+        positions = torch.arange(seq_len, device=query.device)
+        source_positions = torch.cat((positions, positions))
+        allowed = source_positions.unsqueeze(0) <= positions.unsqueeze(1)
+
+        if self.flash:
+            y = F.scaled_dot_product_attention(
+                q,
+                k,
+                v,
+                attn_mask=allowed,
+                dropout_p=0.0,
+                is_causal=False,
+            )
+        else:
+            scores = (q @ k.transpose(-2, -1)) / math.sqrt(self.head_dim)
+            scores = scores.masked_fill(~allowed, float("-inf"))
+            y = F.softmax(scores, dim=-1) @ v
+
+        y = y.transpose(1, 2).contiguous().view(batch_size, seq_len, dim)
+        return self.c_proj(y)
+
+
 def shift_right(memory: torch.Tensor) -> torch.Tensor:
     if memory.ndim != 3:
         raise ValueError("memory must have shape [B, T, D]")
@@ -713,6 +774,40 @@ class MemoryTapeTransformer(MultiPassTransformer):
             "mean_abs_effective": float(tensor.abs().mean().item()),
             "max_abs_effective": float(tensor.abs().max().item()),
         }
+
+
+class JointMemoryBlock(nn.Module):
+    def __init__(self, config: MultiPassConfig):
+        super().__init__()
+        self.ln_joint_q = LayerNorm(config.n_embd)
+        self.ln_token_kv = LayerNorm(config.n_embd)
+        self.ln_mem_kv = LayerNorm(config.n_embd)
+        self.joint_attn = CausalJointAttention(config)
+        self.ln_mlp = LayerNorm(config.n_embd)
+        self.mlp = MLP(config)
+
+    def forward(self, x: torch.Tensor, memory_states: torch.Tensor) -> torch.Tensor:
+        joint_delta = self.joint_attn(
+            self.ln_joint_q(x),
+            self.ln_token_kv(x),
+            self.ln_mem_kv(memory_states),
+        )
+        x = x + joint_delta
+        return x + self.mlp(self.ln_mlp(x))
+
+
+class JointMemoryTapeTransformer(MultiPassTransformer):
+    block_cls = JointMemoryBlock
+
+    def __init__(self, config: MultiPassConfig):
+        super().__init__(config)
+        self.finish_initialization()
+
+    def _run_full_pass(self, token_stream: torch.Tensor, memory_tape: torch.Tensor) -> torch.Tensor:
+        hidden = token_stream
+        for block in self.transformer.h:
+            hidden = block(hidden, memory_tape)
+        return hidden
 
 
 class MemoryUpdateBlock(nn.Module):

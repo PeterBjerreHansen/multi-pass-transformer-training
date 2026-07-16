@@ -135,6 +135,19 @@ MemoryTape retains an ordinary causal token decoder. Its decoder is:
 
 Memory attention is causal over $R$ and separately addressable; the tape is not concatenated with the token stream. Each layer has a learned scalar $\gamma$, initialized to `0.1`. On pass one, $R=0$, so the memory-attention contribution is exactly zero and the model begins as a causal token decoder. Later passes can use the full shifted history in $R$.
 
+### Joint Token-and-Memory Attention: The JointMemoryTape Architecture
+
+JointMemoryTape is a narrow MemoryTape alternative: it retains the same token working stream, shifted read-only tape, and shared memory writer, but replaces the separate token and memory reads with one attention distribution:
+
+> **JointMemoryTape decoder**
+>
+> $`H = X`$<br>
+> $`\textbf{for each decoder block:}`$<br>
+> &nbsp;&nbsp; $`H = H + \mathrm{JointAttn}\left(\mathrm{LN}_{q}(H), \mathrm{LN}_{\mathrm{tok}}(H), \mathrm{LN}_{\mathrm{mem}}(R)\right)`$<br>
+> &nbsp;&nbsp; $`H = H + \mathrm{MLP}(\mathrm{LN}_{\mathrm{mlp}}(H))`$<br>
+
+For token queries, JointMemoryTape concatenates causal token keys and values with causal shifted-memory keys and values. Token and memory sources have separate key/value projections, but compete within the same softmax distribution. The shifted tape remains position-aligned with the token stream, so no second positional embedding is added. Unlike MemoryTape, there is no memory gate: when $R=0$ on pass one, the memory values are zero but their source positions still occupy probability mass. This deliberate first-pass dilution is part of the pure joint-attention ablation, rather than an attempt to reproduce a token-only decoder at initialization.
+
 ### Memory Through Embedding Concatenation: The MemoryConcat Architecture
 
 MemoryConcat removes the separate memory reader. Its decoder is:
@@ -223,7 +236,7 @@ python3 -m experiments.train_trace \
   --run-dir results/trace/othello/memory_tape/example_run
 ```
 
-The available architectures are `transformer`, `memory_tape`, `memory_concat`, and `memory_update`.
+The available architectures are `transformer`, `memory_tape`, `joint_memory_tape`, `memory_concat`, and `memory_update`.
 
 Each training run writes:
 
@@ -286,6 +299,14 @@ MemoryTape:
 python3 -m experiments.train_bbh \
   --preset permutation_main \
   --architecture memory_tape
+```
+
+JointMemoryTape:
+
+```bash
+python3 -m experiments.train_bbh \
+  --preset permutation_main \
+  --architecture joint_memory_tape
 ```
 
 MemoryConcat:

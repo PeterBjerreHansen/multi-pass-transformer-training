@@ -16,7 +16,7 @@ from experiments.common import (
 )
 from experiments.eval_diagnostics import memory_interventions, pass_dynamics, teacher_forced_schedule_gap
 from experiments.train_bbh import BBH_TASKS, build_fixed_eval_batches, parse_args as parse_bbh_args
-from models import MemoryTapeConfig, MemoryTapeTransformer
+from models import JointMemoryTapeTransformer, MemoryTapeConfig, MemoryTapeTransformer, MultiPassConfig
 from tasks.bbh import pointer_chasing
 
 
@@ -97,6 +97,19 @@ def test_memory_interventions_pass_dynamics_and_schedule_gap_return_finite_value
                 assert torch.isfinite(torch.tensor(value)), name
 
 
+def test_joint_memory_tape_diagnostics_return_finite_values():
+    model = JointMemoryTapeTransformer(MultiPassConfig(24, 11, 1, 1, 8, 3))
+    _vocab, stoi, _ = pointer_chasing.build_pointer_chasing_vocab(4)
+    batch = pointer_chasing.build_pointer_chasing_batch(2, 4, 2, stoi, device="cpu", rng=random.Random(2))
+    interventions = memory_interventions(model, batch, seed=3)
+    assert all(torch.isfinite(torch.tensor(value)) for value in interventions["losses"].values())
+    dynamics = pass_dynamics(model, batch, extra_passes=2)
+    assert len(dynamics["extra_passes"]) == 2
+    schedule_gap = teacher_forced_schedule_gap(model, batch, horizon=2)
+    assert schedule_gap["overall"]["count"] == 4
+    assert all(torch.isfinite(torch.tensor(value)) for value in schedule_gap["overall"].values())
+
+
 def test_gradient_norms_cover_memory_subsystems_after_backward():
     model = MemoryTapeTransformer(MemoryTapeConfig(24, 11, 1, 1, 8, 3))
     _vocab, stoi, _ = pointer_chasing.build_pointer_chasing_vocab(4)
@@ -106,6 +119,19 @@ def test_gradient_norms_cover_memory_subsystems_after_backward():
     loss.backward()
     norms = gradient_norms(model)
     assert {"global", "backbone", "memory_writer", "memory_attention", "memory_gate"} <= set(norms)
+    assert all(torch.isfinite(torch.tensor(value)) and value > 0 for value in norms.values())
+
+
+def test_joint_memory_tape_gradient_norms_cover_memory_attention_after_backward():
+    model = JointMemoryTapeTransformer(MultiPassConfig(24, 11, 1, 1, 8, 3))
+    _vocab, stoi, _ = pointer_chasing.build_pointer_chasing_vocab(4)
+    batch = pointer_chasing.build_pointer_chasing_batch(2, 4, 2, stoi, device="cpu", rng=random.Random(2))
+    output = model(batch.idx)
+    loss = model.calc_total_loss(output, batch.targets, [0, 0, 1]).loss
+    loss.backward()
+    norms = gradient_norms(model)
+    assert {"global", "backbone", "memory_writer", "memory_attention"} <= set(norms)
+    assert "memory_gate" not in norms
     assert all(torch.isfinite(torch.tensor(value)) and value > 0 for value in norms.values())
 
 

@@ -35,6 +35,7 @@ from experiments.common import (
     validate_training_args,
 )
 from experiments.presets import BBH_PRESETS, preset_help_text, resolve_preset_args
+from model_factory import ARCHITECTURES
 
 
 @dataclass(frozen=True)
@@ -119,7 +120,7 @@ def parse_args(argv: list[str] | None = None):
     )
     _add_override(parser, "--preset", choices=sorted(BBH_PRESETS), help=preset_help_text(BBH_PRESETS))
     _add_override(parser, "--task", choices=sorted(BBH_TASKS))
-    _add_override(parser, "--architecture", choices=["transformer", "memory_tape", "memory_concat", "memory_update"])
+    _add_override(parser, "--architecture", choices=ARCHITECTURES)
     _add_override(parser, "--model-size", choices=["tiny", "small", "medium", "large"])
     _add_override(parser, "--inference-mode", choices=["recompute", "append_recurrent"])
     _add_override(parser, "--token-selection", choices=["sample", "argmax"])

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from models import (
     CausalTransformer,
+    JointMemoryTapeTransformer,
     MemoryConcatTransformer,
     MemoryTapeConfig,
     MemoryTapeTransformer,
@@ -12,7 +13,7 @@ from models import (
 )
 
 
-ARCHITECTURES = ("transformer", "memory_tape", "memory_concat", "memory_update")
+ARCHITECTURES = ("transformer", "memory_tape", "joint_memory_tape", "memory_concat", "memory_update")
 
 
 def is_multi_pass_architecture(architecture: str) -> bool:
@@ -33,6 +34,13 @@ def build_model(args, vocab_size: int, block_size: int, device: str):
     elif args.architecture == "memory_tape":
         model = MemoryTapeTransformer(
             MemoryTapeConfig(
+                **common,
+                n_pass=args.n_pass,
+            )
+        )
+    elif args.architecture == "joint_memory_tape":
+        model = JointMemoryTapeTransformer(
+            MultiPassConfig(
                 **common,
                 n_pass=args.n_pass,
             )
