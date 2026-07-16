@@ -78,6 +78,13 @@ def apply_model_size_preset(args) -> None:
 
 def validate_model_args(args) -> None:
     apply_model_size_preset(args)
+    if not hasattr(args, "n_memory_embd"):
+        args.n_memory_embd = None
+    if args.n_memory_embd is not None:
+        if args.architecture != "memory_tape":
+            raise ValueError("--n-memory-embd is supported only by memory_tape")
+        if args.n_memory_embd < 1:
+            raise ValueError("--n-memory-embd must be positive")
     if args.n_layer < 1 or args.n_head < 1 or args.n_embd < 1:
         raise ValueError("model dimensions must be positive")
     if args.n_embd % args.n_head != 0:
@@ -155,10 +162,26 @@ def model_benchmark_stats(model) -> dict[str, int]:
     """Return stable model-size fields for configs and benchmark reports."""
     total = sum(parameter.numel() for parameter in model.parameters())
     non_embedding = model.get_num_params(non_embedding=True)
-    return {
+    result = {
         "total_parameters": int(total),
         "non_embedding_parameters": int(non_embedding),
     }
+    memory_dim = getattr(model, "memory_dim", None)
+    if memory_dim is not None:
+        element_bytes = next(model.parameters()).element_size()
+        result.update(
+            {
+                "memory_embedding_dim": int(memory_dim),
+                "memory_bytes_per_token": int(memory_dim * element_bytes),
+                "persistent_tape_bytes_per_sequence": int(
+                    model.config.block_size * memory_dim * element_bytes
+                ),
+                "reader_input_bytes_per_pass": int(
+                    model.config.n_layer * model.config.block_size * memory_dim * element_bytes
+                ),
+            }
+        )
+    return result
 
 
 def runtime_resource_stats(device: str | None) -> dict[str, int | float]:

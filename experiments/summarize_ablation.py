@@ -70,6 +70,9 @@ def collect_run(run_dir: Path) -> dict[str, float | str]:
     final_eval = _last_eval(events)
     diagnostics = _read_json(run_dir / "diagnostics.json") or {}
     result: dict[str, float | str] = {"run_dir": str(run_dir)}
+    checkpoint = run_dir / "latest.pt"
+    if checkpoint.exists():
+        result["checkpoint_size_bytes"] = float(checkpoint.stat().st_size)
 
     numeric: dict[str, float] = {}
     _flatten("model", config.get("model_stats", {}), numeric)
@@ -152,7 +155,7 @@ def recommend(
     train_ratio = _median_ratio(control, treatment, "train.train_tok_per_s")
     eval_ratio = _median_ratio(control, treatment, "drift.append_recurrent.eval_output_tok_per_s")
     parameter_ratio = _median_ratio(control, treatment, "model.non_embedding_parameters")
-    tape_ratio = _median_ratio(control, treatment, "model_config.memory_bytes_per_token")
+    tape_ratio = _median_ratio(control, treatment, "model.memory_bytes_per_token")
     efficiency_win = bool(
         (train_ratio is not None and train_ratio >= 1.0 + THROUGHPUT_WIN)
         or (eval_ratio is not None and eval_ratio >= 1.0 + THROUGHPUT_WIN)

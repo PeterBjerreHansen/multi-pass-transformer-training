@@ -14,6 +14,7 @@ from experiments.common import (
     load_checkpoint_payload,
     restore_checkpoint_state,
     runtime_resource_stats,
+    model_benchmark_stats,
     save_latest_checkpoint,
 )
 from experiments.summarize_ablation import recommend
@@ -267,3 +268,12 @@ def test_ablation_recommendation_accepts_noninferior_efficiency_win():
     assert result["quality_noninferior"]
     assert result["efficiency_win"]
     assert result["recommend_merge"]
+
+
+def test_memory_width_benchmark_stats_report_tape_bandwidth():
+    model = MemoryTapeTransformer(MemoryTapeConfig(12, 19, 2, 2, 8, 3, n_memory_embd=4))
+    stats = model_benchmark_stats(model)
+    assert stats["memory_embedding_dim"] == 4
+    assert stats["memory_bytes_per_token"] == 16
+    assert stats["persistent_tape_bytes_per_sequence"] == 12 * 16
+    assert stats["reader_input_bytes_per_pass"] == 2 * 12 * 16

@@ -103,6 +103,18 @@ def test_cross_attention_manual_and_sdpa_paths_agree():
     assert torch.allclose(actual, expected, atol=1e-6, rtol=1e-5)
 
 
+def test_cross_attention_supports_independent_memory_width():
+    config = TransformerConfig(8, 17, 1, 2, 8)
+    attention = CausalCrossAttention(config, memory_dim=4)
+    query = torch.randn(2, 6, 8)
+    memory = torch.randn(2, 6, 4)
+    expected = attention(query, memory)
+    attention.flash = False
+    actual = attention(query, memory)
+    assert actual.shape == query.shape
+    assert torch.allclose(actual, expected, atol=1e-6, rtol=1e-5)
+
+
 def test_token_memory_attention_manual_and_sdpa_paths_agree():
     config = MultiPassConfig(8, 17, 1, 2, 8, 2)
     attention = CausalTokenMemoryAttention(config)
@@ -196,6 +208,40 @@ def test_memory_tape_uses_standard_memory_normalization_and_shared_writer():
     assert isinstance(model.transformer.h[0].ln_mem_kv, LayerNorm)
     hidden = torch.randn(2, 6, 8)
     assert torch.equal(model.write_memory(hidden), model.mem_head(model.ln_mem(hidden)))
+
+
+@pytest.mark.parametrize("memory_dim", [2, 4, 8])
+def test_memory_tape_supports_independent_memory_width(memory_dim):
+    model = MemoryTapeTransformer(
+        MemoryTapeConfig(12, 19, 2, 2, 8, 3, n_memory_embd=memory_dim)
+    )
+    tokens = torch.randint(0, 19, (2, 8))
+    output = model(tokens)
+    assert model.memory_dim == memory_dim
+    assert all(item.memory_states.shape == (2, 8, memory_dim) for item in output.passes)
+    hidden = torch.randn(2, 8, 8)
+    assert torch.equal(model.write_memory(hidden), model.ln_mem(model.mem_head(hidden)))
+    state = model.prefill_recurrent(tokens[:, :5])
+    assert state.memory_states.shape == (2, 5, memory_dim)
+    next_token = state.next_token_logits.argmax(dim=-1, keepdim=True)
+    assert model.recurrent_step(state, next_token).memory_states.shape == (2, 6, memory_dim)
+
+
+def test_narrower_memory_reduces_parameters_and_receives_gradients():
+    models = [
+        MemoryTapeTransformer(MemoryTapeConfig(12, 19, 2, 2, 8, 3, n_memory_embd=width))
+        for width in (2, 4, 8)
+    ]
+    assert [model.get_num_params() for model in models] == sorted(model.get_num_params() for model in models)
+    model = models[0]
+    tokens = torch.randint(0, 19, (2, 8))
+    targets = torch.randint(0, 19, (2, 8))
+    loss = model.calc_total_loss(model(tokens), targets, [0, 0, 1]).loss
+    loss.backward()
+    assert model.mem_head.weight.grad is not None
+    assert model.transformer.h[0].cross_attn.c_kv.weight.grad is not None
+    with pytest.raises(ValueError, match="positive"):
+        MemoryTapeConfig(12, 19, 2, 2, 8, 3, n_memory_embd=0)
 
 
 def test_causal_transformer_structured_output_and_generation():

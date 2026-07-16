@@ -118,11 +118,14 @@ class MultiPassConfig(TransformerConfig):
 @dataclass
 class MemoryTapeConfig(MultiPassConfig):
     memory_gate_init: float = 0.1
+    n_memory_embd: int | None = None
 
     def __post_init__(self) -> None:
         super().__post_init__()
         if not math.isfinite(self.memory_gate_init):
             raise ValueError("memory_gate_init must be finite")
+        if self.n_memory_embd is not None and self.n_memory_embd < 1:
+            raise ValueError("n_memory_embd must be positive when specified")
 
 
 @dataclass
@@ -217,10 +220,11 @@ class Block(nn.Module):
 class CausalCrossAttention(nn.Module):
     """Causal cross-attention into an already right-shifted memory tape."""
 
-    def __init__(self, config: TransformerConfig):
+    def __init__(self, config: TransformerConfig, *, memory_dim: int | None = None):
         super().__init__()
+        self.memory_dim = memory_dim or config.n_embd
         self.c_q = nn.Linear(config.n_embd, config.n_embd, bias=False)
-        self.c_kv = nn.Linear(config.n_embd, 2 * config.n_embd, bias=False)
+        self.c_kv = nn.Linear(self.memory_dim, 2 * config.n_embd, bias=False)
         self.c_proj = nn.Linear(config.n_embd, config.n_embd, bias=False)
         self.n_head = config.n_head
         self.n_embd = config.n_embd
@@ -230,8 +234,8 @@ class CausalCrossAttention(nn.Module):
     def forward(self, x: torch.Tensor, memory: torch.Tensor) -> torch.Tensor:
         batch_size, seq_len, dim = x.shape
         memory_batch, memory_len, memory_dim = memory.shape
-        if (batch_size, dim) != (memory_batch, memory_dim):
-            raise ValueError("x and memory must share batch size and embedding dimension")
+        if batch_size != memory_batch or dim != self.n_embd or memory_dim != self.memory_dim:
+            raise ValueError("x and memory have incompatible batch or embedding dimensions")
         if memory_len != seq_len:
             raise ValueError("x and memory must share sequence length")
 
@@ -504,6 +508,9 @@ class MultiPassTransformer(nn.Module):
     def __init__(self, config: MultiPassConfig):
         super().__init__()
         self.config = config
+        explicit_memory_width = isinstance(config, MemoryTapeConfig) and config.n_memory_embd is not None
+        self.memory_dim = config.n_memory_embd if explicit_memory_width else config.n_embd
+        self._normalize_memory_output = explicit_memory_width
         if self.block_cls is None:
             raise ValueError(f"{type(self).__name__} must define block_cls")
         self.transformer = nn.ModuleDict(
@@ -515,8 +522,8 @@ class MultiPassTransformer(nn.Module):
             }
         )
         self.lm_head = nn.Linear(config.n_embd, config.vocab_size, bias=False)
-        self.ln_mem = LayerNorm(config.n_embd)
-        self.mem_head = nn.Linear(config.n_embd, config.n_embd, bias=False)
+        self.ln_mem = LayerNorm(self.memory_dim if explicit_memory_width else config.n_embd)
+        self.mem_head = nn.Linear(config.n_embd, self.memory_dim, bias=False)
 
     def finish_initialization(self) -> None:
         self.apply(self._init_weights)
@@ -552,11 +559,17 @@ class MultiPassTransformer(nn.Module):
         return self.transformer.wte(idx) + self.transformer.wpe(positions)[None, :, :]
 
     def write_memory(self, hidden_states: torch.Tensor) -> torch.Tensor:
+        if self._normalize_memory_output:
+            return self.ln_mem(self.mem_head(hidden_states))
         return self.mem_head(self.ln_mem(hidden_states))
 
     def forward_pass(self, token_stream: torch.Tensor, previous_memory: torch.Tensor) -> PassOutput:
-        if token_stream.shape != previous_memory.shape:
-            raise ValueError("token_stream and previous_memory must have the same shape")
+        if token_stream.ndim != 3 or previous_memory.ndim != 3:
+            raise ValueError("token_stream and previous_memory must have shape [B, T, D]")
+        if token_stream.shape[:2] != previous_memory.shape[:2]:
+            raise ValueError("token_stream and previous_memory must share batch and sequence dimensions")
+        if token_stream.shape[2] != self.config.n_embd or previous_memory.shape[2] != self.memory_dim:
+            raise ValueError("token_stream or previous_memory has the wrong embedding dimension")
         memory_tape = shift_right(previous_memory)
         hidden = self._run_full_pass(token_stream, memory_tape)
         hidden = self.transformer.ln_f(hidden)
@@ -566,7 +579,9 @@ class MultiPassTransformer(nn.Module):
 
     def forward(self, idx: torch.Tensor) -> MultiPassOutput:
         token_stream = self.embed_tokens(idx)
-        previous_memory = torch.zeros_like(token_stream)
+        previous_memory = token_stream.new_zeros(
+            token_stream.shape[0], token_stream.shape[1], self.memory_dim
+        )
         passes: list[PassOutput] = []
         for _ in range(self.config.n_pass):
             output = self.forward_pass(token_stream, previous_memory)
@@ -624,7 +639,7 @@ class MultiPassTransformer(nn.Module):
             raise ValueError("invalid recurrent state shapes")
         if state.memory_states.shape[:2] != state.tokens.shape:
             raise ValueError("recurrent memory must align with recurrent tokens")
-        if state.memory_states.shape[2] != self.config.n_embd:
+        if state.memory_states.shape[2] != self.memory_dim:
             raise ValueError("recurrent memory has the wrong embedding dimension")
         if next_token.ndim != 2 or next_token.shape != (state.tokens.shape[0], 1):
             raise ValueError("next_token must have shape [B, 1]")
@@ -741,11 +756,12 @@ class MemoryConcatTransformer(MultiPassTransformer):
 class MemoryBlock(nn.Module):
     def __init__(self, config: MemoryTapeConfig):
         super().__init__()
+        memory_dim = config.n_memory_embd or config.n_embd
         self.ln_self = LayerNorm(config.n_embd)
         self.attn = CausalSelfAttention(config)
         self.ln_mem_q = LayerNorm(config.n_embd)
-        self.ln_mem_kv = LayerNorm(config.n_embd)
-        self.cross_attn = CausalCrossAttention(config)
+        self.ln_mem_kv = LayerNorm(memory_dim)
+        self.cross_attn = CausalCrossAttention(config, memory_dim=memory_dim)
         self.memory_gate = nn.Parameter(torch.tensor(float(config.memory_gate_init)))
         self.ln_mlp = LayerNorm(config.n_embd)
         self.mlp = MLP(config)
