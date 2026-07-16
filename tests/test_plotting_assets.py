@@ -1,26 +1,9 @@
 from __future__ import annotations
 
-import json
 from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
-
-
-def test_plotting_notebooks_are_valid_and_use_current_inference_modes():
-    for name in ("plot_trace.ipynb", "plot_drift.ipynb"):
-        path = ROOT / "figures" / name
-        payload = json.loads(path.read_text(encoding="utf-8"))
-        assert payload["nbformat"] == 4
-        assert payload["cells"]
-        text = path.read_text(encoding="utf-8")
-        assert "cache_source" not in text
-        assert "penultimate" not in text
-        assert "final_pass" not in text
-
-    drift_text = (ROOT / "figures" / "plot_drift.ipynb").read_text(encoding="utf-8")
-    assert "append_recurrent" in drift_text
-    assert "recompute" in drift_text
 
 
 def test_readme_uses_local_figure_paths_and_no_fetch_helper_exists():

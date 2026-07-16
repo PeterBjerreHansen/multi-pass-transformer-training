@@ -9,6 +9,7 @@ from model_factory import build_model
 from models import (
     CausalCrossAttention,
     CausalTransformer,
+    LayerNorm,
     MemoryBlock,
     MemoryConcatTransformer,
     MemoryTapeConfig,
@@ -97,6 +98,13 @@ def test_memory_block_has_no_first_pass_intercept():
     assert torch.equal(actual, expected)
 
 
+def test_memory_tape_uses_standard_memory_normalization_and_shared_writer():
+    model = tiny_memory_model()
+    assert isinstance(model.transformer.h[0].ln_mem_kv, LayerNorm)
+    hidden = torch.randn(2, 6, 8)
+    assert torch.equal(model.write_memory(hidden), model.mem_head(model.ln_mem(hidden)))
+
+
 def test_causal_transformer_structured_output_and_generation():
     model = CausalTransformer(TransformerConfig(8, 17, 1, 1, 8))
     tokens = torch.randint(0, 17, (2, 6))
@@ -167,15 +175,6 @@ def test_final_pass_loss_reaches_memory_writer_and_reader():
     reader = model.transformer.h[0].cross_attn.c_kv.weight
     assert reader.grad is not None
     assert reader.grad.abs().sum().item() > 0
-
-
-def test_written_memories_are_normalized_per_token():
-    model = tiny_memory_model()
-    memory = model(torch.randint(0, 19, (2, 8))).final_memory
-    means = memory.mean(dim=-1)
-    variances = memory.var(dim=-1, unbiased=False)
-    assert means.abs().max().item() < 1e-5
-    assert torch.allclose(variances, torch.ones_like(variances), atol=1e-2, rtol=0)
 
 
 def test_final_pass_can_be_reproduced_from_previous_pass_memory_input():

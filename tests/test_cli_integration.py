@@ -37,6 +37,10 @@ def test_bbh_training_cli_writes_restorable_checkpoint(tmp_path):
     assert (run_dir / "latest.pt").exists()
     assert (run_dir / "config.json").exists()
     assert (run_dir / "metrics.jsonl").exists()
+    events = [json.loads(line) for line in (run_dir / "metrics.jsonl").read_text(encoding="utf-8").splitlines()]
+    evaluation = next(event for event in events if event["event"] == "eval")
+    assert "gradient_norms" in evaluation
+    assert evaluation["gradient_norms"]["global"]["max"] > 0
 
 
 def test_trace_training_drift_and_diagnostics_cli(tmp_path):
@@ -62,6 +66,12 @@ def test_trace_training_drift_and_diagnostics_cli(tmp_path):
     payload = json.loads(diagnostics.read_text(encoding="utf-8"))
     assert "memory_interventions" in payload
     assert len(payload["pass_dynamics"]["extra_passes"]) == 2
+    assert payload["teacher_forced_schedule_gap"]["horizon"] == 16
+    assert payload["teacher_forced_schedule_gap"]["overall"]["count"] > 0
+
+    trace_events = [json.loads(line) for line in (run_dir / "metrics.jsonl").read_text(encoding="utf-8").splitlines()]
+    trace_evaluation = next(event for event in trace_events if event["event"] == "eval")
+    assert trace_evaluation["gradient_norms"]["global"]["mean"] > 0
 
     drift_dir = tmp_path / "drift"
     _run(

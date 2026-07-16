@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 import hashlib
 import json
+import math
 from pathlib import Path
 import random
 import shlex
@@ -205,6 +206,68 @@ def forward_and_loss(model, batch, args):
         loss_weights=args.pass_loss_weights,
     )
     return loss_output.loss, output, tuple(item.detach() for item in loss_output.pass_losses)
+
+
+def gradient_norms(model) -> dict[str, float]:
+    """Return L2 gradient norms for the model and its memory-specific subsystems.
+
+    Parameter groups are disjoint so their norms can be compared to the global
+    norm without double-counting.  Groups that have no gradient on a step are
+    omitted rather than reported as a misleading zero.
+    """
+    squared_sums: dict[str, torch.Tensor] = {}
+    counts: dict[str, int] = {}
+
+    for name, parameter in model.named_parameters():
+        if parameter.grad is None:
+            continue
+        squared_norm = parameter.grad.detach().float().square().sum()
+
+        if "memory_gate" in name or "token_gate" in name:
+            group = "memory_gate"
+        elif "cross_attn" in name or "token_attn" in name:
+            group = "memory_attention"
+        elif name.startswith(("mem_head", "ln_mem")):
+            group = "memory_writer"
+        else:
+            group = "backbone"
+
+        for group_name in ("global", group):
+            squared_sums[group_name] = squared_sums.get(group_name, squared_norm.new_zeros(())) + squared_norm
+            counts[group_name] = counts.get(group_name, 0) + 1
+
+    return {
+        group: math.sqrt(float(value.item()))
+        for group, value in squared_sums.items()
+        if counts.get(group, 0) > 0
+    }
+
+
+def update_gradient_norm_window(window: dict[str, dict[str, float]], norms: dict[str, float]) -> None:
+    """Accumulate mean and maximum gradient norms over a training interval."""
+    for group, value in norms.items():
+        entry = window.setdefault(group, {"sum": 0.0, "max": 0.0, "count": 0.0})
+        entry["sum"] += value
+        entry["max"] = max(entry["max"], value)
+        entry["count"] += 1
+
+
+def summarize_gradient_norm_window(window: dict[str, dict[str, float]]) -> dict[str, dict[str, float]]:
+    return {
+        group: {
+            "mean": entry["sum"] / entry["count"],
+            "max": entry["max"],
+        }
+        for group, entry in window.items()
+        if entry["count"] > 0
+    }
+
+
+def format_gradient_norms(summary: dict[str, dict[str, float]]) -> str | None:
+    global_norm = summary.get("global")
+    if global_norm is None:
+        return None
+    return f"grad_norm mean/max {global_norm['mean']:.3g}/{global_norm['max']:.3g}"
 
 
 @torch.no_grad()

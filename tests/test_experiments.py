@@ -9,11 +9,12 @@ import torch
 from experiments.common import (
     RunArtifacts,
     evaluate_prebuilt_batches,
+    gradient_norms,
     load_checkpoint_payload,
     restore_checkpoint_state,
     save_latest_checkpoint,
 )
-from experiments.eval_diagnostics import memory_interventions, pass_dynamics
+from experiments.eval_diagnostics import memory_interventions, pass_dynamics, teacher_forced_schedule_gap
 from experiments.train_bbh import BBH_TASKS, build_fixed_eval_batches, parse_args as parse_bbh_args
 from models import MemoryTapeConfig, MemoryTapeTransformer
 from tasks.bbh import pointer_chasing
@@ -63,7 +64,7 @@ def test_evaluation_sampling_is_repeatable_and_does_not_change_global_rng():
     assert torch.equal(before, after)
 
 
-def test_memory_interventions_and_pass_dynamics_return_finite_values():
+def test_memory_interventions_pass_dynamics_and_schedule_gap_return_finite_values():
     model = MemoryTapeTransformer(MemoryTapeConfig(24, 11, 1, 1, 8, 3))
     _vocab, stoi, _ = pointer_chasing.build_pointer_chasing_vocab(4)
     batch = pointer_chasing.build_pointer_chasing_batch(2, 4, 2, stoi, device="cpu", rng=random.Random(2))
@@ -79,6 +80,33 @@ def test_memory_interventions_and_pass_dynamics_return_finite_values():
     assert len(dynamics["trained_passes"]) == 3
     assert len(dynamics["extra_passes"]) == 2
     assert all(torch.isfinite(torch.tensor(item["loss"])) for item in dynamics["extra_passes"])
+
+    model.eval()
+    schedule_gap = teacher_forced_schedule_gap(model, batch, horizon=2)
+    assert schedule_gap["horizon"] == 2
+    assert [item["count"] for item in schedule_gap["positions"]] == [2, 2]
+    assert schedule_gap["overall"]["count"] == 4
+    first = schedule_gap["positions"][0]
+    assert first["logit_kl"] < 1e-6
+    assert abs(first["nll_delta"]) < 1e-6
+    assert first["top1_agreement"] == 1.0
+    assert first["memory_rms_delta"] < 1e-6
+    for position in schedule_gap["positions"]:
+        for name, value in position.items():
+            if name not in {"generated_position", "count"}:
+                assert torch.isfinite(torch.tensor(value)), name
+
+
+def test_gradient_norms_cover_memory_subsystems_after_backward():
+    model = MemoryTapeTransformer(MemoryTapeConfig(24, 11, 1, 1, 8, 3))
+    _vocab, stoi, _ = pointer_chasing.build_pointer_chasing_vocab(4)
+    batch = pointer_chasing.build_pointer_chasing_batch(2, 4, 2, stoi, device="cpu", rng=random.Random(2))
+    output = model(batch.idx)
+    loss = model.calc_total_loss(output, batch.targets, [0, 0, 1]).loss
+    loss.backward()
+    norms = gradient_norms(model)
+    assert {"global", "backbone", "memory_writer", "memory_attention", "memory_gate"} <= set(norms)
+    assert all(torch.isfinite(torch.tensor(value)) and value > 0 for value in norms.values())
 
 
 def _one_step(model, optimizer, tokens, targets):

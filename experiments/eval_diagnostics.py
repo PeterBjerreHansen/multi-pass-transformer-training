@@ -44,6 +44,12 @@ def parse_args(argv: list[str] | None = None):
     parser.add_argument("--batch-size", type=int, default=None)
     parser.add_argument("--eval-batches", type=int, default=1)
     parser.add_argument("--extra-passes", type=int, default=4)
+    parser.add_argument(
+        "--schedule-gap-horizon",
+        type=int,
+        default=16,
+        help="Maximum number of teacher-forced suffix positions to compare.",
+    )
     parser.add_argument("--seed", type=int, default=1337)
     return parser.parse_args(argv)
 
@@ -250,6 +256,164 @@ def pass_dynamics(model, batch, *, extra_passes: int) -> dict:
     }
 
 
+def _single_token_nll(logits: torch.Tensor, target: torch.Tensor) -> float:
+    return float(F.cross_entropy(logits.unsqueeze(0), target.reshape(1)).item())
+
+
+def _summarize_schedule_gap_positions(entries_by_position: list[list[dict[str, float]]]) -> dict:
+    metric_names = (
+        "recompute_nll",
+        "append_nll",
+        "nll_delta",
+        "logit_kl",
+        "top1_agreement",
+        "memory_rms_delta",
+        "memory_cosine_distance",
+    )
+    positions = []
+    overall_entries = []
+    for index, entries in enumerate(entries_by_position, start=1):
+        count = len(entries)
+        if count == 0:
+            positions.append({"generated_position": index, "count": 0})
+            continue
+        overall_entries.extend(entries)
+        positions.append(
+            {
+                "generated_position": index,
+                "count": count,
+                **{name: sum(entry[name] for entry in entries) / count for name in metric_names},
+            }
+        )
+
+    overall_count = len(overall_entries)
+    overall = (
+        {
+            "count": overall_count,
+            **{
+                name: sum(entry[name] for entry in overall_entries) / overall_count
+                for name in metric_names
+            },
+        }
+        if overall_count
+        else {"count": 0}
+    )
+    return {"positions": positions, "overall": overall}
+
+
+@torch.no_grad()
+def teacher_forced_schedule_gap(model, batch, *, horizon: int) -> dict:
+    """Compare K-pass recomputation with append recurrence on matched gold prefixes.
+
+    The reference uses a single full teacher-forced K-pass forward.  Causality
+    makes its logits and final memories at each position identical to an
+    individual K-pass recomputation on that prefix.  The append path receives
+    the same gold suffix tokens one at a time, so any divergence is attributable
+    to its frozen/online memory schedule rather than sampled-token errors.
+    """
+    if horizon < 1:
+        raise ValueError("horizon must be positive")
+
+    reference = model(batch.idx)
+    entries_by_position: list[list[dict[str, float]]] = [[] for _ in range(horizon)]
+
+    for row in range(batch.idx.shape[0]):
+        prompt_len = int(batch.prompt_lengths[row].item())
+        output_len = int(batch.output_lengths[row].item())
+        steps = min(horizon, output_len)
+        prompt = batch.idx[row : row + 1, :prompt_len]
+        state = model.prefill_recurrent(prompt)
+
+        for offset in range(steps):
+            input_position = prompt_len - 1 + offset
+            target = batch.targets[row, input_position]
+            if int(target.item()) < 0:
+                raise ValueError("teacher-forced schedule diagnostic encountered an ignored target")
+
+            recompute_logits = reference.logits[row, input_position]
+            append_logits = state.next_token_logits[0]
+            reference_memory = reference.final_memory[row : row + 1, input_position]
+            append_memory = state.memory_states[:, -1, :]
+            memory_gap = _memory_distance(reference_memory, append_memory)
+            recompute_nll = _single_token_nll(recompute_logits, target)
+            append_nll = _single_token_nll(append_logits, target)
+            entries_by_position[offset].append(
+                {
+                    "recompute_nll": recompute_nll,
+                    "append_nll": append_nll,
+                    "nll_delta": append_nll - recompute_nll,
+                    "logit_kl": _logit_kl(recompute_logits.unsqueeze(0), append_logits.unsqueeze(0)),
+                    "top1_agreement": float((recompute_logits.argmax() == append_logits.argmax()).item()),
+                    "memory_rms_delta": memory_gap["rms_delta"],
+                    "memory_cosine_distance": memory_gap["mean_cosine_distance"],
+                }
+            )
+
+            # The final suffix target is EOS and does not need a subsequent
+            # state update.  Stopping at the requested horizon also makes this
+            # an inexpensive prefix diagnostic on long traces.
+            if offset + 1 < steps:
+                state = model.recurrent_step(state, target.reshape(1, 1))
+
+    return {
+        "horizon": horizon,
+        **_summarize_schedule_gap_positions(entries_by_position),
+    }
+
+
+def _aggregate_teacher_forced_schedule_gaps(results: list[dict]) -> dict:
+    if not results:
+        raise ValueError("at least one schedule-gap result is required")
+    horizon = int(results[0]["horizon"])
+    if any(int(result["horizon"]) != horizon for result in results):
+        raise ValueError("schedule-gap horizons must match")
+
+    metric_names = (
+        "recompute_nll",
+        "append_nll",
+        "nll_delta",
+        "logit_kl",
+        "top1_agreement",
+        "memory_rms_delta",
+        "memory_cosine_distance",
+    )
+
+    positions = []
+    overall_entries = []
+    for position_index in range(horizon):
+        entries = [result["positions"][position_index] for result in results]
+        count = sum(int(entry["count"]) for entry in entries)
+        if count == 0:
+            positions.append({"generated_position": position_index + 1, "count": 0})
+            continue
+        positions.append(
+            {
+                "generated_position": position_index + 1,
+                "count": count,
+                **{
+                    name: sum(float(entry.get(name, 0.0)) * int(entry["count"]) for entry in entries) / count
+                    for name in metric_names
+                },
+            }
+        )
+        overall_entries.extend(entries)
+
+    overall_count = sum(int(entry["count"]) for entry in overall_entries)
+    overall = (
+        {
+            "count": overall_count,
+            **{
+                name: sum(float(entry.get(name, 0.0)) * int(entry["count"]) for entry in overall_entries)
+                / overall_count
+                for name in metric_names
+            },
+        }
+        if overall_count
+        else {"count": 0}
+    )
+    return {"horizon": horizon, "positions": positions, "overall": overall}
+
+
 def _mean_numbers(items: list[dict]) -> dict:
     """Average identically structured diagnostic dictionaries."""
     if len(items) == 1:
@@ -271,6 +435,8 @@ def _mean_numbers(items: list[dict]) -> dict:
 def evaluate_diagnostics(cli_args) -> Path:
     if cli_args.extra_passes < 0:
         raise ValueError("--extra-passes must be non-negative")
+    if cli_args.schedule_gap_horizon < 1:
+        raise ValueError("--schedule-gap-horizon must be positive")
     args, run_dir = _load_args(cli_args)
     if not is_multi_pass_architecture(args.architecture):
         raise ValueError("memory diagnostics require a multi-pass architecture")
@@ -286,6 +452,7 @@ def evaluate_diagnostics(cli_args) -> Path:
     try:
         intervention_results = []
         dynamics_results = []
+        schedule_gap_results = []
         for batch_index, batch in enumerate(batches):
             intervention_results.append(
                 memory_interventions(
@@ -295,6 +462,9 @@ def evaluate_diagnostics(cli_args) -> Path:
                 )
             )
             dynamics_results.append(pass_dynamics(model, batch, extra_passes=cli_args.extra_passes))
+            schedule_gap_results.append(
+                teacher_forced_schedule_gap(model, batch, horizon=cli_args.schedule_gap_horizon)
+            )
     finally:
         model.train(was_training)
 
@@ -308,6 +478,7 @@ def evaluate_diagnostics(cli_args) -> Path:
         "eval_batches": args.eval_batches,
         "memory_interventions": _mean_numbers(intervention_results),
         "pass_dynamics": _mean_numbers(dynamics_results),
+        "teacher_forced_schedule_gap": _aggregate_teacher_forced_schedule_gaps(schedule_gap_results),
     }
     output = Path(cli_args.output).resolve() if cli_args.output else run_dir / "diagnostics.json"
     write_json(output, payload)

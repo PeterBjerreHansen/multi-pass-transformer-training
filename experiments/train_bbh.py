@@ -14,9 +14,11 @@ from experiments.common import (
     evaluate_prebuilt_batches,
     format_checkpoint_line,
     format_default_eval_metrics,
+    format_gradient_norms,
     format_memory_gate_stats,
     format_pass_losses,
     forward_and_loss,
+    gradient_norms,
     load_checkpoint_payload,
     memory_gate_stats,
     prepare_run_artifacts,
@@ -27,6 +29,8 @@ from experiments.common import (
     set_seed,
     stable_seed,
     synchronize_device,
+    summarize_gradient_norm_window,
+    update_gradient_norm_window,
     validate_model_args,
     validate_training_args,
 )
@@ -276,6 +280,7 @@ def run_answer_curriculum(args) -> None:
     window_start = time.perf_counter()
     window_steps = 0
     window_tokens = 0
+    gradient_norm_window: dict[str, dict[str, float]] = {}
 
     for step in range(start_step, final_step + 1):
         model.train()
@@ -290,6 +295,7 @@ def run_answer_curriculum(args) -> None:
         optimizer.zero_grad(set_to_none=True)
         loss, _output, pass_losses = forward_and_loss(model, batch, args)
         loss.backward()
+        update_gradient_norm_window(gradient_norm_window, gradient_norms(model))
         optimizer.step()
         window_steps += 1
         window_tokens += int(batch.idx.numel())
@@ -302,6 +308,8 @@ def run_answer_curriculum(args) -> None:
         elapsed = time.perf_counter() - window_start
         tok_per_s = window_tokens / elapsed if elapsed > 0 else 0.0
         fields = [f"loss {loss.item():.4f}", f"tok/s {tok_per_s:.1f}", f"level {current_level}"]
+        gradient_summary = summarize_gradient_norm_window(gradient_norm_window)
+        fields.append(format_gradient_norms(gradient_summary))
         if args.architecture != "transformer":
             fields.append(f"pass_losses {format_pass_losses(pass_losses)}")
         print(format_checkpoint_line(f"step {step}", fields))
@@ -330,6 +338,7 @@ def run_answer_curriculum(args) -> None:
                 "train_loss": float(loss.item()),
                 "pass_losses": [float(item.item()) for item in pass_losses],
                 "metrics": metrics,
+                "gradient_norms": gradient_summary,
                 "memory_gate_stats": memory_gate_stats(model),
             },
         )
@@ -356,6 +365,7 @@ def run_answer_curriculum(args) -> None:
         window_start = time.perf_counter()
         window_steps = 0
         window_tokens = 0
+        gradient_norm_window = {}
 
     append_jsonl(
         artifacts.metrics_path,

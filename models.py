@@ -160,15 +160,6 @@ class LayerNorm(nn.Module):
         return F.layer_norm(x, self.weight.shape, self.weight, None, 1e-5)
 
 
-class NonAffineLayerNorm(nn.Module):
-    def __init__(self, ndim: int):
-        super().__init__()
-        self.ndim = ndim
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return F.layer_norm(x, (self.ndim,), None, None, 1e-5)
-
-
 class MLP(nn.Module):
     def __init__(self, config: TransformerConfig):
         super().__init__()
@@ -681,7 +672,7 @@ class MemoryBlock(nn.Module):
         self.ln_self = LayerNorm(config.n_embd)
         self.attn = CausalSelfAttention(config)
         self.ln_mem_q = LayerNorm(config.n_embd)
-        self.ln_mem_kv = NonAffineLayerNorm(config.n_embd)
+        self.ln_mem_kv = LayerNorm(config.n_embd)
         self.cross_attn = CausalCrossAttention(config)
         self.memory_gate = nn.Parameter(torch.tensor(float(config.memory_gate_init)))
         self.ln_mlp = LayerNorm(config.n_embd)
@@ -704,12 +695,7 @@ class MemoryTapeTransformer(MultiPassTransformer):
 
     def __init__(self, config: MemoryTapeConfig):
         super().__init__(config)
-        self.memory_out_norm = NonAffineLayerNorm(config.n_embd)
         self.finish_initialization()
-
-    def write_memory(self, hidden_states: torch.Tensor) -> torch.Tensor:
-        raw_memory = self.mem_head(self.ln_mem(hidden_states))
-        return self.memory_out_norm(raw_memory)
 
     def _run_full_pass(self, token_stream: torch.Tensor, memory_tape: torch.Tensor) -> torch.Tensor:
         hidden = token_stream

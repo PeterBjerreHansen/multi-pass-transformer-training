@@ -26,29 +26,23 @@ But here is an idea: what if we run multiple parallel passes over the same teach
 
 ### Setup
 
-The goal is not merely to cache attention keys and values. The goal is to train the model to read and write a memory state for each token, and then test whether those memories can be reused during generation. There are many possible memory designs. This project focuses on one memory vector per token per pass. For a token sequence
-$T_{1:n} = [t_1, \ldots, t_n]$, define the pass-$i$ memory tape:
+The goal is not merely to cache attention keys and values. The goal is to train the model to read and write a memory state for each token, and then test whether those memories can be reused during generation. There are many possible memory designs. This project focuses on one memory vector per token per pass.
 
-$$
-M_{1:n}^i = [m_1^i, \ldots, m_n^i]
-$$
-
-The multi-pass recurrence has this shape:
+For a token sequence $T = [t_0, \ldots, t_{n-1}]$, let $M^{(k)}$ be the length-$n$ memory tape written after pass $k$. The all-zero tape is the initial state $M^{(0)} = 0$, and the multi-pass recurrence is:
 
 ```math
-M_{1:n}^0 = [0, \ldots, 0]
+(L^{(k)}, M^{(k)})
+= F_\theta\left(T, \operatorname{Shift}(M^{(k-1)})\right),
+\qquad k = 1, \ldots, K
 ```
 
-```math
-(\ell_{1:n}^k, M_{1:n}^k)
-= F_\theta(T_{1:n}, \mathrm{shift\_right}(M_{1:n}^{k-1})),
-\quad k = 1, \ldots, K.
-```
-
-Here $F_\theta$ should be read schematically: the model also produces logits, and the memory could be a learned projection of an internal hidden state rather than the hidden state itself. The important causal constraint is that token $j$ at pass $i+1$ may read memory from earlier token positions at pass $i$, but not its own previous-pass memory $m_j^i$. In batched training this is implemented by shifting the previous pass memory tape one position to the right:
+Here $L^{(k)}$ is the pass-$k$ logit tensor. $F_\theta$ is schematic: an architecture may write memory from any internal representation, not necessarily its final hidden state. The causal constraint is that position $t$ may read only memories written at earlier positions. In a parallel batch, that is implemented by a one-position shift:
 
 ```math
-\mathrm{shift\_right}(M^i) := [0, m_1^i, \ldots, m_{n-1}^i]
+\operatorname{Shift}(M)[0] = 0
+\qquad
+\operatorname{Shift}(M)[t] = M[t - 1]
+\quad \text{for } 1 \le t < n
 ```
 
 That keeps the training computation parallel over token positions while giving each pass access to information written by the previous pass.
@@ -61,26 +55,18 @@ Perhaps the easiest way to illustrate this is to imagine using a transformed las
 
 ![](figures/multipass_training_fig.png "Multi-pass Training")
 
-The general training loop for `K` passes looks like this:
+The training loop is:
 
-```text
-M_prev = zero_memory
-
-for k = 1..K:
-    memory_in = shift_right(M_prev)
-    X_k       = Decoder(tokens, memory = memory_in)
-    logits_k  = LMHead(X_k)
-    M_k       = MemoryWriter(X_k)
-    loss_k    = LM_loss(logits_k, targets)
-    M_prev    = M_k
-```
-
-The total objective is a normalized weighted sum of the per-pass language-modeling losses:
-
-```text
-weight_k  = lambda_k / sum_j lambda_j
-TotalLoss = sum_k weight_k * loss_k
-```
+> **$K$-pass training loop**
+>
+> $`M^{(0)} = 0`$  
+> $`\mathcal{L} = 0`$  
+> $`\textbf{for } k = 1, \ldots, K:`$  
+> &nbsp;&nbsp; $`R = \operatorname{Shift}(M^{(k-1)})`$  
+> &nbsp;&nbsp; $`H = \operatorname{ArchitectureDecoder}(T, R)`$  
+> &nbsp;&nbsp; $`L^{(k)} = \operatorname{LMHead}(H)`$  
+> &nbsp;&nbsp; $`M^{(k)} = \operatorname{MemoryWriter}(H)`$  
+> &nbsp;&nbsp; $`\mathcal{L} = \mathcal{L} + w_k\,\operatorname{LMLoss}(L^{(k)}, Y)`$
 
 Most experiments put the heaviest weight on the final pass. The final pass is therefore trained to do the main predictive work, while earlier passes are encouraged to write memories that make later predictions easier.
 
@@ -97,7 +83,7 @@ is exact with respect to this `K`-pass model. No approximation has been introduc
 And how do we get stateful inference out of this? Well, the exact inference procedure for this model is expensive. For every new token, we can run all $K$ passes on the full current prefix. That exact `recompute` procedure preserves the same pass-by-pass recurrence used in training, but it is too expensive for the target inference mode. What we want is append-recurrent inference:
 
 1. Run the prompt exactly for $K$ passes.
-2. Cache the final prompt memory tape $M_{1:n}^K$.
+2. Cache the final prompt memory tape $M_{\mathrm{prompt}}^{(K)}$.
 3. Generate the first token from the final prompt logits.
 4. Run one pass over the extended prefix using the persistent memory cache.
 5. Append only the memory written for the newest token.
@@ -105,21 +91,13 @@ And how do we get stateful inference out of this? Well, the exact inference proc
 
 ![](figures/mismatch_fig.png "Training and generation mismatch")
 
-The first generated token is special. Suppose the prompt has length $n$. After the $K$ prompt passes, the model already has both the final logits for predicting $t_{n+1}$ and the final prompt tape
+The first generated token is special. After the $K$ prompt passes, the model already has both the final logits for predicting the next token and the final prompt tape $M_{\mathrm{prompt}}^{(K)}$. So no extra recurrent pass is needed to sample the first token. Once $t_{n+1}$ has been generated, the model runs one pass over the extended prefix while reading the persistent prompt tape. It keeps the old entries fixed and appends the newly written memory for the generated token:
 
 ```math
-[m_1^K, \ldots, m_n^K].
+\operatorname{Append}\left(M_{\mathrm{prompt}}^{(K)}, \widetilde M_{\mathrm{new}}\right)
 ```
 
-So no extra recurrent pass is needed to sample the first token. Once $t_{n+1}$ has been generated, the model runs one pass over the extended prefix while reading the persistent prompt tape. It keeps the old entries fixed and appends the newly written memory for the generated token:
-
-```math
-[m_1^K, \ldots, m_n^K, \widetilde m_{n+1}].
-```
-
-The next generated token is then produced from a tape containing both final-pass prompt memories and a memory written by the online recurrent procedure. Each following step appends one more such memory.
-
-That is the approximation. Exact recomputation would rerun all $K$ passes on the longer prefix. Causality means that the prompt positions would be reconstructed identically, but the new position would be processed through the full sequence of $K$ pass updates. Append-recurrent inference reuses the final prompt tape and gives the new position only one online recurrent update before appending its memory. The project therefore depends on a stability question:
+The next generated token is then produced from a tape containing both final-pass prompt memories and a memory written by the online recurrent procedure. Each following step appends one more such memory. That is the approximation. Exact recomputation would rerun all $K$ passes on the longer prefix. Causality means that the prompt positions would be reconstructed identically, but the new position would be processed through the full sequence of $K$ pass updates. Append-recurrent inference reuses the final prompt tape and gives the new position only one online recurrent update before appending its memory. The project therefore depends on a stability question:
 
 > Does multi-pass training produce final-pass memories that remain useful when they are frozen and extended recurrently with newly generated memories?
 
@@ -143,70 +121,49 @@ As seen in the plot above all the multi-pass models outperform the transformer b
 
 The following architectures explore some different ways of passing on the memories between passes. They all follow the abstract multi-pass training and inference-time methods (see the parent-class `MultiPassTransformer` in the codebase).
 
+The notation in this section is deliberately tensor-level: $X$ is the token-embedding stream, $M^{(k)}$ is the full tape written at pass $k$, and $R = \operatorname{Shift}(M^{(k-1)})$ is the tape read at the next pass. The shared multi-pass wrapper performs the shift, final normalization, language-model head, and memory write; each variant below defines only its decoder, which maps $(X, R)$ to the pre-final hidden stream.
+
 ### Memory Through Attention: The MemoryTape Architecture
 
-The token stream remains an ordinary causal decoder transformer. Each layer also gets a separate causal cross-attention path into the shifted memory tape:
+MemoryTape retains an ordinary causal token decoder. Its decoder is:
 
-```text
-S = SelfAttn(X, causal_token_mask)
-C = MemoryCrossAttn(X, shift_right(M^(k-1)), causal_memory_mask)
-Y = X + S + gate * C
-X = Y + MLP(Y)
-```
+> **MemoryTape decoder**
+>
+> $`H = X`$  
+> $`\textbf{for each decoder block:}`$  
+> &nbsp;&nbsp; $`H = H + \operatorname{SelfAttn}(\operatorname{LN}_{\mathrm{self}}(H))`$  
+> &nbsp;&nbsp; $`H = H + \gamma\,\operatorname{MemoryAttn}\left(\operatorname{LN}_{q}(H), \operatorname{LN}_{kv}(R)\right)`$  
+> &nbsp;&nbsp; $`H = H + \operatorname{MLP}(\operatorname{LN}_{\mathrm{mlp}}(H))`$  
 
-The memory tape is not concatenated with the token sequence. It is a separate stream accessed only through cross-attention. There is one learned scalar memory gate per layer, initialized to `0.1`. The recurrent memory is also not forced to be the raw hidden state. The current implementation writes a normalized memory through a separate head:
-
-```text
-m_t^k = NonAffineLN(MemHead(LN_mem(h_t^k)))
-```
-
-This lets the model learn a representation that is useful for recurrence, not just next-token prediction. The final non-affine normalization is a stability-oriented architectural choice specific to MemoryTape; the other variants inherit the unnormalized base writer.
+Memory attention is causal over $R$ and separately addressable; the tape is not concatenated with the token stream. Each layer has a learned scalar $\gamma$, initialized to `0.1`. On pass one, $R=0$, so the memory-attention contribution is exactly zero and the model begins as a causal token decoder. Later passes can use the full shifted history in $R$.
 
 ### Memory Through Embedding Concatenation: The MemoryConcat Architecture
 
-The concat variant removes the separate memory cross-attention path. Instead, each pass builds its input stream by concatenating the token embedding with the shifted previous-pass memory at the same position, then projecting back to the model width:
+MemoryConcat removes the separate memory reader. Its decoder is:
 
-```text
-X_in = Fuse([TokenEmb(T), shift_right(M^(k-1))])
-X    = DecoderBlocks(X_in)
-```
+> **MemoryConcat decoder**
+>
+> $`H = W_{\mathrm{fuse}}\left(\operatorname{Concat}(X, \operatorname{LN}_{\mathrm{mem}}(R))\right)`$  
+> $`\textbf{for each causal decoder block:}`$  
+> &nbsp;&nbsp; $`H = \operatorname{DecoderBlock}(H)`$  
 
-The token stream is still present at every pass, so next-token logits are produced in the usual way. The memory is injected before the ordinary causal decoder stack rather than read by a separate attention module. This is a useful ablation for testing whether the gain comes from a recurrent memory signal itself, or specifically from content-addressed memory attention.
+The token stream remains the main object transformed by the decoder. Memory is an aligned input feature, not an independently addressable source. This is the direct ablation for whether a recurrent signal helps at all, versus whether MemoryTape specifically benefits from content-addressed reads. The implementation initializes the fusion projection so the token half starts near an identity map and the memory half starts small. This keeps the initial model close to a normal transformer while allowing training to learn how much memory to use.
 
-The implementation initializes the fusion projection so the token half starts near an identity map and the memory half starts small. This keeps the initial model close to a normal transformer while allowing training to learn how much memory to use.
+### Memory-First Working Stream: The MemoryUpdate Architecture
 
-### Memory as State: The MemoryUpdate Architecture
+MemoryUpdate tests a different inductive bias. Instead of transforming a token stream and writing memory afterward, its decoder makes a memory-derived state stream $S$ the object transformed by the blocks:
 
-The memory-update variant makes the recurrent memory stream the main object being transformed. Instead of starting from token representations and then adding memory, each pass starts from the shifted previous-pass memory at each position, seeds it with the current token embedding, and then asks how the token history should update that memory:
+> **MemoryUpdate decoder**
+>
+> $`S = \operatorname{LN}_{\mathrm{mem\_in}}(R) + W_{\mathrm{token\to mem}}\operatorname{LN}_{\mathrm{token\_in}}(X)`$  
+> $`\textbf{for each memory-update block:}`$  
+> &nbsp;&nbsp; $`D = \operatorname{TokenAttn}\left(\operatorname{LN}_{q}(S), \operatorname{LN}_{kv}(X)\right)`$  
+> &nbsp;&nbsp; $`S = S + D \qquad \text{if the gate is disabled}`$  
+> &nbsp;&nbsp; $`S = S + \sigma\left(W_{\mathrm{gate}}[S; X; D]\right) \odot D \qquad \text{otherwise}`$  
+> &nbsp;&nbsp; $`S = S + \operatorname{SelfAttn}(\operatorname{LN}_{\mathrm{self}}(S))`$  
+> &nbsp;&nbsp; $`S = S + \operatorname{MLP}(\operatorname{LN}_{\mathrm{mlp}}(S))`$  
 
-```text
-M_in  = LN(shift_right(M^(k-1))) + TokenToMemory(LN(TokenEmb(T)))
-Delta = TokenCrossAttn(query=M_in, key/value=TokenEmb(T), causal_token_mask)
-M     = M_in + Delta
-M     = MemoryDecoderBlocks(M)
-```
-
-The training CLI and experiment presets also support an optional gated token-evidence update:
-
-```text
-Gate = sigmoid(W_gate([M_in, TokenEmb(T), Delta]))
-M    = M_in + Gate * Delta
-```
-
-This keeps gating as an ablation rather than the defining feature of the architecture. The main state-tracking view remains:
-
-```text
-new_state = update(previous_state, current_observation)
-```
-
-The model still predicts next-token logits from the updated memory stream, and writes the next recurrent memory through a separate memory head:
-
-```text
-logits_t^k = LMHead(LN(m_t^k))
-M_t^k      = MemHead(LN_mem(m_t^k))
-```
-
-The implementation initializes the token-to-memory projection as an identity map, so the first pass has a useful token signal even though the incoming memory is zero. When the gate is enabled, the gate bias starts slightly negative, making early token-evidence updates conservative while still learnable.
+The default branch adds token-derived evidence; the optional gate controls only that evidence, not the prior tape or later state updates. The token-to-memory projection starts as an identity map, so pass one has a useful token signal even though $R=0$. When enabled, the gate bias starts slightly negative, making early token-evidence updates conservative while still learnable. This is **state-biased**, not a strict compact-state cell: token attention can still read the full causal token prefix, and state self-attention can read earlier positions of $S$. Its purpose is to test whether MPTT benefits when memory is the primary working representation, rather than an auxiliary tape read by a token decoder.
 
 ## Future Work
 
@@ -228,7 +185,7 @@ The current experiments focus on algorithmic tasks featuring state-tracking wher
 
 ### Task Families
 
-Experiment entry points live under `experiments/`. Shared batching utilities live in `tasks/common.py`, BBH generators live under `tasks/bbh/`, trace generators live under `tasks/trace/`, and the shared runner helpers live in `experiments/common.py`. Tracked plotting notebooks live under `figures/`.
+Experiment entry points live under `experiments/`. Shared batching utilities live in `tasks/common.py`, BBH generators live under `tasks/bbh/`, trace generators live under `tasks/trace/`, and the shared runner helpers live in `experiments/common.py`. Tracked figure assets live under `figures/`; local plotting notebooks can also live there.
 
 The current experiment tasks are:
 
@@ -295,15 +252,25 @@ python3 -m experiments.eval_trace_drift \
   --token-selection argmax
 ```
 
-The drift evaluator is post-training only. Each invocation evaluates one saved trace checkpoint under either `recompute` or `append_recurrent`, then writes `summary.json` and `per_position.jsonl`. The current `figures/plot_drift.ipynb` notebook reads these outputs.
+The drift evaluator is post-training only. Each invocation evaluates one saved trace checkpoint under either `recompute` or `append_recurrent`, then writes `summary.json` and `per_position.jsonl`. A local `figures/plot_drift.ipynb` notebook can read these outputs when you want to plot them.
 
 Standalone memory-use and pass-dynamics diagnostics:
 
 ```bash
 python3 -m experiments.eval_diagnostics \
   --input-run-dir results/trace/random_graph_walk/memory_tape/example_run \
-  --extra-passes 6
+  --extra-passes 6 \
+  --schedule-gap-horizon 16
 ```
+
+The diagnostic report includes a teacher-forced `recompute` versus
+`append_recurrent` schedule-gap curve. It compares matched gold prefixes, so
+its per-position NLL, KL, prediction agreement, and memory-distance values
+measure schedule mismatch without free-generation errors as a confound.
+
+Training `eval` events in `metrics.jsonl` also include rolling mean and maximum
+gradient norms for the global model, backbone, memory writer, memory attention,
+and any memory gate.
 
 ### Architecture Examples
 
