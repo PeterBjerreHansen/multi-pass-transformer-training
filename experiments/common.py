@@ -258,7 +258,11 @@ def gradient_norms(model) -> dict[str, float]:
 
         if "memory_gate" in name or "token_gate" in name:
             group = "memory_gate"
-        elif "cross_attn" in name or "token_attn" in name or "joint_attn" in name:
+        elif "joint_attn.c_mem_kv" in name or "ln_mem_kv" in name:
+            # These parameters exclusively transform the memory K/V source;
+            # the other joint-attention projections form the token backbone.
+            group = "memory_attention"
+        elif "cross_attn" in name or "token_attn" in name:
             group = "memory_attention"
         elif name.startswith(("mem_head", "ln_mem")):
             group = "memory_writer"

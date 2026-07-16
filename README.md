@@ -4,17 +4,17 @@ This project explores a way to train transformers for recurrent-style inference 
 
 ## A Motivating Problem: State Tracking
 
-Transformers have a notoriously limited ability to track state (see for example [Li25](https://arxiv.org/abs/2503.02854)), which is why this kind of task is featured often in benchmarks with hard-to-solve tasks for LLMS like BBH (see [Suzgun22](https://arxiv.org/abs/2210.09261)). So, we pick four BBH tasks and check if a small transformer model can learn to repeatedly update a symbolic state.
+Transformers often struggle with algorithmic state tracking (see, for example, [Li25](https://arxiv.org/abs/2503.02854)), which is why related tasks appear in challenging benchmarks such as BBH (see [Suzgun22](https://arxiv.org/abs/2210.09261)). Here, we use four BBH-inspired tasks to test whether a small transformer can learn to update a symbolic state repeatedly.
 
 ![](figures/bbh_curriculum_fig.png "BBH")
 
-The tasks where learned by making the models track an increasing number of state-changes. The permutation task for example looks like "[A,B,C,D] swap 1 2 [B,A,C,D]" and we predict only the last state and increase the number of swaps once a validation-accuracy of above 98% is reached. For these experiments the baseline transformer and multi-pass models use the `small` preset: 4 layers, 4 attention heads, and 128 embedding dimensions. The baseline is intentionally depth-constrained, while the multi-pass models can reuse a shifted memory tape across recurrent passes. Thus the number of state-changes that a transformer can learn flattens in a way that the multi-pass training alleviates.
+The models learn these tasks by tracking an increasing number of state changes. The permutation task, for example, looks like "[A,B,C,D] swap 1 2 [B,A,C,D]". We predict only the final state and increase the number of swaps once validation accuracy exceeds 98%. For these experiments, the baseline transformer and multi-pass models use the `small` preset: 4 layers, 4 attention heads, and 128 embedding dimensions. The baseline is intentionally depth-constrained, while the multi-pass models can reuse a shifted memory tape across recurrent passes. The baseline's learned number of state changes therefore flattens in a way that multi-pass training alleviates.
 
 ## A Theoretical Motivation
 
-The training-time parallelization of decoder-only transformers is one of the main reasons they scale so well. At layer $l$, the hidden state $h_i^l$ at position $i$ can attend to earlier positions $h_{j<i}^{l-1}$ from layer $l-1$, and not to hidden states from the same or deeper layers. This *causal* attention pattern permits hidden states for all token positions in a layer $[h_{1}^{l}, \ldots, h_{n}^l]$ to be computed in parallel during training, but it also disallows attention to previous tokens' deeper-layer hidden states at inference time.
+The training-time parallelization of decoder-only transformers is one of the main reasons they scale so well. At layer $l$, the hidden state $h_i^l$ at position $i$ can attend to positions $h_{j\leq i}^{l-1}$ from layer $l-1$, and not to hidden states from the same or deeper layers. This *causal* attention pattern permits hidden states for all token positions in a layer $[h_{1}^{l}, \ldots, h_{n}^l]$ to be computed in parallel during training, but it also disallows attention to previous tokens' deeper-layer hidden states at inference time.
 
-This information flow makes autoregressive inference *stateless*. At each generation step the transformer predicts the next token as if seeing the context for the first time. KV caching allows the model to predict using only the current token and its cache, but the cache only improves efficiency, and it does not carry forward any information that would not be recomputed had you just fed the context to the model.
+This information flow gives the model no learned latent state independent of the token prefix. Without a KV cache, each generation step recomputes the prefix. A KV cache is runtime state that avoids this repeated computation, but it is functionally determined by the token prefix and does not carry information that a full-prefix evaluation would not reconstruct.
 
 ![](figures/inference_pattern_fig.png "Inference Patterns")
 
@@ -22,7 +22,7 @@ The tempting 'fix' would be to let the hidden state $h_{i}^{l}$ at token $i$ dep
 
 ![](figures/generation_fig.png "Generation")
 
-But here is an idea: what if we run multiple parallel passes over the same teacher-forced sequence instead of making token $i$ wait for token $i-1$ during training? Pass 1 writes a memory tape. Pass 2 reads a shifted version of that tape. Pass 3 can read the shifted tape from pass 2, and so on. The hope is that such multi-pass training can teach the model to emit memories that are useful and stable enough to support cheaper recurrent-style memory use at inference time.
+But here is an idea: what if we run multiple sequential passes over the same teacher-forced sequence instead of making token $i$ wait for token $i-1$ during training? Token positions remain parallel within each pass, while the passes themselves form a recurrence. Pass 1 writes a memory tape. Pass 2 reads a shifted version of that tape. Pass 3 can read the shifted tape from pass 2, and so on. The hope is that such multi-pass training can teach the model to emit memories that are useful and stable enough to support cheaper recurrent-style memory use at inference time.
 
 ### Setup
 
@@ -51,7 +51,7 @@ That keeps the training computation parallel over token positions while giving e
 
 Multi-pass training runs the same teacher-forced sequence through the model several times. The recurrence is over the pass dimension, not over token time. That distinction is the trick; within each pass, all token positions are still computed in parallel, as in an ordinary transformer.
 
-Perhaps the easiest way to illustrate this is to imagine using a transformed last-layer hidden state as the memory. That memory can be fed back into the next pass in different ways, for example by concatenating it to the input stream or by attending to it through a separate memory attention path.
+Perhaps the easiest way to illustrate this is to imagine using a transformed last-layer hidden state as the memory. That memory can be fed back into the next pass in different ways, for example by concatenating it to the input stream or by reading it through a separate causal cross-attention path.
 
 ![](figures/multipass_training_fig.png "Multi-pass Training")
 
@@ -109,17 +109,17 @@ Okay, but the state-tracking tasks introduced earlier had only a few tokens to p
 
 Yes, partly. The BBH curriculum tasks isolate whether the model can learn repeated state updates without trace supervision, but final-answer-only supervision does not stress test append-recurrent generation over a long suffix. The mismatch problem only becomes unavoidable when the model has to keep generating after the prompt and repeatedly feed its own recurrent memory cache forward.
 
-That is why the repo also includes longer-range trace tasks. These are fixed-trace generation problems where the model must emit a long legal suffix after the prompt, so `recompute` versus `append_recurrent` evaluation becomes a real test of recurrent stability. For some time I have been interested in the world-model of [OthelloGPT](https://arxiv.org/pdf/2309.00941) which is an 8 layer GPT 2 style model trained to predict legel sequences of [othello](https://www.eothello.com/) moves. Since move legality depends on the evolving board state, the model will need to learn an implicit kind of board-state-tracking. Since (the vast majority) othello games are sequences of 60 moves I will count it as a long-range state tracking task to generate legal sequences othello moves.
+That is why the repo also includes longer-range trace tasks. These are fixed-trace generation problems where the model must emit a long legal suffix after the prompt, so `recompute` versus `append_recurrent` evaluation becomes a real test of recurrent stability. One motivation is the world model studied in [OthelloGPT](https://arxiv.org/pdf/2309.00941), an eight-layer GPT-2-style model trained to predict legal sequences of [Othello](https://www.eothello.com/) moves. Because move legality depends on the evolving board state, the model must learn an implicit form of board-state tracking. Most Othello games last about 60 moves, making legal continuation a useful long-range state-tracking task.
 
 ![](figures/trace_plot_figs.png "trace")
 
-As seen in the plot above all the multi-pass models outperform the transformer by a large margin. It is worth noting that all the models have around 1 million parameters, which is about $20$ times less than OthelloGPT (that learned the task with $>1\%$ margin of error). So, it seems that the multipass-models are able to generate reasonably accurately, but the refreshed implementation should be evaluated directly under both `recompute` and `append_recurrent` to measure recurrent drift.
+In the plot above, all three plotted multi-pass variants outperform the transformer by a large margin. JointMemoryTape was added later and is not represented in this figure. The plotted models have around 1 million parameters, roughly $20$ times fewer than OthelloGPT. These results suggest that the plotted multi-pass models can generate reasonably accurately, but the refreshed implementations—including JointMemoryTape—still need direct evaluation under both `recompute` and `append_recurrent` to measure recurrent drift.
 
 ## Multi-pass Architectures
 
 The following architectures explore some different ways of passing on the memories between passes. They all follow the abstract multi-pass training and inference-time methods (see the parent-class `MultiPassTransformer` in the codebase).
 
-The notation in this section is deliberately tensor-level: $X$ is the token-embedding stream, $M^{(k)}$ is the full tape written at pass $k$, and $R = \mathrm{Shift}(M^{(k-1)})$ is the tape read at the next pass. The shared multi-pass wrapper performs the shift, final normalization, language-model head, and memory write; each variant below defines only its decoder, which maps $(X, R)$ to the pre-final hidden stream.
+The notation in this section is deliberately tensor-level: $X$ is the token-embedding stream, $M^{(k)}$ is the full tape written at pass $k$, and $R = \mathrm{Shift}(M^{(k-1)})$ is the tape read at the next pass. The shared multi-pass wrapper performs the shift, final normalization, language-model head, and memory write; each variant below defines only its decoder, which maps $(X, R)$ to the pre-final hidden stream. The equations use standard attention categories—causal self-attention and causal cross-attention—and spell out the less standard two-source construction used by JointMemoryTape.
 
 ### Memory Through Attention: The MemoryTape Architecture
 
@@ -129,24 +129,57 @@ MemoryTape retains an ordinary causal token decoder. Its decoder is:
 >
 > $`H = X`$<br>
 > $`\textbf{for each decoder block:}`$<br>
-> &nbsp;&nbsp; $`H = H + \mathrm{SelfAttn}(\mathrm{LN}_{\mathrm{self}}(H))`$<br>
-> &nbsp;&nbsp; $`H = H + \gamma\,\mathrm{MemoryAttn}\left(\mathrm{LN}_{q}(H), \mathrm{LN}_{kv}(R)\right)`$<br>
+> &nbsp;&nbsp; $`H = H + \mathrm{CausalSelfAttention}(\mathrm{LN}_{\mathrm{self}}(H))`$<br>
+> &nbsp;&nbsp; $`H = H + \gamma\,\mathrm{CausalCrossAttention}\left(Q=\mathrm{LN}_{q}(H),\ KV=\mathrm{LN}_{kv}(R)\right)`$<br>
 > &nbsp;&nbsp; $`H = H + \mathrm{MLP}(\mathrm{LN}_{\mathrm{mlp}}(H))`$<br>
 
-Memory attention is causal over $R$ and separately addressable; the tape is not concatenated with the token stream. Each layer has a learned scalar $\gamma$, initialized to `0.1`. On pass one, $R=0$, so the memory-attention contribution is exactly zero and the model begins as a causal token decoder. Later passes can use the full shifted history in $R$.
+Causal cross-attention is applied over $R$ as a separately addressable key/value source; the tape is not concatenated with the token stream. Its inclusive causal mask permits query position $t$ to read tape slots $s\leq t$. Because $R_s=M_{s-1}$, this is strict causality with respect to the unshifted tape: only memories from original positions before $t$ are readable. Each layer has a learned scalar $\gamma$, initialized to `0.1`. On pass one, $R=0$, so the cross-attention contribution is exactly zero and the model begins as a causal token decoder.
 
-### Joint Token-and-Memory Attention: The JointMemoryTape Architecture
+### Causal Attention over Token and Memory Sources: The JointMemoryTape Architecture
 
-JointMemoryTape is a narrow MemoryTape alternative: it retains the same token working stream, shifted read-only tape, and shared memory writer, but replaces the separate token and memory reads with one attention distribution:
+JointMemoryTape retains the same token working stream, shifted read-only tape, and shared memory writer, but replaces the separate token self-attention and memory cross-attention distributions with one causal multi-source attention distribution. For each attention head $a$:
+
+```math
+\begin{aligned}
+Q_a &= \mathrm{LN}_{q}(H)\,W^Q_a, \\
+K_a &= \operatorname{Concat}_{\mathrm{source}}\!\left(
+\mathrm{LN}_{\mathrm{tok}}(H)\,W^{K,\mathrm{tok}}_a,
+\mathrm{LN}_{\mathrm{mem}}(R)\,W^{K,\mathrm{mem}}_a
+\right), \\
+V_a &= \operatorname{Concat}_{\mathrm{source}}\!\left(
+\mathrm{LN}_{\mathrm{tok}}(H)\,W^{V,\mathrm{tok}}_a,
+\mathrm{LN}_{\mathrm{mem}}(R)\,W^{V,\mathrm{mem}}_a
+\right).
+\end{aligned}
+```
+
+Both source banks use the same causal source mask:
+
+```math
+A_{t,(b,s)} =
+\begin{cases}
+0 & s \leq t, \\
+-\infty & s > t,
+\end{cases}
+\qquad b \in \{\mathrm{tok},\mathrm{mem}\}.
+```
+
+The block then applies ordinary scaled dot-product attention and the standard multi-head output projection:
+
+```math
+D_a = \operatorname{softmax}\!\left(\frac{Q_aK_a^\top}{\sqrt{d_h}} + A\right)V_a,
+\qquad
+D = \operatorname{Concat}_{\mathrm{head}}(D_1,\ldots,D_m)\,W^O.
+```
 
 > **JointMemoryTape decoder**
 >
 > $`H = X`$<br>
 > $`\textbf{for each decoder block:}`$<br>
-> &nbsp;&nbsp; $`H = H + \mathrm{JointAttn}\left(\mathrm{LN}_{q}(H), \mathrm{LN}_{\mathrm{tok}}(H), \mathrm{LN}_{\mathrm{mem}}(R)\right)`$<br>
+> &nbsp;&nbsp; $`H = H + D \qquad \text{using the causal two-source attention defined above}`$<br>
 > &nbsp;&nbsp; $`H = H + \mathrm{MLP}(\mathrm{LN}_{\mathrm{mlp}}(H))`$<br>
 
-For token queries, JointMemoryTape concatenates causal token keys and values with causal shifted-memory keys and values. Token and memory sources have separate key/value projections, but compete within the same softmax distribution. The shifted tape remains position-aligned with the token stream, so no second positional embedding is added. Unlike MemoryTape, there is no memory gate: when $R=0$ on pass one, the memory values are zero but their source positions still occupy probability mass. This deliberate first-pass dilution is part of the pure joint-attention ablation, rather than an attempt to reproduce a token-only decoder at initialization.
+The token and shifted-memory banks have separate key/value projections but compete within the same softmax. The tape has the same sequence length as the token stream, with $R_t=M_{t-1}$, and no additional positional embedding is applied to it. Unlike MemoryTape, there is no memory gate. When $R=0$ on pass one, the bias-free memory projections produce zero keys and values, but the null memory slots still occupy probability mass in the shared softmax. This deliberate first-pass dilution means JointMemoryTape is an architecture variant, not a one-variable ablation of MemoryTape: it also changes the residual structure, parameter count, and initialization-time token-attention behavior.
 
 ### Memory Through Embedding Concatenation: The MemoryConcat Architecture
 
@@ -168,10 +201,10 @@ MemoryUpdate tests a different inductive bias. Instead of transforming a token s
 >
 > $`S = \mathrm{LN}_{\mathrm{mem\_in}}(R) + W_{\mathrm{token\to mem}}\mathrm{LN}_{\mathrm{token\_in}}(X)`$<br>
 > $`\textbf{for each memory-update block:}`$<br>
-> &nbsp;&nbsp; $`D = \mathrm{TokenAttn}\left(\mathrm{LN}_{q}(S), \mathrm{LN}_{kv}(X)\right)`$<br>
+> &nbsp;&nbsp; $`D = \mathrm{CausalCrossAttention}\left(Q=\mathrm{LN}_{q}(S),\ KV=\mathrm{LN}_{kv}(X)\right)`$<br>
 > &nbsp;&nbsp; $`S = S + D \qquad \text{if the gate is disabled}`$<br>
 > &nbsp;&nbsp; $`S = S + \sigma\left(W_{\mathrm{gate}}[S; X; D]\right) \odot D \qquad \text{otherwise}`$<br>
-> &nbsp;&nbsp; $`S = S + \mathrm{SelfAttn}(\mathrm{LN}_{\mathrm{self}}(S))`$<br>
+> &nbsp;&nbsp; $`S = S + \mathrm{CausalSelfAttention}(\mathrm{LN}_{\mathrm{self}}(S))`$<br>
 > &nbsp;&nbsp; $`S = S + \mathrm{MLP}(\mathrm{LN}_{\mathrm{mlp}}(S))`$<br>
 
 The default branch adds token-derived evidence; the optional gate controls only that evidence, not the prior tape or later state updates. The token-to-memory projection starts as an identity map, so pass one has a useful token signal even though $R=0$. When enabled, the gate bias starts slightly negative, making early token-evidence updates conservative while still learnable. This is **state-biased**, not a strict compact-state cell: token attention can still read the full causal token prefix, and state self-attention can read earlier positions of $S$. Its purpose is to test whether MPTT benefits when memory is the primary working representation, rather than an auxiliary tape read by a token decoder.
@@ -188,7 +221,7 @@ It is an interesting empirical finding that recurrent-style generation seems to 
 
 ### 3. Best Memory Format
 
-I should explore more systematically what the best ways to pass memory forwards is; attention? embeddings?, a small encoder? For now I have implemented a few suggestions, but I highly doubt that any of these are optimal. The more general method of multi-pass training could work with a variety of memory-implementations.
+The best way to pass memory forward should be explored more systematically: causal cross-attention, aligned embeddings, a small encoder, or another mechanism. The current implementations are initial design points rather than presumed optima. The more general multi-pass training method could work with a variety of memory implementations.
 
 ## Tasks
 
@@ -278,10 +311,18 @@ The diagnostic report includes a teacher-forced `recompute` versus
 `append_recurrent` schedule-gap curve. It compares matched gold prefixes, so
 its per-position NLL, KL, prediction agreement, and memory-distance values
 measure schedule mismatch without free-generation errors as a confound.
+Memory interventions distinguish `zero_memory_bank` from
+`masked_memory_source`. These are identical for architectures whose zero tape
+removes the memory contribution, but differ for JointMemoryTape: a zero bank
+leaves null slots in the shared softmax, whereas a masked source removes those
+slots from the attention distribution.
 
 Training `eval` events in `metrics.jsonl` also include rolling mean and maximum
-gradient norms for the global model, backbone, memory writer, memory attention,
-and any memory gate.
+gradient norms for the global model, backbone, memory writer, memory-specific
+attention parameters, and any memory gate. For JointMemoryTape, only the memory
+key/value projection and its input normalization enter the memory-attention
+group; the shared query, token key/value, and output projections are part of the
+backbone group.
 
 ### Architecture Examples
 

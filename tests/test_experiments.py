@@ -4,6 +4,7 @@ from pathlib import Path
 import random
 from types import SimpleNamespace
 
+import pytest
 import torch
 
 from experiments.common import (
@@ -74,9 +75,10 @@ def test_memory_interventions_pass_dynamics_and_schedule_gap_return_finite_value
     interventions = memory_interventions(model, batch, seed=3)
     assert interventions["losses"]["correct"] == model.calc_loss(full_output.logits, batch.targets).item()
     assert set(interventions["losses"]) == {
-        "correct", "zero", "cross_example", "causal_position_resample",
-        "causal_prefix_mean", "extra_lag"
+        "correct", "zero_memory_bank", "masked_memory_source", "cross_example",
+        "causal_position_resample", "causal_prefix_mean", "extra_lag"
     }
+    assert interventions["losses"]["zero_memory_bank"] == interventions["losses"]["masked_memory_source"]
     assert interventions["loss_deltas"]["correct"] == 0.0
     dynamics = pass_dynamics(model, batch, extra_passes=2)
     assert len(dynamics["trained_passes"]) == 3
@@ -105,6 +107,7 @@ def test_joint_memory_tape_diagnostics_return_finite_values():
     batch = pointer_chasing.build_pointer_chasing_batch(2, 4, 2, stoi, device="cpu", rng=random.Random(2))
     interventions = memory_interventions(model, batch, seed=3)
     assert all(torch.isfinite(torch.tensor(value)) for value in interventions["losses"].values())
+    assert {"zero_memory_bank", "masked_memory_source"} <= set(interventions["losses"])
     dynamics = pass_dynamics(model, batch, extra_passes=2)
     assert len(dynamics["extra_passes"]) == 2
     schedule_gap = teacher_forced_schedule_gap(model, batch, horizon=2)
@@ -135,6 +138,17 @@ def test_joint_memory_tape_gradient_norms_cover_memory_attention_after_backward(
     assert {"global", "backbone", "memory_writer", "memory_attention"} <= set(norms)
     assert "memory_gate" not in norms
     assert all(torch.isfinite(torch.tensor(value)) and value > 0 for value in norms.values())
+    memory_reader_grads = (
+        model.transformer.h[0].joint_attn.c_mem_kv.weight.grad,
+        model.transformer.h[0].ln_mem_kv.weight.grad,
+    )
+    assert all(gradient is not None for gradient in memory_reader_grads)
+    expected_memory_norm = sum(
+        gradient.detach().float().square().sum()
+        for gradient in memory_reader_grads
+        if gradient is not None
+    ).sqrt().item()
+    assert norms["memory_attention"] == pytest.approx(expected_memory_norm)
 
 
 def _one_step(model, optimizer, tokens, targets):

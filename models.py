@@ -256,8 +256,8 @@ class CausalCrossAttention(nn.Module):
         return self.c_proj(y)
 
 
-class CausalJointAttention(nn.Module):
-    """Causal token-query attention over token and shifted-memory sources."""
+class CausalTokenMemoryAttention(nn.Module):
+    """Causal attention over token and shifted-memory key/value sources."""
 
     def __init__(self, config: TransformerConfig):
         super().__init__()
@@ -275,6 +275,8 @@ class CausalJointAttention(nn.Module):
         query: torch.Tensor,
         token_sources: torch.Tensor,
         memory: torch.Tensor,
+        *,
+        include_memory_source: bool = True,
     ) -> torch.Tensor:
         batch_size, seq_len, dim = query.shape
         token_batch, token_len, token_dim = token_sources.shape
@@ -286,17 +288,22 @@ class CausalJointAttention(nn.Module):
 
         q = self.c_q(query)
         token_k, token_v = self.c_tok_kv(token_sources).split(self.n_embd, dim=-1)
-        memory_k, memory_v = self.c_mem_kv(memory).split(self.n_embd, dim=-1)
         q = q.view(batch_size, seq_len, self.n_head, self.head_dim).transpose(1, 2)
         token_k = token_k.view(batch_size, seq_len, self.n_head, self.head_dim).transpose(1, 2)
         token_v = token_v.view(batch_size, seq_len, self.n_head, self.head_dim).transpose(1, 2)
-        memory_k = memory_k.view(batch_size, memory_len, self.n_head, self.head_dim).transpose(1, 2)
-        memory_v = memory_v.view(batch_size, memory_len, self.n_head, self.head_dim).transpose(1, 2)
-        k = torch.cat((token_k, memory_k), dim=-2)
-        v = torch.cat((token_v, memory_v), dim=-2)
 
         positions = torch.arange(seq_len, device=query.device)
-        source_positions = torch.cat((positions, positions))
+        if include_memory_source:
+            memory_k, memory_v = self.c_mem_kv(memory).split(self.n_embd, dim=-1)
+            memory_k = memory_k.view(batch_size, memory_len, self.n_head, self.head_dim).transpose(1, 2)
+            memory_v = memory_v.view(batch_size, memory_len, self.n_head, self.head_dim).transpose(1, 2)
+            k = torch.cat((token_k, memory_k), dim=-2)
+            v = torch.cat((token_v, memory_v), dim=-2)
+            source_positions = torch.cat((positions, positions))
+        else:
+            k = token_k
+            v = token_v
+            source_positions = positions
         allowed = source_positions.unsqueeze(0) <= positions.unsqueeze(1)
 
         if self.flash:
@@ -315,6 +322,10 @@ class CausalJointAttention(nn.Module):
 
         y = y.transpose(1, 2).contiguous().view(batch_size, seq_len, dim)
         return self.c_proj(y)
+
+
+# Backward-compatible import name; new code should use the precise class name.
+CausalJointAttention = CausalTokenMemoryAttention
 
 
 def shift_right(memory: torch.Tensor) -> torch.Tensor:
@@ -782,15 +793,23 @@ class JointMemoryBlock(nn.Module):
         self.ln_joint_q = LayerNorm(config.n_embd)
         self.ln_token_kv = LayerNorm(config.n_embd)
         self.ln_mem_kv = LayerNorm(config.n_embd)
-        self.joint_attn = CausalJointAttention(config)
+        # Retain the attribute name so existing checkpoints keep their keys.
+        self.joint_attn = CausalTokenMemoryAttention(config)
         self.ln_mlp = LayerNorm(config.n_embd)
         self.mlp = MLP(config)
 
-    def forward(self, x: torch.Tensor, memory_states: torch.Tensor) -> torch.Tensor:
+    def forward(
+        self,
+        x: torch.Tensor,
+        memory_states: torch.Tensor,
+        *,
+        include_memory_source: bool = True,
+    ) -> torch.Tensor:
         joint_delta = self.joint_attn(
             self.ln_joint_q(x),
             self.ln_token_kv(x),
             self.ln_mem_kv(memory_states),
+            include_memory_source=include_memory_source,
         )
         x = x + joint_delta
         return x + self.mlp(self.ln_mlp(x))
@@ -804,10 +823,42 @@ class JointMemoryTapeTransformer(MultiPassTransformer):
         self.finish_initialization()
 
     def _run_full_pass(self, token_stream: torch.Tensor, memory_tape: torch.Tensor) -> torch.Tensor:
+        return self._run_full_pass_with_memory_source(
+            token_stream,
+            memory_tape,
+            include_memory_source=True,
+        )
+
+    def _run_full_pass_with_memory_source(
+        self,
+        token_stream: torch.Tensor,
+        memory_tape: torch.Tensor,
+        *,
+        include_memory_source: bool,
+    ) -> torch.Tensor:
         hidden = token_stream
         for block in self.transformer.h:
-            hidden = block(hidden, memory_tape)
+            hidden = block(hidden, memory_tape, include_memory_source=include_memory_source)
         return hidden
+
+    def forward_pass_without_memory_source(
+        self,
+        token_stream: torch.Tensor,
+        previous_memory: torch.Tensor,
+    ) -> PassOutput:
+        """Run a pass with the memory K/V bank excluded from every softmax."""
+        if token_stream.shape != previous_memory.shape:
+            raise ValueError("token_stream and previous_memory must have the same shape")
+        memory_tape = shift_right(previous_memory)
+        hidden = self._run_full_pass_with_memory_source(
+            token_stream,
+            memory_tape,
+            include_memory_source=False,
+        )
+        hidden = self.transformer.ln_f(hidden)
+        logits = self.lm_head(hidden)
+        memory = self.write_memory(hidden)
+        return PassOutput(logits=logits, hidden_states=hidden, memory_states=memory)
 
 
 class MemoryUpdateBlock(nn.Module):

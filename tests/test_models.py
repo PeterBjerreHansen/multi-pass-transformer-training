@@ -8,7 +8,7 @@ import torch
 from model_factory import build_model
 from models import (
     CausalCrossAttention,
-    CausalJointAttention,
+    CausalTokenMemoryAttention,
     CausalTransformer,
     JointMemoryTapeTransformer,
     LayerNorm,
@@ -103,18 +103,81 @@ def test_cross_attention_manual_and_sdpa_paths_agree():
     assert torch.allclose(actual, expected, atol=1e-6, rtol=1e-5)
 
 
-def test_joint_attention_manual_and_sdpa_paths_agree():
+def test_token_memory_attention_manual_and_sdpa_paths_agree():
     config = MultiPassConfig(8, 17, 1, 2, 8, 2)
-    attention = CausalJointAttention(config)
+    attention = CausalTokenMemoryAttention(config)
     if not attention.flash:
         pytest.skip("scaled_dot_product_attention is unavailable")
     query = torch.randn(2, 6, 8)
     token_sources = torch.randn(2, 6, 8)
     memory = torch.randn(2, 6, 8)
     expected = attention(query, token_sources, memory)
+    expected_token_only = attention(
+        query,
+        token_sources,
+        memory,
+        include_memory_source=False,
+    )
     attention.flash = False
     actual = attention(query, token_sources, memory)
+    actual_token_only = attention(
+        query,
+        token_sources,
+        memory,
+        include_memory_source=False,
+    )
     assert torch.allclose(actual, expected, atol=1e-6, rtol=1e-5)
+    assert torch.allclose(actual_token_only, expected_token_only, atol=1e-6, rtol=1e-5)
+
+
+def test_zero_memory_bank_dilutes_token_attention_until_the_bank_is_masked():
+    config = MultiPassConfig(8, 17, 1, 1, 4, 2)
+    attention = CausalTokenMemoryAttention(config)
+    with torch.no_grad():
+        attention.c_q.weight.zero_()
+        attention.c_tok_kv.weight.zero_()
+        attention.c_tok_kv.weight[config.n_embd :, :].copy_(torch.eye(config.n_embd))
+        attention.c_mem_kv.weight.zero_()
+        attention.c_proj.weight.copy_(torch.eye(config.n_embd))
+
+    query = torch.randn(1, 4, config.n_embd)
+    token_sources = torch.randn_like(query)
+    zero_memory = torch.zeros_like(query)
+    with_null_bank = attention(query, token_sources, zero_memory)
+    token_only = attention(
+        query,
+        token_sources,
+        zero_memory,
+        include_memory_source=False,
+    )
+
+    assert token_only.abs().sum().item() > 0
+    assert torch.allclose(with_null_bank, 0.5 * token_only, atol=1e-6, rtol=0)
+
+
+def test_masked_memory_source_is_independent_of_memory_values():
+    config = MultiPassConfig(8, 17, 1, 2, 8, 2)
+    attention = CausalTokenMemoryAttention(config)
+    query = torch.randn(2, 6, 8)
+    token_sources = torch.randn_like(query)
+    memory_a = torch.randn_like(query)
+    memory_b = torch.randn_like(query)
+    output_a = attention(query, token_sources, memory_a, include_memory_source=False)
+    output_b = attention(query, token_sources, memory_b, include_memory_source=False)
+    assert torch.equal(output_a, output_b)
+
+
+def test_joint_memory_tape_masked_pass_excludes_memory_at_every_layer():
+    model = tiny_joint_memory_model(n_pass=2)
+    model.eval()
+    tokens = torch.tensor([[1, 2, 3, 4, 5, 6]])
+    token_stream = model.embed_tokens(tokens)
+    memory_a = torch.randn_like(token_stream)
+    memory_b = torch.randn_like(token_stream)
+    output_a = model.forward_pass_without_memory_source(token_stream, memory_a)
+    output_b = model.forward_pass_without_memory_source(token_stream, memory_b)
+    assert torch.equal(output_a.logits, output_b.logits)
+    assert torch.equal(output_a.memory_states, output_b.memory_states)
 
 
 def test_memory_block_has_no_first_pass_intercept():
