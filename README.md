@@ -269,6 +269,25 @@ python3 -m experiments.train_trace \
   --run-dir results/trace/othello/memory_tape/example_run
 ```
 
+Othello continuation evaluation:
+
+```bash
+python3 -m experiments.eval_othello \
+  --input-run-dir results/trace/othello/memory_tape/example_run \
+  --evaluation-mode all \
+  --inference-modes recompute append_recurrent \
+  --token-selection argmax
+```
+
+This evaluator preserves the training serialization and starts generation
+after deterministic full-game, random-prefix, and fixed-fraction prefix cuts.
+It reports free-generation legality and exact suffix match, plus
+teacher-forced gold-move NLL, legal-set NLL, probability mass on legal moves,
+top-1 legality, and legal-set size. Results are stratified by protocol, prompt
+length, and remaining suffix length. Transformer checkpoints evaluate only in
+`recompute`; multi-pass checkpoints can be compared under both inference
+schedules.
+
 The available architectures are `transformer`, `memory_tape`, `joint_memory_tape`, `memory_concat`, and `memory_update`.
 
 Each training run writes:

@@ -410,15 +410,31 @@ def format_othello_eval_metrics(metrics: dict[str, float]) -> str:
     return format_legal_generation_metrics(metrics)
 
 
-def legal_prefix_length(move_token_ids: Sequence[int]) -> tuple[int, bool]:
+def legal_move_token_ids_after_prefix(
+    prefix_move_token_ids: Sequence[int],
+) -> tuple[int, ...]:
+    """Return the legal next-move token IDs after replaying a move prefix."""
+    board, player = _replay_token_prefix(prefix_move_token_ids)
+    _active_player, legal_moves = _active_player_and_legal_move_indices(board, player)
+    return tuple(move + MOVE_TOKEN_OFFSET for move in legal_moves)
+
+
+def legal_prefix_length(
+    move_token_ids: Sequence[int],
+    *,
+    prefix_move_token_ids: Sequence[int] = (),
+) -> tuple[int, bool]:
     """Return the number of valid generated positions and full-sequence legality.
+
+    ``prefix_move_token_ids`` is replayed before generated moves are checked.
+    This supports continuation evaluation from arbitrary points in a game while
+    preserving the training serialization, where ``<sep>`` precedes all moves.
 
     Once the game is terminal, padding tokens are valid and count as consumed
     positions.  This makes a fully legal fixed-width trace score 1.0 regardless
     of how many actual moves its game contains.
     """
-    board = _initial_board_flat()
-    player = BLACK
+    board, player = _replay_token_prefix(prefix_move_token_ids)
     valid_positions = 0
     for token_id in move_token_ids:
         active_player, legal_moves = _active_player_and_legal_move_indices(board, player)
@@ -434,6 +450,21 @@ def legal_prefix_length(move_token_ids: Sequence[int]) -> tuple[int, bool]:
         valid_positions += 1
         player = -active_player
     return valid_positions, True
+
+
+def _replay_token_prefix(move_token_ids: Sequence[int]) -> tuple[np.ndarray, int]:
+    board = _initial_board_flat()
+    player = BLACK
+    for token_id in move_token_ids:
+        active_player, legal_moves = _active_player_and_legal_move_indices(board, player)
+        if active_player is None:
+            raise ValueError("Othello prefix continues after the game is terminal")
+        move = token_id_to_square(token_id)
+        if move is None or move not in legal_moves:
+            raise ValueError("Othello prefix contains an illegal move")
+        board = _apply_move_flat(board, move, active_player)
+        player = -active_player
+    return board, player
 
 
 def token_id_to_square(token_id: int) -> int | None:
@@ -459,6 +490,7 @@ __all__ = [
     "build_othello_vocab",
     "ensure_othello_datasets",
     "format_othello_eval_metrics",
+    "legal_move_token_ids_after_prefix",
     "legal_prefix_length",
     "load_othello_dataset",
     "move_token",
