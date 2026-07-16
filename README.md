@@ -55,10 +55,8 @@ Perhaps the easiest way to illustrate this is to imagine using a transformed las
 
 ![](figures/multipass_training_fig.png "Multi-pass Training")
 
-The training loop is:
+The $K$-pass training loop is:
 
-> **$K$-pass training loop**
->
 > $`M^{(0)} = 0`$<br>
 > $`\mathcal{L} = 0`$<br>
 > $`\textbf{for } k = 1, \ldots, K:`$<br>
