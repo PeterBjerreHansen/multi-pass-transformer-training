@@ -239,6 +239,7 @@ The current experiment tasks are:
 - `permutation`: permutation composition by repeated swaps.
 - `random_graph_walk`: state-graph traces where each state exposes only a subset of overlapping action labels, so the next legal action must be interpreted in the context of the current state.
 - `othello`: legal Othello move-trace generation from the fixed opening prefix, evaluated both by exact suffix match and legality of the generated continuation.
+- `shortest_path`: shuffled, node-permuted directed acyclic graphs with exactly one shortest route from the declared start to goal; the model generates the complete optimal node path.
 
 The live experiment API is family-specific and preset-driven. `python3 -m experiments.train_bbh` runs the BBH-inspired tasks with final-answer-only supervision and curriculum promotions. `python3 -m experiments.train_trace` runs the trace tasks from named presets with fixed trace targets.
 
@@ -268,6 +269,21 @@ python3 -m experiments.train_trace \
   --architecture memory_tape \
   --run-dir results/trace/othello/memory_tape/example_run
 ```
+
+Trace training on unique shortest paths:
+
+```bash
+python3 -m experiments.train_trace \
+  --preset shortest_path_main \
+  --architecture memory_tape \
+  --run-dir results/trace/shortest_path/memory_tape/example_run
+```
+
+Shortest-path evaluation reports valid-edge rate, goal-reaching rate, optimal
+path accuracy, exact path-plus-EOS accuracy, and per-position legality under
+both `recompute` and `append_recurrent`. Graph edges are shuffled and node
+labels are independently permuted per example; the generator verifies that
+each serialized graph has exactly one shortest path.
 
 Othello continuation evaluation:
 
@@ -302,6 +318,7 @@ Run the main experiment matrices with:
 bash runs/bbh/10_bbh_curriculum.sh
 bash runs/trace/10_random_graph_walk_trace.sh
 bash runs/trace/10_othello_trace.sh
+bash runs/trace/10_shortest_path_trace.sh
 ```
 
 Use `scripts/train_smoke.sh` for quick end-to-end checks.

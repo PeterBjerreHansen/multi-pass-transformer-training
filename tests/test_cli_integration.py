@@ -125,3 +125,67 @@ def test_othello_random_prefix_evaluation_cli(tmp_path):
         for line in (output_dir / "per_example.jsonl").read_text(encoding="utf-8").splitlines()
     ]
     assert len(rows) == 2
+
+
+def test_shortest_path_training_resume_drift_and_diagnostics_cli(tmp_path):
+    run_dir = tmp_path / "shortest_path"
+    result = _run(
+        "-m", "experiments.train_trace",
+        "--preset", "shortest_path_smoke",
+        "--architecture", "memory_tape",
+        "--device", "cpu",
+        "--run-dir", str(run_dir),
+    )
+    assert "task: shortest_path" in result.stdout
+    events = [
+        json.loads(line)
+        for line in (run_dir / "metrics.jsonl").read_text(encoding="utf-8").splitlines()
+    ]
+    evaluation = next(event for event in events if event["event"] == "eval")
+    for metric in ("valid_edge_rate", "goal_reached", "optimal_path", "exact_path"):
+        assert metric in evaluation["metrics"]
+
+    _run(
+        "-m", "experiments.train_trace",
+        "--preset", "shortest_path_smoke",
+        "--resume-from", str(run_dir),
+        "--train-steps", "1",
+        "--device", "cpu",
+        "--run-dir", str(run_dir),
+    )
+    resumed_events = [
+        json.loads(line)
+        for line in (run_dir / "metrics.jsonl").read_text(encoding="utf-8").splitlines()
+    ]
+    assert any(event.get("event") == "eval" and event.get("step") == 2 for event in resumed_events)
+
+    for inference_mode in ("recompute", "append_recurrent"):
+        drift_dir = tmp_path / f"drift_{inference_mode}"
+        _run(
+            "-m", "experiments.eval_trace_drift",
+            "--input-run-dir", str(run_dir),
+            "--inference-mode", inference_mode,
+            "--token-selection", "argmax",
+            "--device", "cpu",
+            "--eval-batches", "1",
+            "--run-dir", str(drift_dir),
+        )
+        summary = json.loads((drift_dir / "summary.json").read_text(encoding="utf-8"))
+        assert summary["task"] == "shortest_path"
+        assert "optimal_path" in summary["metrics"]
+        assert (drift_dir / "per_position.jsonl").exists()
+
+    diagnostics = tmp_path / "shortest_path_diagnostics.json"
+    _run(
+        "-m", "experiments.eval_diagnostics",
+        "--input-run-dir", str(run_dir),
+        "--device", "cpu",
+        "--batch-size", "2",
+        "--eval-batches", "1",
+        "--extra-passes", "1",
+        "--schedule-gap-horizon", "4",
+        "--output", str(diagnostics),
+    )
+    payload = json.loads(diagnostics.read_text(encoding="utf-8"))
+    assert payload["task"] == "shortest_path"
+    assert payload["teacher_forced_schedule_gap"]["overall"]["count"] > 0
