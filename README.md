@@ -142,11 +142,11 @@ JointMemoryTape retains the same token working stream, shifted read-only tape, a
 ```math
 \begin{aligned}
 Q_a &= \mathrm{LN}_{q}(H)\,W^Q_a, \\
-K_a &= \operatorname{Concat}_{\mathrm{source}}\!\left(
+K_a &= \mathrm{concat}_{\mathrm{source}}\!\left(
 \mathrm{LN}_{\mathrm{tok}}(H)\,W^{K,\mathrm{tok}}_a,
 \mathrm{LN}_{\mathrm{mem}}(R)\,W^{K,\mathrm{mem}}_a
 \right), \\
-V_a &= \operatorname{Concat}_{\mathrm{source}}\!\left(
+V_a &= \mathrm{concat}_{\mathrm{source}}\!\left(
 \mathrm{LN}_{\mathrm{tok}}(H)\,W^{V,\mathrm{tok}}_a,
 \mathrm{LN}_{\mathrm{mem}}(R)\,W^{V,\mathrm{mem}}_a
 \right).
@@ -167,9 +167,9 @@ A_{t,(b,s)} =
 The block then applies ordinary scaled dot-product attention and the standard multi-head output projection:
 
 ```math
-D_a = \operatorname{softmax}\!\left(\frac{Q_aK_a^\top}{\sqrt{d_h}} + A\right)V_a,
+D_a = \mathrm{softmax}\!\left(\frac{Q_aK_a^\top}{\sqrt{d_h}} + A\right)V_a,
 \qquad
-D = \operatorname{Concat}_{\mathrm{head}}(D_1,\ldots,D_m)\,W^O.
+D = \mathrm{concat}_{\mathrm{head}}(D_1,\ldots,D_m)\,W^O.
 ```
 
 > **JointMemoryTape decoder**
