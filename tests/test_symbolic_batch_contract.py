@@ -6,7 +6,7 @@ import torch
 
 from tasks.bbh import permutation, pointer_chasing, state_machine, tracking
 from tasks.common import BOS_TOKEN, EOS_TOKEN, PAD_TOKEN, SEP_TOKEN
-from tasks.trace import othello, random_graph_walk
+from tasks.trace import othello, random_graph_walk, shortest_path
 
 
 def _assert_symbolic_batch_contract(
@@ -123,6 +123,30 @@ def test_symbolic_task_batches_follow_shared_contract(tmp_path):
             ),
             random_graph_walk.required_block_size(num_states=4, label_pool_size=4, num_steps=5),
         ),
+        (
+            shortest_path.build_shortest_path_vocab(
+                num_nodes=8,
+                path_length=3,
+                branching_factor=2,
+                distractor_edges=5,
+            ),
+            shortest_path.build_shortest_path_batch(
+                batch_size=3,
+                num_nodes=8,
+                path_length=3,
+                branching_factor=2,
+                distractor_edges=5,
+                stoi=shortest_path.build_shortest_path_vocab(8, 3, 2, 5)[1],
+                device="cpu",
+                rng=random.Random(2006),
+            ),
+            shortest_path.required_block_size(
+                num_nodes=8,
+                path_length=3,
+                branching_factor=2,
+                distractor_edges=5,
+            ),
+        ),
     ]
 
     for vocab_triplet, batch, block_size in cases:
@@ -149,7 +173,7 @@ def test_symbolic_task_batches_follow_shared_contract(tmp_path):
         batch_size=3,
         stoi=stoi,
         device="cpu",
-        rng=random.Random(2006),
+        rng=random.Random(2007),
         split="val",
         **kwargs,
     )

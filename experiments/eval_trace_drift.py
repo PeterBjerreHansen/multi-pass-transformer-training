@@ -16,12 +16,12 @@ from experiments.common import (
     write_json,
 )
 from experiments.train_trace import (
+    TRACE_TASKS,
     build_fixed_eval_batches,
     build_training_objects,
     trace_generation_metrics,
     validate_task_args,
 )
-from tasks.trace import othello, random_graph_walk
 from experiments.common import resolve_device_arg, restore_checkpoint_state, validate_model_args, validate_training_args
 
 
@@ -68,23 +68,11 @@ def _default_output_dir(cli_args, args, input_dir: Path) -> Path:
 
 
 def _legality_prefix(args, prompt_tokens: list[int], generated_tokens: list[int]) -> tuple[int, bool]:
-    if args.task == "random_graph_walk":
-        return random_graph_walk.legal_prefix_length(
-            prompt_tokens,
-            generated_tokens,
-            num_states=args.num_states,
-            label_pool_size=args.label_pool_size,
-        )
-    if args.task == "othello":
-        return othello.legal_prefix_length(generated_tokens)
-    raise ValueError(f"unsupported trace task: {args.task}")
+    return TRACE_TASKS[args.task].legality_prefix(args, prompt_tokens, generated_tokens)
 
 
 def _valid_target_mask(args, target_tokens: list[int]) -> list[bool]:
-    # Trace legality is defined over generated positions. Othello padding after
-    # a terminal board is a valid generated position, so every fixed-width slot
-    # belongs in the survival curve.
-    return [True] * len(target_tokens)
+    return TRACE_TASKS[args.task].valid_target_mask(args, target_tokens)
 
 
 def collect_per_position_metrics(model, args, batches, *, inference_mode: str) -> dict[int, dict[str, float]]:
