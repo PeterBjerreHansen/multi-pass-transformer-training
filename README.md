@@ -32,16 +32,16 @@ For a token sequence $T = [t_0, \ldots, t_{n-1}]$, let $M^{(k)}$ be the length-$
 
 ```math
 (L^{(k)}, M^{(k)})
-= F_\theta\left(T, \operatorname{Shift}(M^{(k-1)})\right),
+= F_\theta\left(T, \mathrm{Shift}(M^{(k-1)})\right),
 \qquad k = 1, \ldots, K
 ```
 
 Here $L^{(k)}$ is the pass-$k$ logit tensor. $F_\theta$ is schematic: an architecture may write memory from any internal representation, not necessarily its final hidden state. The causal constraint is that position $t$ may read only memories written at earlier positions. In a parallel batch, that is implemented by a one-position shift:
 
 ```math
-\operatorname{Shift}(M)[0] = 0
+\mathrm{Shift}(M)[0] = 0
 \qquad
-\operatorname{Shift}(M)[t] = M[t - 1]
+\mathrm{Shift}(M)[t] = M[t - 1]
 \quad \text{for } 1 \le t < n
 ```
 
@@ -59,14 +59,14 @@ The training loop is:
 
 > **$K$-pass training loop**
 >
-> $`M^{(0)} = 0`$  
-> $`\mathcal{L} = 0`$  
-> $`\textbf{for } k = 1, \ldots, K:`$  
-> &nbsp;&nbsp; $`R = \operatorname{Shift}(M^{(k-1)})`$  
-> &nbsp;&nbsp; $`H = \operatorname{ArchitectureDecoder}(T, R)`$  
-> &nbsp;&nbsp; $`L^{(k)} = \operatorname{LMHead}(H)`$  
-> &nbsp;&nbsp; $`M^{(k)} = \operatorname{MemoryWriter}(H)`$  
-> &nbsp;&nbsp; $`\mathcal{L} = \mathcal{L} + w_k\,\operatorname{LMLoss}(L^{(k)}, Y)`$
+> $`M^{(0)} = 0`$<br>
+> $`\mathcal{L} = 0`$<br>
+> $`\textbf{for } k = 1, \ldots, K:`$<br>
+> &nbsp;&nbsp; $`R = \mathrm{Shift}(M^{(k-1)})`$<br>
+> &nbsp;&nbsp; $`H = \mathrm{ArchitectureDecoder}(T, R)`$<br>
+> &nbsp;&nbsp; $`L^{(k)} = \mathrm{LMHead}(H)`$<br>
+> &nbsp;&nbsp; $`M^{(k)} = \mathrm{MemoryWriter}(H)`$<br>
+> &nbsp;&nbsp; $`\mathcal{L} = \mathcal{L} + w_k\,\mathrm{LMLoss}(L^{(k)}, Y)`$
 
 Most experiments put the heaviest weight on the final pass. The final pass is therefore trained to do the main predictive work, while earlier passes are encouraged to write memories that make later predictions easier.
 
@@ -94,7 +94,7 @@ And how do we get stateful inference out of this? Well, the exact inference proc
 The first generated token is special. After the $K$ prompt passes, the model already has both the final logits for predicting the next token and the final prompt tape $M_{\mathrm{prompt}}^{(K)}$. So no extra recurrent pass is needed to sample the first token. Once $t_{n+1}$ has been generated, the model runs one pass over the extended prefix while reading the persistent prompt tape. It keeps the old entries fixed and appends the newly written memory for the generated token:
 
 ```math
-\operatorname{Append}\left(M_{\mathrm{prompt}}^{(K)}, \widetilde M_{\mathrm{new}}\right)
+\mathrm{Append}\left(M_{\mathrm{prompt}}^{(K)}, \widetilde M_{\mathrm{new}}\right)
 ```
 
 The next generated token is then produced from a tape containing both final-pass prompt memories and a memory written by the online recurrent procedure. Each following step appends one more such memory. That is the approximation. Exact recomputation would rerun all $K$ passes on the longer prefix. Causality means that the prompt positions would be reconstructed identically, but the new position would be processed through the full sequence of $K$ pass updates. Append-recurrent inference reuses the final prompt tape and gives the new position only one online recurrent update before appending its memory. The project therefore depends on a stability question:
@@ -121,7 +121,7 @@ As seen in the plot above all the multi-pass models outperform the transformer b
 
 The following architectures explore some different ways of passing on the memories between passes. They all follow the abstract multi-pass training and inference-time methods (see the parent-class `MultiPassTransformer` in the codebase).
 
-The notation in this section is deliberately tensor-level: $X$ is the token-embedding stream, $M^{(k)}$ is the full tape written at pass $k$, and $R = \operatorname{Shift}(M^{(k-1)})$ is the tape read at the next pass. The shared multi-pass wrapper performs the shift, final normalization, language-model head, and memory write; each variant below defines only its decoder, which maps $(X, R)$ to the pre-final hidden stream.
+The notation in this section is deliberately tensor-level: $X$ is the token-embedding stream, $M^{(k)}$ is the full tape written at pass $k$, and $R = \mathrm{Shift}(M^{(k-1)})$ is the tape read at the next pass. The shared multi-pass wrapper performs the shift, final normalization, language-model head, and memory write; each variant below defines only its decoder, which maps $(X, R)$ to the pre-final hidden stream.
 
 ### Memory Through Attention: The MemoryTape Architecture
 
@@ -129,11 +129,11 @@ MemoryTape retains an ordinary causal token decoder. Its decoder is:
 
 > **MemoryTape decoder**
 >
-> $`H = X`$  
-> $`\textbf{for each decoder block:}`$  
-> &nbsp;&nbsp; $`H = H + \operatorname{SelfAttn}(\operatorname{LN}_{\mathrm{self}}(H))`$  
-> &nbsp;&nbsp; $`H = H + \gamma\,\operatorname{MemoryAttn}\left(\operatorname{LN}_{q}(H), \operatorname{LN}_{kv}(R)\right)`$  
-> &nbsp;&nbsp; $`H = H + \operatorname{MLP}(\operatorname{LN}_{\mathrm{mlp}}(H))`$  
+> $`H = X`$<br>
+> $`\textbf{for each decoder block:}`$<br>
+> &nbsp;&nbsp; $`H = H + \mathrm{SelfAttn}(\mathrm{LN}_{\mathrm{self}}(H))`$<br>
+> &nbsp;&nbsp; $`H = H + \gamma\,\mathrm{MemoryAttn}\left(\mathrm{LN}_{q}(H), \mathrm{LN}_{kv}(R)\right)`$<br>
+> &nbsp;&nbsp; $`H = H + \mathrm{MLP}(\mathrm{LN}_{\mathrm{mlp}}(H))`$<br>
 
 Memory attention is causal over $R$ and separately addressable; the tape is not concatenated with the token stream. Each layer has a learned scalar $\gamma$, initialized to `0.1`. On pass one, $R=0$, so the memory-attention contribution is exactly zero and the model begins as a causal token decoder. Later passes can use the full shifted history in $R$.
 
@@ -143,9 +143,9 @@ MemoryConcat removes the separate memory reader. Its decoder is:
 
 > **MemoryConcat decoder**
 >
-> $`H = W_{\mathrm{fuse}}\left(\operatorname{Concat}(X, \operatorname{LN}_{\mathrm{mem}}(R))\right)`$  
-> $`\textbf{for each causal decoder block:}`$  
-> &nbsp;&nbsp; $`H = \operatorname{DecoderBlock}(H)`$  
+> $`H = W_{\mathrm{fuse}}\left(\mathrm{Concat}(X, \mathrm{LN}_{\mathrm{mem}}(R))\right)`$<br>
+> $`\textbf{for each causal decoder block:}`$<br>
+> &nbsp;&nbsp; $`H = \mathrm{DecoderBlock}(H)`$<br>
 
 The token stream remains the main object transformed by the decoder. Memory is an aligned input feature, not an independently addressable source. This is the direct ablation for whether a recurrent signal helps at all, versus whether MemoryTape specifically benefits from content-addressed reads. The implementation initializes the fusion projection so the token half starts near an identity map and the memory half starts small. This keeps the initial model close to a normal transformer while allowing training to learn how much memory to use.
 
@@ -155,13 +155,13 @@ MemoryUpdate tests a different inductive bias. Instead of transforming a token s
 
 > **MemoryUpdate decoder**
 >
-> $`S = \operatorname{LN}_{\mathrm{mem\_in}}(R) + W_{\mathrm{token\to mem}}\operatorname{LN}_{\mathrm{token\_in}}(X)`$  
-> $`\textbf{for each memory-update block:}`$  
-> &nbsp;&nbsp; $`D = \operatorname{TokenAttn}\left(\operatorname{LN}_{q}(S), \operatorname{LN}_{kv}(X)\right)`$  
-> &nbsp;&nbsp; $`S = S + D \qquad \text{if the gate is disabled}`$  
-> &nbsp;&nbsp; $`S = S + \sigma\left(W_{\mathrm{gate}}[S; X; D]\right) \odot D \qquad \text{otherwise}`$  
-> &nbsp;&nbsp; $`S = S + \operatorname{SelfAttn}(\operatorname{LN}_{\mathrm{self}}(S))`$  
-> &nbsp;&nbsp; $`S = S + \operatorname{MLP}(\operatorname{LN}_{\mathrm{mlp}}(S))`$  
+> $`S = \mathrm{LN}_{\mathrm{mem\_in}}(R) + W_{\mathrm{token\to mem}}\mathrm{LN}_{\mathrm{token\_in}}(X)`$<br>
+> $`\textbf{for each memory-update block:}`$<br>
+> &nbsp;&nbsp; $`D = \mathrm{TokenAttn}\left(\mathrm{LN}_{q}(S), \mathrm{LN}_{kv}(X)\right)`$<br>
+> &nbsp;&nbsp; $`S = S + D \qquad \text{if the gate is disabled}`$<br>
+> &nbsp;&nbsp; $`S = S + \sigma\left(W_{\mathrm{gate}}[S; X; D]\right) \odot D \qquad \text{otherwise}`$<br>
+> &nbsp;&nbsp; $`S = S + \mathrm{SelfAttn}(\mathrm{LN}_{\mathrm{self}}(S))`$<br>
+> &nbsp;&nbsp; $`S = S + \mathrm{MLP}(\mathrm{LN}_{\mathrm{mlp}}(S))`$<br>
 
 The default branch adds token-derived evidence; the optional gate controls only that evidence, not the prior tape or later state updates. The token-to-memory projection starts as an identity map, so pass one has a useful token signal even though $R=0$. When enabled, the gate bias starts slightly negative, making early token-evidence updates conservative while still learnable. This is **state-biased**, not a strict compact-state cell: token attention can still read the full causal token prefix, and state self-attention can read earlier positions of $S$. Its purpose is to test whether MPTT benefits when memory is the primary working representation, rather than an auxiliary tape read by a token decoder.
 
