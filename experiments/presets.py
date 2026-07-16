@@ -5,7 +5,7 @@ from copy import deepcopy
 from dataclasses import dataclass
 
 from tasks.bbh import permutation, state_machine, tracking
-from tasks.trace import othello, random_graph_walk
+from tasks.trace import othello, random_graph_walk, shortest_path
 
 
 @dataclass(frozen=True)
@@ -138,6 +138,38 @@ othello_smoke.update(
 TRACE_PRESETS["othello_smoke"] = ExperimentPreset(
     "Tiny deterministic Othello smoke setup.",
     othello_smoke,
+)
+
+shortest_path_main = _trace_defaults(
+    task="shortest_path",
+    smoke=False,
+    token_selection="argmax",
+)
+shortest_path_main.update(
+    num_nodes=shortest_path.DEFAULT_NUM_NODES,
+    shortest_path_length=shortest_path.DEFAULT_PATH_LENGTH,
+    branching_factor=shortest_path.DEFAULT_BRANCHING_FACTOR,
+    distractor_edges=shortest_path.DEFAULT_DISTRACTOR_EDGES,
+)
+TRACE_PRESETS["shortest_path_main"] = ExperimentPreset(
+    "Main unique shortest-path trace setup.",
+    shortest_path_main,
+)
+
+shortest_path_smoke = _trace_defaults(
+    task="shortest_path",
+    smoke=True,
+    token_selection="argmax",
+)
+shortest_path_smoke.update(
+    num_nodes=8,
+    shortest_path_length=3,
+    branching_factor=2,
+    distractor_edges=5,
+)
+TRACE_PRESETS["shortest_path_smoke"] = ExperimentPreset(
+    "Tiny unique shortest-path smoke setup.",
+    shortest_path_smoke,
 )
 
 
