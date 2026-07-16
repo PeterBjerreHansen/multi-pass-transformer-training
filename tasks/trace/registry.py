@@ -4,7 +4,7 @@ from dataclasses import dataclass
 import random
 from typing import Callable
 
-from tasks.trace import othello, random_graph_walk
+from tasks.trace import othello, random_graph_walk, shortest_path
 
 
 @dataclass(frozen=True)
@@ -141,6 +141,57 @@ def _othello_legality(_args, _prompt_tokens, generated_tokens):
     return othello.legal_prefix_length(generated_tokens)
 
 
+def _shortest_path_vocab(args):
+    return shortest_path.build_shortest_path_vocab(
+        args.num_nodes,
+        args.shortest_path_length,
+        args.branching_factor,
+        args.distractor_edges,
+    )
+
+
+def _shortest_path_block_size(args) -> int:
+    return shortest_path.required_block_size(
+        args.num_nodes,
+        args.shortest_path_length,
+        args.branching_factor,
+        args.distractor_edges,
+    )
+
+
+def _shortest_path_batch(args, stoi, rng: random.Random, _split: str):
+    return shortest_path.build_shortest_path_batch(
+        batch_size=args.batch_size,
+        num_nodes=args.num_nodes,
+        path_length=args.shortest_path_length,
+        branching_factor=args.branching_factor,
+        distractor_edges=args.distractor_edges,
+        stoi=stoi,
+        device=args.device,
+        rng=rng,
+    )
+
+
+def _shortest_path_metrics(model, batch, args, inference_mode: str | None):
+    return shortest_path.shortest_path_generation_metrics(
+        model,
+        batch,
+        args,
+        inference_mode=inference_mode,
+        num_nodes=args.num_nodes,
+        edge_count=args.shortest_path_length + args.distractor_edges,
+    )
+
+
+def _shortest_path_legality(args, prompt_tokens, generated_tokens):
+    return shortest_path.legal_prefix_length(
+        prompt_tokens,
+        generated_tokens,
+        num_nodes=args.num_nodes,
+        edge_count=args.shortest_path_length + args.distractor_edges,
+    )
+
+
 TRACE_TASKS: dict[str, TraceTask] = {
     "random_graph_walk": TraceTask(
         name="random_graph_walk",
@@ -160,6 +211,16 @@ TRACE_TASKS: dict[str, TraceTask] = {
         generation_metrics_fn=_othello_metrics,
         format_metrics_fn=othello.format_othello_eval_metrics,
         legality_prefix_fn=_othello_legality,
+        valid_target_mask_fn=_all_target_positions,
+    ),
+    "shortest_path": TraceTask(
+        name="shortest_path",
+        build_vocab_fn=_shortest_path_vocab,
+        required_block_size_fn=_shortest_path_block_size,
+        build_batch_fn=_shortest_path_batch,
+        generation_metrics_fn=_shortest_path_metrics,
+        format_metrics_fn=shortest_path.format_shortest_path_eval_metrics,
+        legality_prefix_fn=_shortest_path_legality,
         valid_target_mask_fn=_all_target_positions,
     ),
 }

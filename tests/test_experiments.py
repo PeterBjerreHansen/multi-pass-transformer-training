@@ -229,6 +229,12 @@ def test_main_presets_preserve_established_experiment_scales():
     assert othello_main["batch_size"] == 128
     assert othello_main["eval_interval"] == 5_000
 
+    path = TRACE_PRESETS["shortest_path_main"].values
+    assert path["num_nodes"] == 24
+    assert path["shortest_path_length"] == 6
+    assert path["branching_factor"] == 3
+    assert path["distractor_edges"] == 40
+
 
 def test_othello_prefix_examples_and_legal_set_metrics_are_deterministic():
     _vocab, stoi, _itos = othello.build_othello_vocab(
