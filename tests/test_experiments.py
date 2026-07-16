@@ -9,15 +9,25 @@ import torch
 
 from experiments.common import (
     RunArtifacts,
+    build_stale_memory_source_plan,
     evaluate_prebuilt_batches,
+    forward_and_loss,
     gradient_norms,
     load_checkpoint_payload,
+    new_stale_memory_stats,
     restore_checkpoint_state,
     runtime_resource_stats,
     save_latest_checkpoint,
+    update_stale_memory_stats,
+    validate_model_args,
 )
 from experiments.summarize_ablation import recommend
-from experiments.eval_diagnostics import memory_interventions, pass_dynamics, teacher_forced_schedule_gap
+from experiments.eval_diagnostics import (
+    memory_interventions,
+    pass_dynamics,
+    refinement_robustness,
+    teacher_forced_schedule_gap,
+)
 from experiments.train_bbh import BBH_TASKS, build_fixed_eval_batches, parse_args as parse_bbh_args
 from models import JointMemoryTapeTransformer, MemoryTapeConfig, MemoryTapeTransformer, MultiPassConfig
 from tasks.bbh import pointer_chasing
@@ -84,6 +94,15 @@ def test_memory_interventions_pass_dynamics_and_schedule_gap_return_finite_value
     assert len(dynamics["trained_passes"]) == 3
     assert len(dynamics["extra_passes"]) == 2
     assert all(torch.isfinite(torch.tensor(item["loss"])) for item in dynamics["extra_passes"])
+    robustness = refinement_robustness(model, batch)
+    assert robustness["final_pass"] == 3
+    assert [item["source_pass"] for item in robustness["sources"]] == [1, 2]
+    assert robustness["sources"][-1]["loss_delta_from_latest"] == 0.0
+    assert robustness["sources"][-1]["loss"] == model.calc_loss(
+        full_output.logits,
+        batch.targets,
+    ).item()
+    assert all(torch.isfinite(torch.tensor(item["loss"])) for item in robustness["sources"])
 
     model.eval()
     schedule_gap = teacher_forced_schedule_gap(model, batch, horizon=2)
@@ -113,6 +132,113 @@ def test_joint_memory_tape_diagnostics_return_finite_values():
     schedule_gap = teacher_forced_schedule_gap(model, batch, horizon=2)
     assert schedule_gap["overall"]["count"] == 4
     assert all(torch.isfinite(torch.tensor(value)) for value in schedule_gap["overall"].values())
+
+
+def test_stale_memory_plan_only_corrupts_teacher_forced_suffix_memory():
+    _vocab, stoi, _ = pointer_chasing.build_pointer_chasing_vocab(4)
+    batch = pointer_chasing.build_pointer_chasing_batch(
+        2,
+        4,
+        2,
+        stoi,
+        device="cpu",
+        rng=random.Random(2),
+    )
+    routing, stats = build_stale_memory_source_plan(
+        batch,
+        n_pass=4,
+        probability=1.0,
+        generator=torch.Generator(device="cpu").manual_seed(41),
+    )
+    assert routing is not None
+    eligible_per_pass = sum(int(length.item()) - 1 for length in batch.output_lengths)
+    assert stats["eligible_routes"] == eligible_per_pass * 2
+    assert stats["stale_routes"] == stats["eligible_routes"]
+    assert stats["realized_stale_fraction"] == 1.0
+    assert sum(stats["stale_source_pass_counts"].values()) == stats["stale_routes"]
+
+    for row in range(batch.idx.shape[0]):
+        prompt_len = int(batch.prompt_lengths[row].item())
+        suffix_memory_len = int(batch.output_lengths[row].item()) - 1
+        suffix = slice(prompt_len, prompt_len + suffix_memory_len)
+        assert torch.equal(routing[0, row], torch.zeros_like(routing[0, row]))
+        assert torch.equal(routing[1, row], torch.ones_like(routing[1, row]))
+        for pass_index in range(2, 4):
+            expected_latest = torch.full_like(routing[pass_index, row], pass_index)
+            assert torch.equal(routing[pass_index, row, :prompt_len], expected_latest[:prompt_len])
+            assert torch.equal(
+                routing[pass_index, row, prompt_len + suffix_memory_len :],
+                expected_latest[prompt_len + suffix_memory_len :],
+            )
+            assert (routing[pass_index, row, suffix] >= 1).all()
+            assert (routing[pass_index, row, suffix] < pass_index).all()
+
+
+def test_stale_memory_rng_is_separate_reproducible_and_zero_prob_is_noop():
+    _vocab, stoi, _ = pointer_chasing.build_pointer_chasing_vocab(4)
+    batch = pointer_chasing.build_pointer_chasing_batch(
+        2,
+        4,
+        2,
+        stoi,
+        device="cpu",
+        rng=random.Random(2),
+    )
+    generator = torch.Generator(device="cpu").manual_seed(73)
+    state = generator.get_state()
+    first, first_stats = build_stale_memory_source_plan(
+        batch,
+        n_pass=4,
+        probability=0.5,
+        generator=generator,
+    )
+    restored = torch.Generator(device="cpu")
+    restored.set_state(state)
+    second, second_stats = build_stale_memory_source_plan(
+        batch,
+        n_pass=4,
+        probability=0.5,
+        generator=restored,
+    )
+    assert torch.equal(first, second)
+    assert first_stats == second_stats
+
+    before = generator.get_state()
+    routing, zero_stats = build_stale_memory_source_plan(
+        batch,
+        n_pass=4,
+        probability=0.0,
+        generator=generator,
+    )
+    assert routing is None
+    assert zero_stats["stale_routes"] == 0
+    assert torch.equal(before, generator.get_state())
+
+    cumulative = new_stale_memory_stats(0.5)
+    update_stale_memory_stats(cumulative, first_stats)
+    update_stale_memory_stats(cumulative, second_stats)
+    assert cumulative["eligible_routes"] == 2 * first_stats["eligible_routes"]
+    assert cumulative["stale_routes"] == 2 * first_stats["stale_routes"]
+    assert cumulative["realized_stale_fraction"] == first_stats["realized_stale_fraction"]
+
+
+def test_stale_memory_probability_validation():
+    args = parse_bbh_args([
+        "--preset", "pointer_chasing_smoke",
+        "--architecture", "memory_tape",
+        "--stale-memory-prob", "0.25",
+    ])
+    validate_model_args(args)
+    assert args.stale_memory_prob == 0.25
+
+    args.stale_memory_prob = 1.01
+    with pytest.raises(ValueError, match=r"\[0, 1\]"):
+        validate_model_args(args)
+    args.stale_memory_prob = 0.25
+    args.n_pass = 2
+    args.pass_loss_weights = [1, 1]
+    with pytest.raises(ValueError, match="n-pass >= 3"):
+        validate_model_args(args)
 
 
 def test_gradient_norms_cover_memory_subsystems_after_backward():
@@ -191,6 +317,81 @@ def test_checkpoint_resume_reproduces_next_optimizer_step(tmp_path):
     checkpoint = load_checkpoint_payload(tmp_path / "latest.pt", device="cpu")
     restore_checkpoint_state(checkpoint, model=restored_model, optimizer=restored_optimizer, device="cpu")
     _one_step(restored_model, restored_optimizer, batch2, target2)
+    for name, value in restored_model.state_dict().items():
+        assert torch.equal(value, expected[name]), name
+
+
+def test_stale_memory_rng_checkpoint_resume_reproduces_next_step(tmp_path):
+    torch.manual_seed(101)
+    config = MemoryTapeConfig(24, 11, 1, 1, 8, 4)
+    model = MemoryTapeTransformer(config)
+    optimizer = torch.optim.AdamW(model.parameters(), lr=1e-3)
+    args = SimpleNamespace(
+        architecture="memory_tape",
+        pass_loss_weights=[0, 0, 1, 1],
+    )
+    _vocab, stoi, _ = pointer_chasing.build_pointer_chasing_vocab(4)
+    task_rng = random.Random(31)
+    batches = [
+        pointer_chasing.build_pointer_chasing_batch(
+            2,
+            4,
+            2,
+            stoi,
+            device="cpu",
+            rng=task_rng,
+        )
+        for _ in range(2)
+    ]
+    stale_rng = torch.Generator(device="cpu").manual_seed(97)
+
+    def step(local_model, local_optimizer, batch, generator):
+        routing, _stats = build_stale_memory_source_plan(
+            batch,
+            n_pass=4,
+            probability=0.5,
+            generator=generator,
+        )
+        local_optimizer.zero_grad(set_to_none=True)
+        loss, _output, _pass_losses = forward_and_loss(
+            local_model,
+            batch,
+            args,
+            memory_source_passes=routing,
+        )
+        loss.backward()
+        local_optimizer.step()
+
+    step(model, optimizer, batches[0], stale_rng)
+    artifacts = RunArtifacts(
+        tmp_path,
+        tmp_path / "config.json",
+        tmp_path / "metrics.jsonl",
+        tmp_path / "latest.pt",
+    )
+    save_latest_checkpoint(
+        artifacts,
+        model=model,
+        optimizer=optimizer,
+        args=args,
+        step=1,
+        extra_state={"stale_memory_rng_state": stale_rng.get_state()},
+    )
+    step(model, optimizer, batches[1], stale_rng)
+    expected = {name: value.detach().clone() for name, value in model.state_dict().items()}
+
+    restored_model = MemoryTapeTransformer(config)
+    restored_optimizer = torch.optim.AdamW(restored_model.parameters(), lr=1e-3)
+    checkpoint = load_checkpoint_payload(tmp_path / "latest.pt", device="cpu")
+    restore_checkpoint_state(
+        checkpoint,
+        model=restored_model,
+        optimizer=restored_optimizer,
+        device="cpu",
+    )
+    restored_rng = torch.Generator(device="cpu")
+    restored_rng.set_state(checkpoint["extra_state"]["stale_memory_rng_state"])
+    step(restored_model, restored_optimizer, batches[1], restored_rng)
     for name, value in restored_model.state_dict().items():
         assert torch.equal(value, expected[name]), name
 

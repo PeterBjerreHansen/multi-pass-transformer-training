@@ -54,6 +54,14 @@ def tiny_joint_memory_model(*, block_size: int = 12, n_pass: int = 3) -> JointMe
     )
 
 
+def latest_memory_source_plan(model, tokens: torch.Tensor) -> torch.Tensor:
+    return torch.arange(
+        model.config.n_pass,
+        device=tokens.device,
+        dtype=torch.long,
+    )[:, None, None].expand(-1, tokens.shape[0], tokens.shape[1]).clone()
+
+
 def test_shift_right_is_exact():
     memory = torch.arange(2 * 4 * 3).reshape(2, 4, 3)
     shifted = shift_right(memory)
@@ -227,6 +235,90 @@ def test_multipass_variants_return_all_passes_and_finite_losses():
         loss_output = model.calc_total_loss(output, targets, [0, 0, 1])
         assert torch.isfinite(loss_output.loss)
         assert loss_output.normalized_pass_weights.tolist() == [0.0, 0.0, 1.0]
+
+
+def test_explicit_latest_memory_routing_matches_legacy_forward_exactly():
+    model = tiny_memory_model(n_pass=4)
+    tokens = torch.randint(0, 19, (2, 7))
+    expected = model(tokens)
+    actual = model(tokens, memory_source_passes=latest_memory_source_plan(model, tokens))
+    for expected_pass, actual_pass in zip(expected.passes, actual.passes):
+        assert torch.equal(actual_pass.logits, expected_pass.logits)
+        assert torch.equal(actual_pass.memory_states, expected_pass.memory_states)
+
+
+def test_stale_final_pass_routing_matches_manual_older_memory_rerun():
+    model = tiny_memory_model(n_pass=4)
+    tokens = torch.randint(0, 19, (2, 7))
+    ordinary = model(tokens)
+    routing = latest_memory_source_plan(model, tokens)
+    routing[-1].fill_(1)
+    routed = model(tokens, memory_source_passes=routing)
+    source_memory = ordinary.passes[0].memory_states
+    assert source_memory is not None
+    manual = model.forward_pass(model.embed_tokens(tokens), source_memory)
+    assert torch.equal(routed.logits, manual.logits)
+    assert torch.equal(routed.final_memory, manual.memory_states)
+
+
+def test_memory_source_routing_validation():
+    model = tiny_memory_model(n_pass=4)
+    tokens = torch.randint(0, 19, (2, 7))
+    valid = latest_memory_source_plan(model, tokens)
+    with pytest.raises(ValueError, match="shape"):
+        model(tokens, memory_source_passes=valid[:, :, :-1])
+    with pytest.raises(ValueError, match="dtype"):
+        model(tokens, memory_source_passes=valid.float())
+    invalid_second = valid.clone()
+    invalid_second[1].zero_()
+    with pytest.raises(ValueError, match="pass 2"):
+        model(tokens, memory_source_passes=invalid_second)
+    invalid_future = valid.clone()
+    invalid_future[2].fill_(3)
+    with pytest.raises(ValueError, match=r"\[1, 2\]"):
+        model(tokens, memory_source_passes=invalid_future)
+
+
+def test_stale_route_backpropagates_through_selected_older_memory_only():
+    model = tiny_memory_model(n_pass=3)
+    tokens = torch.randint(0, 19, (2, 7))
+    targets = torch.randint(0, 19, (2, 7))
+    routing = latest_memory_source_plan(model, tokens)
+    routing[-1].fill_(1)
+    output = model(tokens, memory_source_passes=routing)
+    first_memory = output.passes[0].memory_states
+    second_memory = output.passes[1].memory_states
+    assert first_memory is not None and second_memory is not None
+    first_memory.retain_grad()
+    second_memory.retain_grad()
+    model.calc_loss(output.logits, targets).backward()
+    assert first_memory.grad is not None
+    assert first_memory.grad.abs().sum().item() > 0
+    assert second_memory.grad is not None
+    assert torch.equal(second_memory.grad, torch.zeros_like(second_memory.grad))
+
+
+def test_stale_memory_routing_preserves_causality():
+    model = tiny_memory_model(n_pass=4)
+    model.eval()
+    prefix = torch.tensor([[1, 2, 3, 4]])
+    a = torch.cat((prefix, torch.tensor([[5, 6, 7]])), dim=1)
+    b = torch.cat((prefix, torch.tensor([[8, 9, 10]])), dim=1)
+    routing_a = latest_memory_source_plan(model, a)
+    routing_b = latest_memory_source_plan(model, b)
+    routing_a[2:, :, ::2] = 1
+    routing_b[2:, :, ::2] = 1
+    output_a = model(a, memory_source_passes=routing_a)
+    output_b = model(b, memory_source_passes=routing_b)
+    for pass_a, pass_b in zip(output_a.passes, output_b.passes):
+        assert torch.allclose(pass_a.logits[:, :4], pass_b.logits[:, :4], atol=1e-6, rtol=0)
+        assert pass_a.memory_states is not None and pass_b.memory_states is not None
+        assert torch.allclose(
+            pass_a.memory_states[:, :4],
+            pass_b.memory_states[:, :4],
+            atol=1e-6,
+            rtol=0,
+        )
 
 
 def test_memory_tape_is_causal_in_tokens_and_emitted_memory():

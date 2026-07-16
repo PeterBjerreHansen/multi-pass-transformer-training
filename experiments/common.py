@@ -78,18 +78,26 @@ def apply_model_size_preset(args) -> None:
 
 def validate_model_args(args) -> None:
     apply_model_size_preset(args)
+    if not hasattr(args, "stale_memory_prob"):
+        args.stale_memory_prob = 0.0
+    if not math.isfinite(args.stale_memory_prob) or not 0.0 <= args.stale_memory_prob <= 1.0:
+        raise ValueError("--stale-memory-prob must be finite and in [0, 1]")
     if args.n_layer < 1 or args.n_head < 1 or args.n_embd < 1:
         raise ValueError("model dimensions must be positive")
     if args.n_embd % args.n_head != 0:
         raise ValueError("--n-embd must be divisible by --n-head")
 
     if args.architecture == "transformer":
+        if args.stale_memory_prob != 0:
+            raise ValueError("--stale-memory-prob requires a multi-pass architecture")
         args.pass_loss_weights = None
         args.inference_mode = "recompute"
         return
 
     if args.n_pass < 2:
         raise ValueError("--n-pass must be at least 2 for multi-pass architectures")
+    if args.stale_memory_prob > 0 and args.n_pass < 3:
+        raise ValueError("--stale-memory-prob requires --n-pass >= 3")
     if args.pass_loss_weights is None:
         args.pass_loss_weights = [1.0] * args.n_pass
     if len(args.pass_loss_weights) != args.n_pass:
@@ -227,8 +235,126 @@ def effective_inference_mode(args, requested_mode: str | None = None) -> str:
     return requested_mode or args.inference_mode
 
 
-def forward_and_loss(model, batch, args):
-    output = model(batch.idx)
+def build_stale_memory_source_plan(
+    batch,
+    *,
+    n_pass: int,
+    probability: float,
+    generator: torch.Generator,
+) -> tuple[torch.Tensor | None, dict]:
+    """Build training-only per-position routes to older learned memories.
+
+    A route at input position j is shifted inside forward_pass and therefore
+    affects queries from position j + 1 onward. Restricting routes to answer
+    token positions corrupts generated-to-generated memory reads without
+    changing prompt, separator, EOS, or padding memories.
+    """
+    if n_pass < 2:
+        raise ValueError("n_pass must be at least 2")
+    if not math.isfinite(probability) or not 0.0 <= probability <= 1.0:
+        raise ValueError("probability must be finite and in [0, 1]")
+
+    batch_size, seq_len = batch.idx.shape
+    positions = torch.arange(seq_len, device="cpu")[None, :]
+    prompt_lengths = batch.prompt_lengths.detach().cpu()[:, None]
+    generated_lengths = (batch.output_lengths.detach().cpu() - 1).clamp_min(0)[:, None]
+    eligible_positions = (
+        (positions >= prompt_lengths)
+        & (positions < prompt_lengths + generated_lengths)
+    )
+    eligible_per_pass = int(eligible_positions.sum().item())
+    eligible_routes = eligible_per_pass * max(n_pass - 2, 0)
+    stats = {
+        "probability": float(probability),
+        "eligible_routes": eligible_routes,
+        "stale_routes": 0,
+        "realized_stale_fraction": 0.0,
+        "stale_source_pass_counts": {},
+    }
+    if probability == 0 or eligible_routes == 0:
+        return None, stats
+
+    routing = torch.empty(
+        n_pass,
+        batch_size,
+        seq_len,
+        dtype=torch.long,
+        device="cpu",
+    )
+    routing[0].zero_()
+    routing[1].fill_(1)
+    source_counts: dict[str, int] = {}
+    stale_routes = 0
+
+    for pass_index in range(2, n_pass):
+        routing[pass_index].fill_(pass_index)
+        stale_mask = (
+            torch.rand(
+                batch_size,
+                seq_len,
+                generator=generator,
+                device="cpu",
+            )
+            < probability
+        ) & eligible_positions
+        sampled_sources = torch.randint(
+            1,
+            pass_index,
+            (batch_size, seq_len),
+            generator=generator,
+            device="cpu",
+        )
+        routing[pass_index][stale_mask] = sampled_sources[stale_mask]
+        stale_routes += int(stale_mask.sum().item())
+        for source_pass in range(1, pass_index):
+            count = int(((sampled_sources == source_pass) & stale_mask).sum().item())
+            if count:
+                key = str(source_pass)
+                source_counts[key] = source_counts.get(key, 0) + count
+
+    stats.update(
+        {
+            "stale_routes": stale_routes,
+            "realized_stale_fraction": stale_routes / eligible_routes,
+            "stale_source_pass_counts": source_counts,
+        }
+    )
+    return routing.to(batch.idx.device), stats
+
+
+def new_stale_memory_stats(probability: float) -> dict:
+    return {
+        "probability": float(probability),
+        "eligible_routes": 0,
+        "stale_routes": 0,
+        "realized_stale_fraction": 0.0,
+        "stale_source_pass_counts": {},
+    }
+
+
+def update_stale_memory_stats(cumulative: dict, step_stats: dict) -> None:
+    cumulative["probability"] = float(step_stats["probability"])
+    cumulative["eligible_routes"] = int(cumulative.get("eligible_routes", 0)) + int(
+        step_stats["eligible_routes"]
+    )
+    cumulative["stale_routes"] = int(cumulative.get("stale_routes", 0)) + int(
+        step_stats["stale_routes"]
+    )
+    source_counts = cumulative.setdefault("stale_source_pass_counts", {})
+    for source_pass, count in step_stats["stale_source_pass_counts"].items():
+        source_counts[source_pass] = int(source_counts.get(source_pass, 0)) + int(count)
+    eligible = int(cumulative["eligible_routes"])
+    cumulative["realized_stale_fraction"] = (
+        int(cumulative["stale_routes"]) / eligible if eligible else 0.0
+    )
+
+
+def forward_and_loss(model, batch, args, *, memory_source_passes: torch.Tensor | None = None):
+    output = (
+        model(batch.idx)
+        if not is_multi_pass_architecture(args.architecture)
+        else model(batch.idx, memory_source_passes=memory_source_passes)
+    )
     if not is_multi_pass_architecture(args.architecture):
         loss = model.calc_loss(output.logits, batch.targets)
         return loss, output, (loss.detach(),)

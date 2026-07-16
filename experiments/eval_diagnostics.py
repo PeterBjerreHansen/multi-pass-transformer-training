@@ -267,6 +267,40 @@ def pass_dynamics(model, batch, *, extra_passes: int) -> dict:
     }
 
 
+@torch.no_grad()
+def refinement_robustness(model, batch) -> dict:
+    """Measure final-pass sensitivity to memories from each earlier pass."""
+    output = model(batch.idx)
+    if len(output.passes) < 2:
+        raise ValueError("refinement robustness requires at least two passes")
+    token_stream = model.embed_tokens(batch.idx)
+    sources = []
+    for source_pass, item in enumerate(output.passes[:-1], start=1):
+        if item.memory_states is None:
+            raise ValueError("multi-pass diagnostic requires memory states")
+        rerun = model.forward_pass(token_stream, item.memory_states)
+        sources.append(
+            {
+                "source_pass": source_pass,
+                "loss": _nll(model, rerun.logits, batch.targets),
+            }
+        )
+
+    latest_loss = sources[-1]["loss"]
+    for entry in sources:
+        entry["loss_delta_from_latest"] = entry["loss"] - latest_loss
+    deltas = [entry["loss_delta_from_latest"] for entry in sources]
+    return {
+        "final_pass": len(output.passes),
+        "latest_source_pass": len(output.passes) - 1,
+        "sources": sources,
+        "earliest_source_loss_delta": deltas[0],
+        "worst_source_loss_delta": max(deltas),
+        "loss_range": max(entry["loss"] for entry in sources)
+        - min(entry["loss"] for entry in sources),
+    }
+
+
 def _single_token_nll(logits: torch.Tensor, target: torch.Tensor) -> float:
     return float(F.cross_entropy(logits.unsqueeze(0), target.reshape(1)).item())
 
@@ -463,6 +497,7 @@ def evaluate_diagnostics(cli_args) -> Path:
     try:
         intervention_results = []
         dynamics_results = []
+        refinement_results = []
         schedule_gap_results = []
         for batch_index, batch in enumerate(batches):
             intervention_results.append(
@@ -473,6 +508,7 @@ def evaluate_diagnostics(cli_args) -> Path:
                 )
             )
             dynamics_results.append(pass_dynamics(model, batch, extra_passes=cli_args.extra_passes))
+            refinement_results.append(refinement_robustness(model, batch))
             schedule_gap_results.append(
                 teacher_forced_schedule_gap(model, batch, horizon=cli_args.schedule_gap_horizon)
             )
@@ -489,6 +525,7 @@ def evaluate_diagnostics(cli_args) -> Path:
         "eval_batches": args.eval_batches,
         "memory_interventions": _mean_numbers(intervention_results),
         "pass_dynamics": _mean_numbers(dynamics_results),
+        "refinement_robustness": _mean_numbers(refinement_results),
         "teacher_forced_schedule_gap": _aggregate_teacher_forced_schedule_gaps(schedule_gap_results),
     }
     output = Path(cli_args.output).resolve() if cli_args.output else run_dir / "diagnostics.json"

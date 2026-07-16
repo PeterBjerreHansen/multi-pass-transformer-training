@@ -75,6 +75,7 @@ def collect_run(run_dir: Path) -> dict[str, float | str]:
     _flatten("model", config.get("model_stats", {}), numeric)
     _flatten("model_config", config.get("model_config", {}), numeric)
     _flatten("train", {key: final_eval.get(key) for key in ("step", "train_loss", "train_tok_per_s")}, numeric)
+    _flatten("train.stale_memory", final_eval.get("stale_memory_stats", {}), numeric)
     _flatten("eval", final_eval.get("metrics", {}), numeric)
     _flatten("resource", final_eval.get("resource_stats", {}), numeric)
     _flatten("diagnostics", diagnostics, numeric)

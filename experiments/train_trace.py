@@ -4,9 +4,12 @@ import argparse
 import random
 import time
 
+import torch
+
 from tasks.trace import othello, random_graph_walk
 from experiments.common import (
     append_jsonl,
+    build_stale_memory_source_plan,
     build_model_and_optimizer,
     effective_inference_mode,
     evaluate_prebuilt_batches,
@@ -19,6 +22,7 @@ from experiments.common import (
     load_checkpoint_payload,
     memory_gate_stats,
     model_benchmark_stats,
+    new_stale_memory_stats,
     prepare_run_artifacts,
     resolve_device_arg,
     resolve_resume_artifacts,
@@ -29,6 +33,7 @@ from experiments.common import (
     stable_seed,
     synchronize_device,
     summarize_gradient_norm_window,
+    update_stale_memory_stats,
     update_gradient_norm_window,
     validate_model_args,
     validate_training_args,
@@ -59,6 +64,7 @@ def parse_args(argv: list[str] | None = None):
     _add_override(parser, "--pass-loss-weights", type=float, nargs="*")
     _add_override(parser, "--memory-update-gate", choices=["on", "off"])
     _add_override(parser, "--memory-gate-bias", type=float)
+    _add_override(parser, "--stale-memory-prob", type=float)
     _add_override(parser, "--num-states", type=int)
     _add_override(parser, "--label-pool-size", type=int)
     _add_override(parser, "--max-level", type=int)
@@ -229,11 +235,18 @@ def run_trace_training(args) -> None:
     )
 
     train_rng = random.Random(stable_seed(args.seed, "trace", args.task, "train"))
+    stale_memory_rng = torch.Generator(device="cpu")
+    stale_memory_rng.manual_seed(stable_seed(args.seed, "trace", args.task, "stale_memory"))
+    stale_memory_stats = new_stale_memory_stats(args.stale_memory_prob)
     if checkpoint is not None:
         restore_checkpoint_state(checkpoint, model=model, optimizer=optimizer, device=args.device)
         extra = checkpoint.get("extra_state", {})
         if "train_rng_state" in extra:
             train_rng.setstate(extra["train_rng_state"])
+        if "stale_memory_rng_state" in extra:
+            stale_memory_rng.set_state(extra["stale_memory_rng_state"])
+        if "stale_memory_stats" in extra:
+            stale_memory_stats = extra["stale_memory_stats"]
 
     print(f"device: {args.device}")
     print(f"task: {args.task}")
@@ -245,6 +258,7 @@ def run_trace_training(args) -> None:
         total_weight = sum(args.pass_loss_weights)
         print(f"n_pass: {args.n_pass}")
         print(f"pass_loss_weights_normalized: {[weight / total_weight for weight in args.pass_loss_weights]}")
+        print(f"stale_memory_prob: {args.stale_memory_prob}")
     gates = memory_gate_stats(model)
     if gates is not None:
         print(f"memory_gates: {format_memory_gate_stats(gates)}")
@@ -267,15 +281,29 @@ def run_trace_training(args) -> None:
     window_start = time.perf_counter()
     window_tokens = 0
     gradient_norm_window: dict[str, dict[str, float]] = {}
+    stale_memory_window_stats = new_stale_memory_stats(args.stale_memory_prob)
 
     for step in range(start_step, final_step + 1):
         model.train()
         batch = build_task_batch(args, stoi, train_rng, split="train")
+        memory_source_passes, stale_memory_step_stats = build_stale_memory_source_plan(
+            batch,
+            n_pass=args.n_pass if args.architecture != "transformer" else 2,
+            probability=args.stale_memory_prob,
+            generator=stale_memory_rng,
+        )
         optimizer.zero_grad(set_to_none=True)
-        loss, _output, pass_losses = forward_and_loss(model, batch, args)
+        loss, _output, pass_losses = forward_and_loss(
+            model,
+            batch,
+            args,
+            memory_source_passes=memory_source_passes,
+        )
         loss.backward()
         update_gradient_norm_window(gradient_norm_window, gradient_norms(model))
         optimizer.step()
+        update_stale_memory_stats(stale_memory_stats, stale_memory_step_stats)
+        update_stale_memory_stats(stale_memory_window_stats, stale_memory_step_stats)
         window_tokens += int(batch.idx.numel())
 
         should_eval = step == 1 or step % args.eval_interval == 0 or step == final_step
@@ -290,6 +318,9 @@ def run_trace_training(args) -> None:
         fields.append(format_gradient_norms(gradient_summary))
         if args.architecture != "transformer":
             fields.append(f"pass_losses {format_pass_losses(pass_losses)}")
+            fields.append(
+                f"stale_memory {stale_memory_window_stats['realized_stale_fraction']:.3f}"
+            )
         print(format_checkpoint_line(f"step {step}", fields))
 
         metrics = evaluate_prebuilt_batches(
@@ -316,6 +347,8 @@ def run_trace_training(args) -> None:
                 "metrics": metrics,
                 "gradient_norms": gradient_summary,
                 "memory_gate_stats": memory_gate_stats(model),
+                "stale_memory_window_stats": stale_memory_window_stats,
+                "stale_memory_stats": stale_memory_stats,
                 "train_tok_per_s": tok_per_s,
                 "resource_stats": runtime_resource_stats(args.device),
             },
@@ -326,12 +359,17 @@ def run_trace_training(args) -> None:
             optimizer=optimizer,
             args=args,
             step=step,
-            extra_state={"train_rng_state": train_rng.getstate()},
+            extra_state={
+                "train_rng_state": train_rng.getstate(),
+                "stale_memory_rng_state": stale_memory_rng.get_state(),
+                "stale_memory_stats": stale_memory_stats,
+            },
         )
         synchronize_device(args.device)
         window_start = time.perf_counter()
         window_tokens = 0
         gradient_norm_window = {}
+        stale_memory_window_stats = new_stale_memory_stats(args.stale_memory_prob)
 
     append_jsonl(artifacts.metrics_path, {"event": "run_end", "task": args.task})
     print(f"run_dir: {artifacts.run_dir}")

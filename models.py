@@ -564,16 +564,80 @@ class MultiPassTransformer(nn.Module):
         memory = self.write_memory(hidden)
         return PassOutput(logits=logits, hidden_states=hidden, memory_states=memory)
 
-    def forward(self, idx: torch.Tensor) -> MultiPassOutput:
+    def _validate_memory_source_passes(
+        self,
+        idx: torch.Tensor,
+        memory_source_passes: torch.Tensor,
+    ) -> None:
+        expected_shape = (self.config.n_pass, idx.shape[0], idx.shape[1])
+        if memory_source_passes.shape != expected_shape:
+            raise ValueError(
+                f"memory_source_passes must have shape {expected_shape}, "
+                f"got {tuple(memory_source_passes.shape)}"
+            )
+        if memory_source_passes.dtype != torch.long:
+            raise ValueError("memory_source_passes must have dtype torch.long")
+        if memory_source_passes.device != idx.device:
+            raise ValueError("memory_source_passes must be on the same device as idx")
+        if not torch.equal(
+            memory_source_passes[0],
+            torch.zeros_like(memory_source_passes[0]),
+        ):
+            raise ValueError("pass 1 must read the zero-initialized memory")
+        if self.config.n_pass >= 2 and not torch.equal(
+            memory_source_passes[1],
+            torch.ones_like(memory_source_passes[1]),
+        ):
+            raise ValueError("pass 2 must read pass-1 memory")
+        for pass_index in range(2, self.config.n_pass):
+            sources = memory_source_passes[pass_index]
+            if (sources < 1).any() or (sources > pass_index).any():
+                raise ValueError(
+                    f"pass {pass_index + 1} memory sources must be in "
+                    f"[1, {pass_index}]"
+                )
+
+    @staticmethod
+    def _select_memory_source(
+        memory_history: Sequence[torch.Tensor],
+        source_passes: torch.Tensor,
+    ) -> torch.Tensor:
+        candidates = torch.stack(tuple(memory_history), dim=2)
+        gather_index = source_passes[:, :, None, None].expand(
+            -1,
+            -1,
+            1,
+            candidates.shape[-1],
+        )
+        return candidates.gather(dim=2, index=gather_index).squeeze(2)
+
+    def forward(
+        self,
+        idx: torch.Tensor,
+        *,
+        memory_source_passes: torch.Tensor | None = None,
+    ) -> MultiPassOutput:
+        if memory_source_passes is not None:
+            self._validate_memory_source_passes(idx, memory_source_passes)
         token_stream = self.embed_tokens(idx)
-        previous_memory = torch.zeros_like(token_stream)
+        zero_memory = torch.zeros_like(token_stream)
+        memory_history = [zero_memory]
         passes: list[PassOutput] = []
-        for _ in range(self.config.n_pass):
+        for pass_index in range(self.config.n_pass):
+            previous_memory = (
+                memory_history[-1]
+                if memory_source_passes is None or pass_index < 2
+                else self._select_memory_source(
+                    memory_history,
+                    memory_source_passes[pass_index],
+                )
+            )
             output = self.forward_pass(token_stream, previous_memory)
             passes.append(output)
             previous_memory = output.memory_states
             if previous_memory is None:
                 raise RuntimeError("multi-pass model failed to emit memory states")
+            memory_history.append(previous_memory)
         return MultiPassOutput(tuple(passes))
 
     def forward_passes(self, idx: torch.Tensor) -> tuple[tuple[torch.Tensor, ...], tuple[torch.Tensor, ...]]:

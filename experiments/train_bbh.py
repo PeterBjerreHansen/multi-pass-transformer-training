@@ -6,9 +6,12 @@ import random
 import time
 from typing import Callable
 
+import torch
+
 from tasks.bbh import permutation, pointer_chasing, state_machine, tracking
 from experiments.common import (
     append_jsonl,
+    build_stale_memory_source_plan,
     build_model_and_optimizer,
     effective_inference_mode,
     evaluate_prebuilt_batches,
@@ -22,6 +25,7 @@ from experiments.common import (
     load_checkpoint_payload,
     memory_gate_stats,
     model_benchmark_stats,
+    new_stale_memory_stats,
     prepare_run_artifacts,
     resolve_device_arg,
     resolve_resume_artifacts,
@@ -32,6 +36,7 @@ from experiments.common import (
     stable_seed,
     synchronize_device,
     summarize_gradient_norm_window,
+    update_stale_memory_stats,
     update_gradient_norm_window,
     validate_model_args,
     validate_training_args,
@@ -133,6 +138,7 @@ def parse_args(argv: list[str] | None = None):
     _add_override(parser, "--pass-loss-weights", type=float, nargs="*")
     _add_override(parser, "--memory-update-gate", choices=["on", "off"])
     _add_override(parser, "--memory-gate-bias", type=float)
+    _add_override(parser, "--stale-memory-prob", type=float)
     _add_override(parser, "--num-nodes", type=int)
     _add_override(parser, "--num-objects", type=int)
     _add_override(parser, "--num-states", type=int)
@@ -243,6 +249,9 @@ def run_answer_curriculum(args) -> None:
     )
 
     train_rng = random.Random(stable_seed(args.seed, "bbh", args.task, "train"))
+    stale_memory_rng = torch.Generator(device="cpu")
+    stale_memory_rng.manual_seed(stable_seed(args.seed, "bbh", args.task, "stale_memory"))
+    stale_memory_stats = new_stale_memory_stats(args.stale_memory_prob)
     current_level = args.curriculum_start_level
     promotion_history: list[tuple[int, int, float]] = []
     if checkpoint is not None:
@@ -252,6 +261,10 @@ def run_answer_curriculum(args) -> None:
         promotion_history = [tuple(item) for item in extra.get("promotion_history", [])]
         if "train_rng_state" in extra:
             train_rng.setstate(extra["train_rng_state"])
+        if "stale_memory_rng_state" in extra:
+            stale_memory_rng.set_state(extra["stale_memory_rng_state"])
+        if "stale_memory_stats" in extra:
+            stale_memory_stats = extra["stale_memory_stats"]
 
     print(f"device: {args.device}")
     print(f"task: {args.task}")
@@ -263,6 +276,7 @@ def run_answer_curriculum(args) -> None:
         normalized = [weight / sum(args.pass_loss_weights) for weight in args.pass_loss_weights]
         print(f"n_pass: {args.n_pass}")
         print(f"pass_loss_weights_normalized: {normalized}")
+        print(f"stale_memory_prob: {args.stale_memory_prob}")
     gates = memory_gate_stats(model)
     if gates is not None:
         print(f"memory_gates: {format_memory_gate_stats(gates)}")
@@ -285,6 +299,7 @@ def run_answer_curriculum(args) -> None:
     window_steps = 0
     window_tokens = 0
     gradient_norm_window: dict[str, dict[str, float]] = {}
+    stale_memory_window_stats = new_stale_memory_stats(args.stale_memory_prob)
 
     for step in range(start_step, final_step + 1):
         model.train()
@@ -296,11 +311,24 @@ def run_answer_curriculum(args) -> None:
             stoi=stoi,
             rng=train_rng,
         )
+        memory_source_passes, stale_memory_step_stats = build_stale_memory_source_plan(
+            batch,
+            n_pass=args.n_pass if args.architecture != "transformer" else 2,
+            probability=args.stale_memory_prob,
+            generator=stale_memory_rng,
+        )
         optimizer.zero_grad(set_to_none=True)
-        loss, _output, pass_losses = forward_and_loss(model, batch, args)
+        loss, _output, pass_losses = forward_and_loss(
+            model,
+            batch,
+            args,
+            memory_source_passes=memory_source_passes,
+        )
         loss.backward()
         update_gradient_norm_window(gradient_norm_window, gradient_norms(model))
         optimizer.step()
+        update_stale_memory_stats(stale_memory_stats, stale_memory_step_stats)
+        update_stale_memory_stats(stale_memory_window_stats, stale_memory_step_stats)
         window_steps += 1
         window_tokens += int(batch.idx.numel())
 
@@ -316,6 +344,9 @@ def run_answer_curriculum(args) -> None:
         fields.append(format_gradient_norms(gradient_summary))
         if args.architecture != "transformer":
             fields.append(f"pass_losses {format_pass_losses(pass_losses)}")
+            fields.append(
+                f"stale_memory {stale_memory_window_stats['realized_stale_fraction']:.3f}"
+            )
         print(format_checkpoint_line(f"step {step}", fields))
 
         eval_batches = build_fixed_eval_batches(args, task, stoi, current_level)
@@ -344,6 +375,8 @@ def run_answer_curriculum(args) -> None:
                 "metrics": metrics,
                 "gradient_norms": gradient_summary,
                 "memory_gate_stats": memory_gate_stats(model),
+                "stale_memory_window_stats": stale_memory_window_stats,
+                "stale_memory_stats": stale_memory_stats,
                 "train_tok_per_s": tok_per_s,
                 "resource_stats": runtime_resource_stats(args.device),
             },
@@ -365,6 +398,8 @@ def run_answer_curriculum(args) -> None:
                 "current_level": current_level,
                 "promotion_history": promotion_history,
                 "train_rng_state": train_rng.getstate(),
+                "stale_memory_rng_state": stale_memory_rng.get_state(),
+                "stale_memory_stats": stale_memory_stats,
             },
         )
         synchronize_device(args.device)
@@ -372,6 +407,7 @@ def run_answer_curriculum(args) -> None:
         window_steps = 0
         window_tokens = 0
         gradient_norm_window = {}
+        stale_memory_window_stats = new_stale_memory_stats(args.stale_memory_prob)
 
     append_jsonl(
         artifacts.metrics_path,

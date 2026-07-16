@@ -49,6 +49,7 @@ def test_trace_training_drift_and_diagnostics_cli(tmp_path):
         "-m", "experiments.train_trace",
         "--preset", "random_graph_walk_smoke",
         "--architecture", "joint_memory_tape",
+        "--stale-memory-prob", "1",
         "--device", "cpu",
         "--run-dir", str(run_dir),
     )
@@ -66,12 +67,15 @@ def test_trace_training_drift_and_diagnostics_cli(tmp_path):
     payload = json.loads(diagnostics.read_text(encoding="utf-8"))
     assert "memory_interventions" in payload
     assert len(payload["pass_dynamics"]["extra_passes"]) == 2
+    assert len(payload["refinement_robustness"]["sources"]) == 2
     assert payload["teacher_forced_schedule_gap"]["horizon"] == 16
     assert payload["teacher_forced_schedule_gap"]["overall"]["count"] > 0
 
     trace_events = [json.loads(line) for line in (run_dir / "metrics.jsonl").read_text(encoding="utf-8").splitlines()]
     trace_evaluation = next(event for event in trace_events if event["event"] == "eval")
     assert trace_evaluation["gradient_norms"]["global"]["mean"] > 0
+    assert trace_evaluation["stale_memory_stats"]["realized_stale_fraction"] == 1.0
+    assert trace_evaluation["stale_memory_stats"]["stale_routes"] > 0
 
     drift_dir = tmp_path / "drift"
     _run(
