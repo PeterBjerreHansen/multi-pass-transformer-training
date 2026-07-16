@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 import math
 from typing import Sequence
 
@@ -65,6 +65,7 @@ class RecurrentState:
     tokens: torch.Tensor
     memory_states: torch.Tensor
     next_token_logits: torch.Tensor
+    position_offset: int = 0
 
 
 @dataclass(frozen=True)
@@ -86,6 +87,7 @@ class TransformerConfig:
     n_layer: int
     n_head: int
     n_embd: int
+    max_position_embeddings: int | None = field(default=None, kw_only=True)
 
     def __post_init__(self) -> None:
         if self.block_size < 1:
@@ -96,6 +98,10 @@ class TransformerConfig:
             raise ValueError("n_layer, n_head, and n_embd must be positive")
         if self.n_embd % self.n_head != 0:
             raise ValueError(f"n_embd ({self.n_embd}) must be divisible by n_head ({self.n_head})")
+        if self.max_position_embeddings is None:
+            self.max_position_embeddings = self.block_size
+        if self.max_position_embeddings < self.block_size:
+            raise ValueError("max_position_embeddings must be at least block_size")
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -138,6 +144,7 @@ class MemoryUpdateConfig(MultiPassConfig):
             n_layer=values["n_layer"],
             n_head=values["n_head"],
             n_embd=values["n_embd"],
+            max_position_embeddings=values.get("max_position_embeddings"),
             n_pass=values["n_pass"],
             memory_gate_bias=values.get("memory_gate_bias", -1.0),
             use_memory_gate=values.get("use_memory_gate", False),
@@ -405,7 +412,7 @@ class CausalTransformer(nn.Module):
         self.transformer = nn.ModuleDict(
             {
                 "wte": nn.Embedding(config.vocab_size, config.n_embd),
-                "wpe": nn.Embedding(config.block_size, config.n_embd),
+                "wpe": nn.Embedding(config.max_position_embeddings, config.n_embd),
                 "h": nn.ModuleList([Block(config) for _ in range(config.n_layer)]),
                 "ln_f": LayerNorm(config.n_embd),
             }
@@ -434,7 +441,7 @@ class CausalTransformer(nn.Module):
             count -= self.transformer.wpe.weight.numel()
         return count
 
-    def embed_tokens(self, idx: torch.Tensor) -> torch.Tensor:
+    def embed_tokens(self, idx: torch.Tensor, *, position_offset: int = 0) -> torch.Tensor:
         if idx.ndim != 2:
             raise ValueError("idx must have shape [B, T]")
         seq_len = idx.shape[1]
@@ -442,11 +449,12 @@ class CausalTransformer(nn.Module):
             raise ValueError("input sequence must be non-empty")
         if seq_len > self.config.block_size:
             raise ValueError(f"sequence length {seq_len} exceeds block_size {self.config.block_size}")
-        positions = torch.arange(seq_len, device=idx.device)
+        _validate_position_range(position_offset, seq_len, self.config.max_position_embeddings)
+        positions = torch.arange(position_offset, position_offset + seq_len, device=idx.device)
         return self.transformer.wte(idx) + self.transformer.wpe(positions)[None, :, :]
 
-    def forward(self, idx: torch.Tensor) -> MultiPassOutput:
-        hidden = self.embed_tokens(idx)
+    def forward(self, idx: torch.Tensor, *, position_offset: int = 0) -> MultiPassOutput:
+        hidden = self.embed_tokens(idx, position_offset=position_offset)
         for block in self.transformer.h:
             hidden = block(hidden)
         hidden = self.transformer.ln_f(hidden)
@@ -467,11 +475,13 @@ class CausalTransformer(nn.Module):
         do_sample: bool = True,
         top_k: int | None = None,
         inference_mode: str = "recompute",
+        position_offset: int = 0,
     ) -> torch.Tensor:
         if inference_mode != "recompute":
             raise ValueError("CausalTransformer only supports inference_mode='recompute'")
         _validate_generation_inputs(ids, max_new_tokens)
         _validate_sampling_args(temperature, top_k)
+        _validate_position_range(position_offset, 0, self.config.max_position_embeddings)
         if max_new_tokens == 0:
             return ids
         was_training = self.training
@@ -479,8 +489,12 @@ class CausalTransformer(nn.Module):
         try:
             result = ids
             for _ in range(max_new_tokens):
-                context = result[:, -self.config.block_size :]
-                logits = self(context).logits[:, -1, :]
+                context_start = max(0, result.shape[1] - self.config.block_size)
+                context = result[:, context_start:]
+                logits = self(
+                    context,
+                    position_offset=position_offset + context_start,
+                ).logits[:, -1, :]
                 next_token = sample_next_token(
                     logits,
                     temperature=temperature,
@@ -509,7 +523,7 @@ class MultiPassTransformer(nn.Module):
         self.transformer = nn.ModuleDict(
             {
                 "wte": nn.Embedding(config.vocab_size, config.n_embd),
-                "wpe": nn.Embedding(config.block_size, config.n_embd),
+                "wpe": nn.Embedding(config.max_position_embeddings, config.n_embd),
                 "h": nn.ModuleList([self.block_cls(config) for _ in range(config.n_layer)]),
                 "ln_f": LayerNorm(config.n_embd),
             }
@@ -540,7 +554,7 @@ class MultiPassTransformer(nn.Module):
             count -= self.transformer.wpe.weight.numel()
         return count
 
-    def embed_tokens(self, idx: torch.Tensor) -> torch.Tensor:
+    def embed_tokens(self, idx: torch.Tensor, *, position_offset: int = 0) -> torch.Tensor:
         if idx.ndim != 2:
             raise ValueError("idx must have shape [B, T]")
         seq_len = idx.shape[1]
@@ -548,7 +562,8 @@ class MultiPassTransformer(nn.Module):
             raise ValueError("input sequence must be non-empty")
         if seq_len > self.config.block_size:
             raise ValueError(f"sequence length {seq_len} exceeds block_size {self.config.block_size}")
-        positions = torch.arange(seq_len, device=idx.device)
+        _validate_position_range(position_offset, seq_len, self.config.max_position_embeddings)
+        positions = torch.arange(position_offset, position_offset + seq_len, device=idx.device)
         return self.transformer.wte(idx) + self.transformer.wpe(positions)[None, :, :]
 
     def write_memory(self, hidden_states: torch.Tensor) -> torch.Tensor:
@@ -564,8 +579,8 @@ class MultiPassTransformer(nn.Module):
         memory = self.write_memory(hidden)
         return PassOutput(logits=logits, hidden_states=hidden, memory_states=memory)
 
-    def forward(self, idx: torch.Tensor) -> MultiPassOutput:
-        token_stream = self.embed_tokens(idx)
+    def forward(self, idx: torch.Tensor, *, position_offset: int = 0) -> MultiPassOutput:
+        token_stream = self.embed_tokens(idx, position_offset=position_offset)
         previous_memory = torch.zeros_like(token_stream)
         passes: list[PassOutput] = []
         for _ in range(self.config.n_pass):
@@ -576,9 +591,14 @@ class MultiPassTransformer(nn.Module):
                 raise RuntimeError("multi-pass model failed to emit memory states")
         return MultiPassOutput(tuple(passes))
 
-    def forward_passes(self, idx: torch.Tensor) -> tuple[tuple[torch.Tensor, ...], tuple[torch.Tensor, ...]]:
+    def forward_passes(
+        self,
+        idx: torch.Tensor,
+        *,
+        position_offset: int = 0,
+    ) -> tuple[tuple[torch.Tensor, ...], tuple[torch.Tensor, ...]]:
         """Compatibility helper for old analysis code."""
-        output = self(idx)
+        output = self(idx, position_offset=position_offset)
         return output.logits_per_pass, output.memory_states_per_pass
 
     @staticmethod
@@ -606,16 +626,17 @@ class MultiPassTransformer(nn.Module):
         return LossOutput(loss=total, pass_losses=losses, normalized_pass_weights=weights)
 
     @torch.no_grad()
-    def prefill_recurrent(self, ids: torch.Tensor) -> RecurrentState:
+    def prefill_recurrent(self, ids: torch.Tensor, *, position_offset: int = 0) -> RecurrentState:
         if ids.ndim != 2 or ids.shape[1] < 1:
             raise ValueError("ids must have shape [B, T] with T >= 1")
         if ids.shape[1] > self.config.block_size:
             raise ValueError("prompt length exceeds block_size")
-        output = self(ids)
+        output = self(ids, position_offset=position_offset)
         return RecurrentState(
             tokens=ids,
             memory_states=output.final_memory,
             next_token_logits=output.logits[:, -1, :],
+            position_offset=position_offset,
         )
 
     @torch.no_grad()
@@ -640,7 +661,7 @@ class MultiPassTransformer(nn.Module):
             dtype=state.memory_states.dtype,
         )
         previous_memory = torch.cat((state.memory_states, placeholder), dim=1)
-        token_stream = self.embed_tokens(tokens)
+        token_stream = self.embed_tokens(tokens, position_offset=state.position_offset)
         output = self.forward_pass(token_stream, previous_memory)
         if output.memory_states is None:
             raise RuntimeError("recurrent pass failed to emit memory states")
@@ -650,6 +671,7 @@ class MultiPassTransformer(nn.Module):
             tokens=tokens,
             memory_states=memory_states,
             next_token_logits=output.logits[:, -1, :],
+            position_offset=state.position_offset,
         )
 
     @torch.no_grad()
@@ -662,9 +684,11 @@ class MultiPassTransformer(nn.Module):
         do_sample: bool = True,
         top_k: int | None = None,
         inference_mode: str = "recompute",
+        position_offset: int = 0,
     ) -> torch.Tensor:
         _validate_generation_inputs(ids, max_new_tokens)
         _validate_sampling_args(temperature, top_k)
+        _validate_position_range(position_offset, 0, self.config.max_position_embeddings)
         if inference_mode not in {"recompute", "append_recurrent"}:
             raise ValueError("inference_mode must be 'recompute' or 'append_recurrent'")
         if max_new_tokens == 0:
@@ -676,8 +700,12 @@ class MultiPassTransformer(nn.Module):
             if inference_mode == "recompute":
                 result = ids
                 for _ in range(max_new_tokens):
-                    context = result[:, -self.config.block_size :]
-                    logits = self(context).logits[:, -1, :]
+                    context_start = max(0, result.shape[1] - self.config.block_size)
+                    context = result[:, context_start:]
+                    logits = self(
+                        context,
+                        position_offset=position_offset + context_start,
+                    ).logits[:, -1, :]
                     next_token = sample_next_token(
                         logits,
                         temperature=temperature,
@@ -694,7 +722,7 @@ class MultiPassTransformer(nn.Module):
                 raise ValueError(
                     "append_recurrent requires prompt_length + max_new_tokens - 1 <= block_size"
                 )
-            state = self.prefill_recurrent(ids)
+            state = self.prefill_recurrent(ids, position_offset=position_offset)
             for step in range(max_new_tokens):
                 next_token = sample_next_token(
                     state.next_token_logits,
@@ -923,3 +951,15 @@ def _validate_generation_inputs(ids: torch.Tensor, max_new_tokens: int) -> None:
         raise ValueError("generation requires a non-empty prompt")
     if max_new_tokens < 0:
         raise ValueError("max_new_tokens must be non-negative")
+
+
+def _validate_position_range(position_offset: int, seq_len: int, max_positions: int | None) -> None:
+    if not isinstance(position_offset, int) or isinstance(position_offset, bool) or position_offset < 0:
+        raise ValueError("position_offset must be a non-negative integer")
+    if max_positions is None:
+        raise RuntimeError("max_position_embeddings was not resolved")
+    if position_offset + seq_len > max_positions:
+        raise ValueError(
+            f"position range [{position_offset}, {position_offset + seq_len}) exceeds "
+            f"max_position_embeddings {max_positions}"
+        )

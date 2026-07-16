@@ -27,6 +27,7 @@ from experiments.common import (
     resolve_resume_artifacts,
     restore_checkpoint_state,
     runtime_resource_stats,
+    sample_train_position_offset,
     save_latest_checkpoint,
     set_seed,
     stable_seed,
@@ -150,6 +151,9 @@ def parse_args(argv: list[str] | None = None):
     _add_override(parser, "--seed", type=int)
     _add_override(parser, "--device")
     _add_override(parser, "--block-size", type=int)
+    _add_override(parser, "--max-position-embeddings", type=int)
+    _add_override(parser, "--train-position-offset-max", type=int)
+    _add_override(parser, "--eval-position-offset", type=int)
     _add_override(parser, "--run-dir")
     _add_override(parser, "--resume-from")
     raw = parser.parse_args(argv)
@@ -243,6 +247,7 @@ def run_answer_curriculum(args) -> None:
     )
 
     train_rng = random.Random(stable_seed(args.seed, "bbh", args.task, "train"))
+    position_rng = random.Random(stable_seed(args.seed, "bbh", args.task, "position_offset"))
     current_level = args.curriculum_start_level
     promotion_history: list[tuple[int, int, float]] = []
     if checkpoint is not None:
@@ -252,6 +257,8 @@ def run_answer_curriculum(args) -> None:
         promotion_history = [tuple(item) for item in extra.get("promotion_history", [])]
         if "train_rng_state" in extra:
             train_rng.setstate(extra["train_rng_state"])
+        if "position_rng_state" in extra:
+            position_rng.setstate(extra["position_rng_state"])
 
     print(f"device: {args.device}")
     print(f"task: {args.task}")
@@ -297,7 +304,10 @@ def run_answer_curriculum(args) -> None:
             rng=train_rng,
         )
         optimizer.zero_grad(set_to_none=True)
-        loss, _output, pass_losses = forward_and_loss(model, batch, args)
+        sampled_position_offset = sample_train_position_offset(args, position_rng)
+        loss, _output, pass_losses = forward_and_loss(
+            model, batch, args, position_offset=sampled_position_offset
+        )
         loss.backward()
         update_gradient_norm_window(gradient_norm_window, gradient_norms(model))
         optimizer.step()
@@ -346,6 +356,7 @@ def run_answer_curriculum(args) -> None:
                 "memory_gate_stats": memory_gate_stats(model),
                 "train_tok_per_s": tok_per_s,
                 "resource_stats": runtime_resource_stats(args.device),
+                "sampled_position_offset": sampled_position_offset,
             },
         )
 
@@ -365,6 +376,7 @@ def run_answer_curriculum(args) -> None:
                 "current_level": current_level,
                 "promotion_history": promotion_history,
                 "train_rng_state": train_rng.getstate(),
+                "position_rng_state": position_rng.getstate(),
             },
         )
         synchronize_device(args.device)

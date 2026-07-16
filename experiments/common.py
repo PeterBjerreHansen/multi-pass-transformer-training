@@ -78,6 +78,16 @@ def apply_model_size_preset(args) -> None:
 
 def validate_model_args(args) -> None:
     apply_model_size_preset(args)
+    if not hasattr(args, "max_position_embeddings"):
+        args.max_position_embeddings = None
+    if not hasattr(args, "train_position_offset_max"):
+        args.train_position_offset_max = 0
+    if not hasattr(args, "eval_position_offset"):
+        args.eval_position_offset = 0
+    if args.max_position_embeddings is not None and args.max_position_embeddings < 1:
+        raise ValueError("--max-position-embeddings must be positive")
+    if args.train_position_offset_max < 0 or args.eval_position_offset < 0:
+        raise ValueError("position offsets must be non-negative")
     if args.n_layer < 1 or args.n_head < 1 or args.n_embd < 1:
         raise ValueError("model dimensions must be positive")
     if args.n_embd % args.n_head != 0:
@@ -227,8 +237,13 @@ def effective_inference_mode(args, requested_mode: str | None = None) -> str:
     return requested_mode or args.inference_mode
 
 
-def forward_and_loss(model, batch, args):
-    output = model(batch.idx)
+def sample_train_position_offset(args, rng: random.Random) -> int:
+    return rng.randint(0, getattr(args, "train_position_offset_max", 0))
+
+
+def forward_and_loss(model, batch, args, *, position_offset: int | None = None):
+    effective_offset = getattr(args, "eval_position_offset", 0) if position_offset is None else position_offset
+    output = model(batch.idx, position_offset=effective_offset)
     if not is_multi_pass_architecture(args.architecture):
         loss = model.calc_loss(output.logits, batch.targets)
         return loss, output, (loss.detach(),)
@@ -333,6 +348,7 @@ def basic_generation_metrics(
             max_new_tokens=output_len,
             do_sample=do_sample,
             inference_mode=mode,
+            position_offset=getattr(args, "eval_position_offset", 0),
         )
         generated_suffix = generated[:, prompt_len : prompt_len + output_len]
         correct = generated_suffix == target_suffix

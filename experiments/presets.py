@@ -48,6 +48,9 @@ def _base_defaults(
         "resume_from": None,
         "device": None,
         "block_size": None,
+        "max_position_embeddings": None,
+        "train_position_offset_max": 0,
+        "eval_position_offset": 0,
     }
 
 

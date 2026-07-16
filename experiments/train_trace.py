@@ -24,6 +24,7 @@ from experiments.common import (
     resolve_resume_artifacts,
     restore_checkpoint_state,
     runtime_resource_stats,
+    sample_train_position_offset,
     save_latest_checkpoint,
     set_seed,
     stable_seed,
@@ -76,6 +77,9 @@ def parse_args(argv: list[str] | None = None):
     _add_override(parser, "--seed", type=int)
     _add_override(parser, "--device")
     _add_override(parser, "--block-size", type=int)
+    _add_override(parser, "--max-position-embeddings", type=int)
+    _add_override(parser, "--train-position-offset-max", type=int)
+    _add_override(parser, "--eval-position-offset", type=int)
     _add_override(parser, "--run-dir")
     _add_override(parser, "--resume-from")
     return resolve_preset_args(
@@ -229,11 +233,14 @@ def run_trace_training(args) -> None:
     )
 
     train_rng = random.Random(stable_seed(args.seed, "trace", args.task, "train"))
+    position_rng = random.Random(stable_seed(args.seed, "trace", args.task, "position_offset"))
     if checkpoint is not None:
         restore_checkpoint_state(checkpoint, model=model, optimizer=optimizer, device=args.device)
         extra = checkpoint.get("extra_state", {})
         if "train_rng_state" in extra:
             train_rng.setstate(extra["train_rng_state"])
+        if "position_rng_state" in extra:
+            position_rng.setstate(extra["position_rng_state"])
 
     print(f"device: {args.device}")
     print(f"task: {args.task}")
@@ -272,7 +279,10 @@ def run_trace_training(args) -> None:
         model.train()
         batch = build_task_batch(args, stoi, train_rng, split="train")
         optimizer.zero_grad(set_to_none=True)
-        loss, _output, pass_losses = forward_and_loss(model, batch, args)
+        sampled_position_offset = sample_train_position_offset(args, position_rng)
+        loss, _output, pass_losses = forward_and_loss(
+            model, batch, args, position_offset=sampled_position_offset
+        )
         loss.backward()
         update_gradient_norm_window(gradient_norm_window, gradient_norms(model))
         optimizer.step()
@@ -318,6 +328,7 @@ def run_trace_training(args) -> None:
                 "memory_gate_stats": memory_gate_stats(model),
                 "train_tok_per_s": tok_per_s,
                 "resource_stats": runtime_resource_stats(args.device),
+                "sampled_position_offset": sampled_position_offset,
             },
         )
         save_latest_checkpoint(
@@ -326,7 +337,10 @@ def run_trace_training(args) -> None:
             optimizer=optimizer,
             args=args,
             step=step,
-            extra_state={"train_rng_state": train_rng.getstate()},
+            extra_state={
+                "train_rng_state": train_rng.getstate(),
+                "position_rng_state": position_rng.getstate(),
+            },
         )
         synchronize_device(args.device)
         window_start = time.perf_counter()

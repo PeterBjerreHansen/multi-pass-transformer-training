@@ -82,6 +82,11 @@ def collect_run(run_dir: Path) -> dict[str, float | str]:
     for mode in ("recompute", "append_recurrent"):
         drift = _read_json(run_dir / "drift" / mode / "summary.json") or {}
         _flatten(f"drift.{mode}", drift.get("metrics", {}), numeric)
+    for offset_dir in sorted((run_dir / "drift").glob("offset_*")):
+        offset = offset_dir.name.removeprefix("offset_")
+        for mode in ("recompute", "append_recurrent"):
+            drift = _read_json(offset_dir / mode / "summary.json") or {}
+            _flatten(f"offset.{offset}.{mode}", drift.get("metrics", {}), numeric)
 
     result.update(numeric)
     return result
@@ -137,16 +142,33 @@ def recommend(
 ) -> dict:
     quality_metric = "drift.append_recurrent.token_legality"
     deltas = _paired_delta(control, treatment, quality_metric)
-    median_delta = _median(deltas)
+    shifted_deltas: list[float] = []
+    if mode == "position-offset":
+        for seed in sorted(set(control) & set(treatment)):
+            metric_names = sorted(
+                key
+                for key in set(control[seed]) & set(treatment[seed])
+                if key.startswith("offset.") and key.endswith(".append_recurrent.token_legality")
+            )
+            left = [_number(control[seed].get(key)) for key in metric_names]
+            right = [_number(treatment[seed].get(key)) for key in metric_names]
+            pairs = [(a, b) for a, b in zip(left, right) if a is not None and b is not None]
+            if pairs:
+                shifted_deltas.append(sum(b - a for a, b in pairs) / len(pairs))
+        quality_metric = "mean shifted-offset append-recurrent token legality"
+        quality_deltas = shifted_deltas
+    else:
+        quality_deltas = deltas
+    median_delta = _median(quality_deltas)
     quality_win = bool(
         median_delta is not None
         and median_delta >= QUALITY_MARGIN
-        and sum(delta > 0 for delta in deltas) >= 2
+        and sum(delta > 0 for delta in quality_deltas) >= 2
     )
     noninferior = bool(
         median_delta is not None
         and median_delta >= -QUALITY_MARGIN
-        and sum(delta >= -QUALITY_MARGIN for delta in deltas) >= 2
+        and sum(delta >= -QUALITY_MARGIN for delta in quality_deltas) >= 2
     )
 
     train_ratio = _median_ratio(control, treatment, "train.train_tok_per_s")
@@ -161,6 +183,15 @@ def recommend(
     )
 
     eligible = quality_win if mode in {"quality-only", "null-slot"} else quality_win or (noninferior and efficiency_win)
+    offset_zero_noninferior = None
+    if mode == "position-offset":
+        offset_zero_median = _median(deltas)
+        offset_zero_noninferior = bool(
+            offset_zero_median is not None
+            and offset_zero_median >= -QUALITY_MARGIN
+            and sum(delta >= -QUALITY_MARGIN for delta in deltas) >= 2
+        )
+        eligible = quality_win and offset_zero_noninferior
     if mode == "null-slot":
         preconditions = [
             bool(run.get("diagnostics.memory_attention.diagnostic_precondition", 0.0))
@@ -178,7 +209,7 @@ def recommend(
     return {
         "recommend_merge": eligible,
         "quality_metric": quality_metric,
-        "paired_quality_deltas": deltas,
+        "paired_quality_deltas": quality_deltas,
         "median_quality_delta": median_delta,
         "quality_win": quality_win,
         "quality_noninferior": noninferior,
@@ -188,6 +219,7 @@ def recommend(
         "median_parameter_ratio": parameter_ratio,
         "median_tape_bytes_ratio": tape_ratio,
         "diagnostic_precondition": diagnostic_ok,
+        "offset_zero_noninferior": offset_zero_noninferior,
     }
 
 

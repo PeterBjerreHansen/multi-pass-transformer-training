@@ -210,6 +210,29 @@ def test_causal_transformer_structured_output_and_generation():
         model.generate(tokens[:, :4], 1, inference_mode="append_recurrent")
 
 
+def test_position_offsets_have_independent_capacity_and_bounds():
+    config = TransformerConfig(4, 17, 1, 1, 8, max_position_embeddings=8)
+    model = CausalTransformer(config)
+    tokens = torch.randint(0, 17, (2, 4))
+    assert torch.equal(model.embed_tokens(tokens), model.embed_tokens(tokens, position_offset=0))
+    assert not torch.equal(model.embed_tokens(tokens), model.embed_tokens(tokens, position_offset=2))
+    with pytest.raises(ValueError, match="position range"):
+        model(tokens, position_offset=5)
+    restored = TransformerConfig.from_dict({
+        "block_size": 4, "vocab_size": 17, "n_layer": 1, "n_head": 1, "n_embd": 8
+    })
+    assert restored.max_position_embeddings == 4
+
+
+def test_recompute_generation_advances_cropped_position_offset():
+    prompt = torch.tensor([[1, 2, 3, 4]])
+    roomy = CausalTransformer(TransformerConfig(4, 17, 1, 1, 8, max_position_embeddings=8))
+    assert roomy.generate(prompt, 3, do_sample=False).shape == (1, 7)
+    bounded = CausalTransformer(TransformerConfig(4, 17, 1, 1, 8))
+    with pytest.raises(ValueError, match="position range"):
+        bounded.generate(prompt, 2, do_sample=False)
+
+
 def test_multipass_variants_return_all_passes_and_finite_losses():
     cases = [
         (MemoryTapeTransformer, MemoryTapeConfig(8, 17, 1, 1, 8, 3)),
@@ -326,6 +349,17 @@ def test_recurrent_prefill_uses_last_pass_memory_and_append_is_immutable():
     next_state = model.recurrent_step(state, next_token)
     assert next_state.memory_states.shape[1] == old_memory.shape[1] + 1
     assert torch.equal(next_state.memory_states[:, :-1], old_memory)
+
+
+def test_recurrent_state_retains_position_offset():
+    model = MemoryTapeTransformer(
+        MemoryTapeConfig(10, 19, 1, 1, 8, 3, max_position_embeddings=16)
+    )
+    tokens = torch.randint(0, 19, (2, 5))
+    state = model.prefill_recurrent(tokens, position_offset=4)
+    assert state.position_offset == 4
+    next_token = state.next_token_logits.argmax(dim=-1, keepdim=True)
+    assert model.recurrent_step(state, next_token).position_offset == 4
 
 
 def test_append_recurrent_matches_manual_two_token_rollout():

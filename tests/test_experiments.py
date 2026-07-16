@@ -14,6 +14,7 @@ from experiments.common import (
     load_checkpoint_payload,
     restore_checkpoint_state,
     runtime_resource_stats,
+    sample_train_position_offset,
     save_latest_checkpoint,
 )
 from experiments.summarize_ablation import recommend
@@ -267,3 +268,12 @@ def test_ablation_recommendation_accepts_noninferior_efficiency_win():
     assert result["quality_noninferior"]
     assert result["efficiency_win"]
     assert result["recommend_merge"]
+
+
+def test_position_offset_sampling_is_deterministic():
+    args = SimpleNamespace(train_position_offset_max=7)
+    first = random.Random(12)
+    second = random.Random(12)
+    assert [sample_train_position_offset(args, first) for _ in range(20)] == [
+        sample_train_position_offset(args, second) for _ in range(20)
+    ]

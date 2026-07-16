@@ -41,6 +41,7 @@ def trace_generation_metrics(
             max_new_tokens=output_len,
             do_sample=do_sample,
             inference_mode=mode,
+            position_offset=getattr(args, "eval_position_offset", 0),
         )
         generated_suffix = generated[:, prompt_len : prompt_len + output_len]
 
