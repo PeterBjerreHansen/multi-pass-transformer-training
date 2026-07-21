@@ -6,6 +6,8 @@ This branch separates sequence capacity (`block_size`) from the learned position
 
 The hypothesis is that training across absolute offsets prevents the model from overfitting task roles to the first positions in the table and improves robustness when generation or memory reuse begins later in a larger coordinate system. The benchmark parameter-matches control and treatment with 149 position embeddings, trains at offset zero versus offsets 0–64, and evaluates offsets 0, 16, 32, and 64 in both inference modes.
 
+For a short local control/treatment run with both inference modes and diagnostics, use `bash scripts/pilot_06_position_offsets.sh`. It defaults to one seed and 250 steps; `DEVICE`, `TRAIN_STEPS`, `BATCH_SIZE`, and `RESULT_ROOT` are overrideable.
+
 ## Branch-specific code review
 
 - `TransformerConfig.max_position_embeddings` defaults to `block_size`, preserving the original table shape for old configs.
