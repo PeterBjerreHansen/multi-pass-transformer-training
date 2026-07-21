@@ -321,6 +321,36 @@ bash runs/trace/10_othello_trace.sh
 bash runs/trace/10_shortest_path_trace.sh
 ```
 
+The canonical launchers retain their full defaults but accept environment
+overrides including `ARCHITECTURES`, `DEVICE`, `TRAIN_STEPS`, `EVAL_INTERVAL`,
+`EVAL_BATCHES`, `SEED`, and `RESULT_ROOT`. For example, a short local comparison
+without changing the scientific preset is:
+
+```bash
+DEVICE=mps TRAIN_STEPS=250 ARCHITECTURES="transformer memory_tape" \
+  bash runs/trace/10_random_graph_walk_trace.sh
+```
+
+Two local workflows sit between one-step smoke tests and the full experiments:
+
+```bash
+# Broad, short pass over the four BBH tasks and three trace tasks.
+bash runs/local/10_main_matrix_pilot.sh
+
+# Longer learning-curve calibration for the two synthetic trace indicators.
+TRAIN_STEPS=5000 SEEDS="1337 2027" \
+  bash runs/local/20_trace_task_calibration.sh
+```
+
+The broad pilot defaults to the transformer and MemoryTape, 250 steps, one
+seed, and a reduced local Othello dataset. The calibration defaults to 5,000
+steps and records both inference schedules plus diagnostics for multi-pass
+models. `scripts/summarize_learning_runs.py` writes `learning_summary.json` and
+requires at least a five-percent evaluation-loss reduction in calibration
+mode. This is a learning-signal check, not a claim that 5,000 steps is enough:
+inspect task metrics and extend `TRAIN_STEPS` until Random Graph Walk legality
+and shortest-path optimal accuracy have clearly stabilized across seeds.
+
 Use `scripts/train_smoke.sh` for quick end-to-end checks.
 
 Drift evaluation:
