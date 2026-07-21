@@ -6,6 +6,8 @@ This branch tests whether every transformer layer needs to read the recurrent me
 
 The hypothesis is that memory access may be useful at a particular representational stage rather than at every layer. Skipping redundant reads could improve throughput while preserving parameter-matched comparisons and task quality. The benchmark compares `all`, `early`, `middle`, and `late` on the four-layer small model.
 
+For a short local all-layer versus middle-only run with both inference modes and diagnostics, use `bash scripts/pilot_13_memory_read_layers.sh`. It defaults to one seed and 250 steps; `DEVICE`, `TRAIN_STEPS`, `BATCH_SIZE`, and `RESULT_ROOT` are overrideable.
+
 ## Branch-specific code review
 
 - `resolve_memory_read_layers` maps the four CLI patterns to concrete layer indices, with `middle` defined as `n_layer // 2`.
