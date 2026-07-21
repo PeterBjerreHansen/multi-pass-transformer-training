@@ -6,6 +6,8 @@ This branch gives `MemoryTapeTransformer` an independent tape width through `Mem
 
 The hypothesis is that the recurrent tape is over-wide relative to the information it must preserve. A narrower tape may retain task quality while reducing parameters, persistent recurrent-state size, and reader bandwidth. The benchmark compares legacy behavior, explicit `Dm=128`, `Dm=64`, and `Dm=32`, with the explicit full-width case serving as the normalization-matched control.
 
+For a short local `Dm=128` versus `Dm=64` run with both inference modes and diagnostics, use `bash scripts/pilot_07_memory_width.sh`. It defaults to one seed and 250 steps; `DEVICE`, `TRAIN_STEPS`, `BATCH_SIZE`, and `RESULT_ROOT` are overrideable.
+
 ## Branch-specific code review
 
 - Omitting `n_memory_embd` preserves the legacy writer shape and normalization order. Supplying it uses `D -> Dm` followed by `Dm`-wide normalization.
