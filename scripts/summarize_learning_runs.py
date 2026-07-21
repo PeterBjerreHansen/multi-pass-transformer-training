@@ -19,6 +19,7 @@ KEY_METRICS = (
     "exact_match",
     "token_accuracy",
 )
+QUALIFICATION_METRICS = ("loss", *KEY_METRICS)
 
 
 def parse_args() -> argparse.Namespace:
@@ -39,6 +40,25 @@ def load_eval_events(path: Path) -> list[dict]:
             if payload.get("event") == "eval":
                 events.append(payload)
     return events
+
+
+def load_qualification_metrics(run_dir: Path) -> dict[str, dict]:
+    qualification = {}
+    for path in sorted((run_dir / "drift").glob("*/summary.json")):
+        payload = json.loads(path.read_text())
+        mode = payload.get("effective_inference_mode") or payload.get("inference_mode")
+        if not mode:
+            continue
+        metrics = payload.get("metrics", {})
+        qualification[str(mode)] = {
+            "evaluation_examples": payload.get("evaluation_examples"),
+            "metrics": {
+                key: float(metrics[key])
+                for key in QUALIFICATION_METRICS
+                if key in metrics
+            },
+        }
+    return qualification
 
 
 def summarize_run(path: Path) -> tuple[dict, list[str]]:
@@ -81,6 +101,7 @@ def summarize_run(path: Path) -> tuple[dict, list[str]]:
             for key in KEY_METRICS
             if key in final_metrics
         },
+        "qualification": load_qualification_metrics(path.parent),
     }
     return summary, failures
 
@@ -126,6 +147,18 @@ def main() -> None:
             f"loss={summary['first_loss']:.4f}->{summary['final_loss']:.4f} "
             f"drop={summary['relative_loss_drop']:.1%} {metrics}".rstrip()
         )
+        for mode, qualification in summary["qualification"].items():
+            count = qualification["evaluation_examples"]
+            count_text = "?" if count is None else str(count)
+            qualification_metrics = " ".join(
+                f"{key}={value:.3f}"
+                for key, value in qualification["metrics"].items()
+                if key != "loss"
+            )
+            print(
+                f"  qualification[{mode}] n={count_text} "
+                f"{qualification_metrics}".rstrip()
+            )
     print(f"summary: {output_path}")
 
     if failures:

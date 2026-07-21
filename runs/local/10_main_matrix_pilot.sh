@@ -17,18 +17,16 @@ TRACE_TASKS="${TRACE_TASKS:-random_graph_walk shortest_path}"
 RUN_ID="${RUN_ID:-$(date +%Y%m%d_%H%M%S)}"
 RESULT_ROOT="${RESULT_ROOT:-results/local_pilots/main_matrix/${RUN_ID}}"
 
-for task in ${BBH_TASKS}; do
-  TASK="${task}" \
-  DEVICE="${DEVICE}" \
-  SEED="${SEED}" \
-  TRAIN_STEPS="${TRAIN_STEPS}" \
-  EVAL_INTERVAL="${EVAL_INTERVAL}" \
-  EVAL_BATCHES="${EVAL_BATCHES}" \
-  BATCH_SIZE="${BATCH_SIZE}" \
-  ARCHITECTURES="${ARCHITECTURES}" \
-  RESULT_ROOT="${RESULT_ROOT}/bbh/${task}" \
-    bash runs/bbh/10_bbh_curriculum.sh
-done
+TASKS="${BBH_TASKS}" \
+DEVICE="${DEVICE}" \
+SEED="${SEED}" \
+TRAIN_STEPS="${TRAIN_STEPS}" \
+EVAL_INTERVAL="${EVAL_INTERVAL}" \
+EVAL_BATCHES="${EVAL_BATCHES}" \
+BATCH_SIZE="${BATCH_SIZE}" \
+ARCHITECTURES="${ARCHITECTURES}" \
+RESULT_ROOT="${RESULT_ROOT}/bbh" \
+  bash runs/bbh/10_bbh_curriculum.sh
 
 for task in ${TRACE_TASKS}; do
   DEVICE="${DEVICE}" \

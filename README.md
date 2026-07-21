@@ -331,6 +331,12 @@ DEVICE=mps TRAIN_STEPS=250 ARCHITECTURES="transformer memory_tape" \
   bash runs/trace/10_random_graph_walk_trace.sh
 ```
 
+The BBH launcher runs all four tasks by default. Use `TASKS="tracking
+pointer_chasing"` for a subset, or the backwards-compatible `TASK=tracking`
+for one task. Optional environment overrides are added to the command only
+when set; otherwise each preset remains the single source of scientific
+defaults such as training steps, batch size, and evaluation frequency.
+
 Two local workflows sit between one-step smoke tests and the full experiments:
 
 ```bash
@@ -338,18 +344,31 @@ Two local workflows sit between one-step smoke tests and the full experiments:
 bash runs/local/10_main_matrix_pilot.sh
 
 # Longer learning-curve calibration for the two synthetic trace indicators.
-TRAIN_STEPS=5000 SEEDS="1337 2027" \
+SEEDS="1337 2027" \
   bash runs/local/20_trace_task_calibration.sh
+
+# Compare easier and harder versions before selecting benchmark difficulty.
+bash runs/local/30_trace_difficulty_sweep.sh
 ```
 
 The broad pilot defaults to the transformer and MemoryTape, 250 steps, one
-seed, and a reduced local Othello dataset. The calibration defaults to 5,000
+seed, and a reduced local Othello dataset. The calibration defaults to 50,000
 steps and records both inference schedules plus diagnostics for multi-pass
-models. `scripts/summarize_learning_runs.py` writes `learning_summary.json` and
-requires at least a five-percent evaluation-loss reduction in calibration
-mode. This is a learning-signal check, not a claim that 5,000 steps is enough:
-inspect task metrics and extend `TRAIN_STEPS` until Random Graph Walk legality
-and shortest-path optimal accuracy have clearly stabilized across seeds.
+models. Repeated training evaluations use two batches by default, while the
+post-training qualification uses 16 batches of 16 examples (256 examples) per
+inference mode. Override these independently with `TRAIN_EVAL_BATCHES`,
+`QUAL_EVAL_BATCHES`, and `DIAGNOSTIC_EVAL_BATCHES`.
+
+The difficulty sweep defaults to 5,000 steps, Random Graph Walk lengths 8, 16,
+and 32, and shortest-path settings `8/3/2/5`, `16/4/3/20`, and `24/6/3/40`
+(`nodes/path length/branching/distractors`). It skips the architecture
+diagnostics by default because its purpose is task calibration; set
+`RUN_DIAGNOSTICS=1` to include them. `scripts/summarize_learning_runs.py`
+writes `learning_summary.json`, including the larger per-inference-mode
+qualification metrics. Calibration mode requires at least a five-percent
+evaluation-loss reduction. Inspect the task metrics and extend `TRAIN_STEPS`
+until Random Graph Walk legality and shortest-path optimal accuracy have
+clearly stabilized across seeds.
 
 Use `scripts/train_smoke.sh` for quick end-to-end checks.
 

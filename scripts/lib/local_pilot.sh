@@ -26,7 +26,12 @@ run_trace_pilot_variant() {
   device="$(local_pilot_device)"
   local train_steps="${TRAIN_STEPS:-250}"
   local eval_interval="${EVAL_INTERVAL:-${train_steps}}"
-  local eval_batches="${EVAL_BATCHES:-1}"
+  # Keep repeated in-training evaluation cheap while allowing a larger,
+  # statistically useful post-training qualification set. EVAL_BATCHES remains
+  # a backwards-compatible fallback for older branch pilot scripts.
+  local train_eval_batches="${TRAIN_EVAL_BATCHES:-${EVAL_BATCHES:-1}}"
+  local qualification_eval_batches="${QUAL_EVAL_BATCHES:-${EVAL_BATCHES:-1}}"
+  local diagnostic_eval_batches="${DIAGNOSTIC_EVAL_BATCHES:-${EVAL_BATCHES:-1}}"
   local batch_size="${BATCH_SIZE:-16}"
   local result_root="${RESULT_ROOT:-results/local_pilots}"
   local run_dir="${result_root}/${variant}/seed_${seed}"
@@ -37,7 +42,7 @@ run_trace_pilot_variant() {
     --token-selection argmax \
     --train-steps "${train_steps}" \
     --eval-interval "${eval_interval}" \
-    --eval-batches "${eval_batches}" \
+    --eval-batches "${train_eval_batches}" \
     --batch-size "${batch_size}" \
     --seed "${seed}" \
     --device "${device}" \
@@ -54,7 +59,7 @@ run_trace_pilot_variant() {
       --inference-mode "${inference_mode}" \
       --token-selection argmax \
       --device "${device}" \
-      --eval-batches "${eval_batches}" \
+      --eval-batches "${qualification_eval_batches}" \
       --seed "${seed}" \
       --run-dir "${run_dir}/drift/${inference_mode}"
   done
@@ -68,7 +73,7 @@ run_trace_pilot_variant() {
       --input-run-dir "${run_dir}" \
       --device "${device}" \
       --batch-size "${diagnostics_batch_size}" \
-      --eval-batches "${eval_batches}" \
+      --eval-batches "${diagnostic_eval_batches}" \
       --seed "${seed}" \
       --output "${run_dir}/diagnostics.json"
   fi
