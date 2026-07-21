@@ -4,7 +4,7 @@ import argparse
 import random
 import time
 
-from tasks.trace import othello, random_graph_walk
+from tasks.trace.registry import TRACE_TASKS, get_trace_task
 from experiments.common import (
     append_jsonl,
     build_model_and_optimizer,
@@ -40,9 +40,6 @@ from experiments.presets import TRACE_PRESETS, preset_help_text, resolve_preset_
 from model_factory import ARCHITECTURES
 
 
-TRACE_TASKS = ("random_graph_walk", "othello")
-
-
 def _add_override(parser, *names, **kwargs) -> None:
     parser.add_argument(*names, default=argparse.SUPPRESS, **kwargs)
 
@@ -70,6 +67,10 @@ def parse_args(argv: list[str] | None = None):
     _add_override(parser, "--append-train-ramp-steps", type=int)
     _add_override(parser, "--num-states", type=int)
     _add_override(parser, "--label-pool-size", type=int)
+    _add_override(parser, "--num-nodes", type=int)
+    _add_override(parser, "--shortest-path-length", type=int)
+    _add_override(parser, "--branching-factor", type=int)
+    _add_override(parser, "--distractor-edges", type=int)
     _add_override(parser, "--max-level", type=int)
     _add_override(parser, "--othello-data-dir")
     _add_override(parser, "--othello-train-games", type=int)
@@ -96,77 +97,23 @@ def parse_args(argv: list[str] | None = None):
 
 
 def validate_task_args(args) -> None:
-    if args.task == "random_graph_walk":
-        random_graph_walk.build_random_graph_walk_vocab(args.num_states, args.label_pool_size)
-        required = random_graph_walk.required_block_size(args.num_states, args.label_pool_size, args.max_level)
-    elif args.task == "othello":
-        othello.build_othello_vocab(
-            othello_train_games=args.othello_train_games,
-            othello_val_games=args.othello_val_games,
-        )
-        required = othello.required_block_size(
-            othello_prepend_opening=args.othello_prepend_opening,
-            othello_train_games=args.othello_train_games,
-            othello_val_games=args.othello_val_games,
-        )
-    else:
-        raise ValueError(f"unsupported trace task: {args.task}")
+    task = get_trace_task(args.task)
+    task.build_vocab(args)
+    required = task.required_block_size(args)
     if args.block_size is not None and args.block_size < required:
         raise ValueError(f"--block-size must be at least {required} for {args.task}")
 
 
 def build_training_objects(args):
-    if args.task == "random_graph_walk":
-        block_size = args.block_size or random_graph_walk.required_block_size(
-            args.num_states,
-            args.label_pool_size,
-            args.max_level,
-        )
-        vocab, stoi, itos = random_graph_walk.build_random_graph_walk_vocab(
-            args.num_states,
-            args.label_pool_size,
-        )
-    elif args.task == "othello":
-        block_size = args.block_size or othello.required_block_size(
-            othello_prepend_opening=args.othello_prepend_opening,
-            othello_train_games=args.othello_train_games,
-            othello_val_games=args.othello_val_games,
-        )
-        vocab, stoi, itos = othello.build_othello_vocab(
-            othello_train_games=args.othello_train_games,
-            othello_val_games=args.othello_val_games,
-        )
-    else:
-        raise ValueError(f"unsupported trace task: {args.task}")
+    task = get_trace_task(args.task)
+    block_size = args.block_size or task.required_block_size(args)
+    vocab, stoi, itos = task.build_vocab(args)
     model, optimizer = build_model_and_optimizer(args, vocab_size=len(vocab), block_size=block_size)
     return block_size, vocab, stoi, itos, model, optimizer
 
 
 def build_task_batch(args, stoi, rng: random.Random, *, split: str):
-    if args.task == "random_graph_walk":
-        return random_graph_walk.build_random_graph_walk_batch(
-            batch_size=args.batch_size,
-            num_states=args.num_states,
-            label_pool_size=args.label_pool_size,
-            num_steps=args.max_level,
-            stoi=stoi,
-            device=args.device,
-            rng=rng,
-        )
-    if args.task == "othello":
-        return othello.build_othello_batch(
-            batch_size=args.batch_size,
-            stoi=stoi,
-            device=args.device,
-            rng=rng,
-            split=split,
-            othello_data_dir=args.othello_data_dir,
-            othello_train_games=args.othello_train_games,
-            othello_val_games=args.othello_val_games,
-            othello_dataset_seed=args.othello_dataset_seed,
-            othello_prepend_opening=args.othello_prepend_opening,
-        )
-    raise ValueError(f"unsupported trace task: {args.task}")
+    return get_trace_task(args.task).build_batch(args, stoi, rng, split=split)
 
 
 def build_fixed_eval_batches(args, stoi):
@@ -175,29 +122,16 @@ def build_fixed_eval_batches(args, stoi):
 
 
 def trace_generation_metrics(model, batch, args, *, inference_mode: str | None = None):
-    if args.task == "random_graph_walk":
-        return random_graph_walk.random_graph_walk_generation_metrics(
-            model,
-            batch,
-            args,
-            inference_mode=inference_mode,
-            num_states=args.num_states,
-            label_pool_size=args.label_pool_size,
-        )
-    if args.task == "othello":
-        return othello.othello_generation_metrics(
-            model,
-            batch,
-            args,
-            inference_mode=inference_mode,
-        )
-    raise ValueError(f"unsupported trace task: {args.task}")
+    return get_trace_task(args.task).generation_metrics(
+        model,
+        batch,
+        args,
+        inference_mode=inference_mode,
+    )
 
 
 def format_trace_metrics(args, metrics: dict[str, float]) -> str:
-    if args.task == "random_graph_walk":
-        return random_graph_walk.format_random_graph_walk_eval_metrics(metrics)
-    return othello.format_othello_eval_metrics(metrics)
+    return get_trace_task(args.task).format_metrics(metrics)
 
 
 def _apply_resume_args(args, checkpoint: dict) -> None:
