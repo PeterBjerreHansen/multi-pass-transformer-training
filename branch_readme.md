@@ -6,6 +6,8 @@ This branch adds an optional null source to each `MemoryTapeTransformer` reader.
 
 The hypothesis is diagnostic as much as architectural: a null slot should help only when ordinary memory attention is compulsory and diffuse. The benchmark therefore compares null off versus on and requires high normalized attention entropy, a materially active scalar gate, non-trivial null mass, and a quality win before recommending a merge.
 
+For a short local null-off versus null-on run with both inference modes and diagnostics, use `bash scripts/pilot_08_null_memory_slot.sh`. It defaults to one seed and 250 steps; `DEVICE`, `TRAIN_STEPS`, `BATCH_SIZE`, and `RESULT_ROOT` are overrideable.
+
 ## Branch-specific code review
 
 - `CausalCrossAttention` prepends the learned null key and zero value and uses an explicit boolean mask because query and source lengths no longer match.
