@@ -60,10 +60,14 @@ run_trace_pilot_variant() {
   done
 
   if [[ "${RUN_DIAGNOSTICS:-1}" == "1" && "${architecture}" != "transformer" ]]; then
+    local diagnostics_batch_size="${batch_size}"
+    if (( diagnostics_batch_size < 2 )); then
+      diagnostics_batch_size=2
+    fi
     python -m experiments.eval_diagnostics \
       --input-run-dir "${run_dir}" \
       --device "${device}" \
-      --batch-size "${batch_size}" \
+      --batch-size "${diagnostics_batch_size}" \
       --eval-batches "${eval_batches}" \
       --seed "${seed}" \
       --output "${run_dir}/diagnostics.json"
