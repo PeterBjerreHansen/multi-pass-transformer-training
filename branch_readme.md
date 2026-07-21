@@ -6,6 +6,8 @@ This branch tests deployment-shaped memory corruption for multi-pass models. Dur
 
 The hypothesis is that exposure to mixed refinement levels makes the model less brittle when deployed memories were produced with a different effective number of passes. The benchmark compares `P = 0, 0.1, 0.25, 0.5` and measures ordinary quality, recurrent drift, and the loss incurred when the final pass is deliberately rerun against each earlier learned tape.
 
+For a short local `P=0` versus `P=0.25` run with both inference modes and diagnostics, use `bash scripts/pilot_stale_memory_training.sh`. It defaults to one seed and 250 steps; `DEVICE`, `TRAIN_STEPS`, `TREATMENT_PROB`, `BATCH_SIZE`, and `RESULT_ROOT` are overrideable.
+
 ## Branch-specific code review
 
 - `MultiPassTransformer.forward` accepts an optional per-position memory-source plan. The default path remains numerically identical, while the routed path validates that a pass can only read an available learned memory.
