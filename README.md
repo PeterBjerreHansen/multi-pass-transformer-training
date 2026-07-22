@@ -370,6 +370,17 @@ evaluation-loss reduction. Inspect the task metrics and extend `TRAIN_STEPS`
 until Random Graph Walk legality and shortest-path optimal accuracy have
 clearly stabilized across seeds.
 
+MemoryTape's direct scalar reader gate retains its `0.1` initialization by
+default. To repeat the complete difficulty grid with a unit-initialized memory
+residual while keeping the control available, run:
+
+```bash
+DEVICE=mps MEMORY_GATE_INIT=1 bash runs/local/30_trace_difficulty_sweep.sh
+```
+
+The selected initialization is saved in each run config and printed by the
+learning summarizer. It does not affect the other architectures.
+
 Use `scripts/train_smoke.sh` for quick end-to-end checks.
 
 Drift evaluation:

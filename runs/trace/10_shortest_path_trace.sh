@@ -15,6 +15,7 @@ extra_args=()
 [[ -n "${EVAL_BATCHES:-}" ]] && extra_args+=(--eval-batches "${EVAL_BATCHES}")
 [[ -n "${BATCH_SIZE:-}" ]] && extra_args+=(--batch-size "${BATCH_SIZE}")
 [[ -n "${TOKEN_SELECTION:-}" ]] && extra_args+=(--token-selection "${TOKEN_SELECTION}")
+[[ -n "${MEMORY_GATE_INIT:-}" ]] && extra_args+=(--memory-gate-init "${MEMORY_GATE_INIT}")
 
 for ARCH in ${ARCHITECTURES}; do
   python -m experiments.train_trace \

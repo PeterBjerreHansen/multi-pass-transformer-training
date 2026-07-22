@@ -89,6 +89,7 @@ def summarize_run(path: Path) -> tuple[dict, list[str]]:
         "run_dir": str(path.parent),
         "task": config.get("task"),
         "architecture": config.get("architecture"),
+        "memory_gate_init": config.get("memory_gate_init", 0.1),
         "seed": config.get("seed"),
         "first_step": first.get("step"),
         "final_step": final.get("step"),
@@ -116,6 +117,7 @@ def main() -> None:
     failures = []
     for path in metrics_paths:
         summary, run_failures = summarize_run(path)
+        summary["variant"] = str(path.parent.relative_to(args.root))
         summaries.append(summary)
         failures.extend(run_failures)
         drop = summary.get("relative_loss_drop")
@@ -142,8 +144,11 @@ def main() -> None:
         metrics = " ".join(
             f"{key}={value:.3f}" for key, value in summary["final_metrics"].items()
         )
+        gate_text = ""
+        if summary["architecture"] == "memory_tape":
+            gate_text = f" gate_init={summary['memory_gate_init']:g}"
         print(
-            f"{summary['task']}/{summary['architecture']} seed={summary['seed']} "
+            f"{summary['variant']}{gate_text} "
             f"loss={summary['first_loss']:.4f}->{summary['final_loss']:.4f} "
             f"drop={summary['relative_loss_drop']:.1%} {metrics}".rstrip()
         )

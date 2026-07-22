@@ -19,6 +19,7 @@ TASKS="${TASKS:-random_graph_walk shortest_path}"
 RGW_LENGTHS="${RGW_LENGTHS:-8 16 32}"
 SHORTEST_PATH_VARIANTS="${SHORTEST_PATH_VARIANTS:-easy:8:3:2:5 intermediate:16:4:3:20 main:24:6:3:40}"
 RUN_DIAGNOSTICS="${RUN_DIAGNOSTICS:-0}"
+MEMORY_GATE_INIT="${MEMORY_GATE_INIT:-0.1}"
 RUN_ID="${RUN_ID:-$(date +%Y%m%d_%H%M%S)}"
 RESULT_ROOT="${RESULT_ROOT:-results/local_pilots/trace_difficulty/${RUN_ID}}"
 
@@ -48,7 +49,8 @@ run_variant() {
   BATCH_SIZE="${BATCH_SIZE}" \
   RUN_DIAGNOSTICS="${RUN_DIAGNOSTICS}" \
   RESULT_ROOT="${RESULT_ROOT}" \
-    run_trace_pilot_variant "${variant}/${architecture}" "$@"
+    run_trace_pilot_variant "${variant}/${architecture}" \
+      --memory-gate-init "${MEMORY_GATE_INIT}" "$@"
 }
 
 for task in ${TASKS}; do

@@ -397,3 +397,17 @@ def test_model_factory_constructs_all_variants():
     for architecture, cls in expected.items():
         model = build_model(SimpleNamespace(architecture=architecture, **base), 17, 8, "cpu")
         assert isinstance(model, cls)
+
+
+def test_model_factory_applies_memory_gate_init():
+    args = SimpleNamespace(
+        architecture="memory_tape",
+        n_layer=2,
+        n_head=1,
+        n_embd=8,
+        n_pass=3,
+        memory_gate_init=1.0,
+    )
+    model = build_model(args, 17, 8, "cpu")
+    assert model.config.memory_gate_init == 1.0
+    assert model.memory_gate_stats()["effective"] == [1.0, 1.0]

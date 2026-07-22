@@ -17,6 +17,7 @@ extra_args=()
 [[ -n "${EVAL_INTERVAL:-}" ]] && extra_args+=(--eval-interval "${EVAL_INTERVAL}")
 [[ -n "${EVAL_BATCHES:-}" ]] && extra_args+=(--eval-batches "${EVAL_BATCHES}")
 [[ -n "${BATCH_SIZE:-}" ]] && extra_args+=(--batch-size "${BATCH_SIZE}")
+[[ -n "${MEMORY_GATE_INIT:-}" ]] && extra_args+=(--memory-gate-init "${MEMORY_GATE_INIT}")
 
 for task in ${TASKS}; do
   for ARCH in ${ARCHITECTURES}; do
