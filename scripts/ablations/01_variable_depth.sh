@@ -1,10 +1,13 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+cd "${ROOT}"
+
 DEVICE="${DEVICE:-mps}"
 SEEDS="${SEEDS:-1337 2027 4099}"
-TRAIN_STEPS="${TRAIN_STEPS:-50000}"
 RESULT_ROOT="${RESULT_ROOT:-results/ablations/01_variable_depth}"
+TRAIN_STEPS=50000
 
 run_eval() {
   local run_dir="$1" seed="$2"

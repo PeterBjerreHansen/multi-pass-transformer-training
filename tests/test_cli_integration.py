@@ -103,6 +103,8 @@ def test_trace_training_drift_and_diagnostics_cli(tmp_path):
     )
     summary = json.loads((drift_dir / "summary.json").read_text(encoding="utf-8"))
     assert summary["effective_inference_mode"] == "append_recurrent"
+    assert summary["eval_batches"] == 1
+    assert summary["evaluation_examples"] == 1
     assert (drift_dir / "per_position.jsonl").exists()
 
 
