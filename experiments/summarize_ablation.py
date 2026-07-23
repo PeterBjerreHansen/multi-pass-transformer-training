@@ -27,6 +27,11 @@ def parse_args(argv: list[str] | None = None):
         choices=["pareto", "quality-only", "null-slot", "position-offset"],
         default="pareto",
     )
+    parser.add_argument(
+        "--quality-metric",
+        default="drift.append_recurrent.token_legality",
+        help="Flattened metric used for paired quality deltas.",
+    )
     return parser.parse_args(argv)
 
 
@@ -139,8 +144,8 @@ def recommend(
     treatment: dict[str, dict[str, float | str]],
     *,
     mode: str,
+    quality_metric: str = "drift.append_recurrent.token_legality",
 ) -> dict:
-    quality_metric = "drift.append_recurrent.token_legality"
     deltas = _paired_delta(control, treatment, quality_metric)
     shifted_deltas: list[float] = []
     if mode == "position-offset":
@@ -223,7 +228,14 @@ def recommend(
     }
 
 
-def summarize(root: Path, control_name: str, variants: list[str], *, mode: str) -> tuple[list[dict], dict]:
+def summarize(
+    root: Path,
+    control_name: str,
+    variants: list[str],
+    *,
+    mode: str,
+    quality_metric: str = "drift.append_recurrent.token_legality",
+) -> tuple[list[dict], dict]:
     runs = {name: discover_variant(root, name) for name in [control_name, *variants]}
     control = runs[control_name]
     rows = []
@@ -234,7 +246,12 @@ def summarize(root: Path, control_name: str, variants: list[str], *, mode: str) 
         "root": str(root),
         "control": control_name,
         "variants": {
-            variant: recommend(control, runs[variant], mode=mode)
+            variant: recommend(
+                control,
+                runs[variant],
+                mode=mode,
+                quality_metric=quality_metric,
+            )
             for variant in variants
         },
     }
@@ -254,7 +271,13 @@ def main(argv: list[str] | None = None) -> None:
     args = parse_args(argv)
     root = Path(args.root).resolve()
     output_dir = Path(args.output_dir).resolve() if args.output_dir else root
-    rows, summary = summarize(root, args.control, args.variants, mode=args.recommendation_mode)
+    rows, summary = summarize(
+        root,
+        args.control,
+        args.variants,
+        mode=args.recommendation_mode,
+        quality_metric=args.quality_metric,
+    )
     write_csv(output_dir / "per_seed.csv", rows)
     write_json(output_dir / "summary.json", summary)
     print(f"wrote {output_dir / 'per_seed.csv'}")

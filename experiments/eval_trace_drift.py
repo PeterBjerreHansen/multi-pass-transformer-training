@@ -166,6 +166,9 @@ def evaluate_run(cli_args) -> Path:
         "block_size": block_size,
         "eval_position_offset": args.eval_position_offset,
         "vocab_size": len(vocab),
+        "batch_size": args.batch_size,
+        "eval_batches": args.eval_batches,
+        "evaluation_examples": sum(int(batch.idx.shape[0]) for batch in batches),
         "metrics": metrics,
     }
     write_json(summary_path, summary)

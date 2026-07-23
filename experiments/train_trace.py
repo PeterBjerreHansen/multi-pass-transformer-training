@@ -57,6 +57,7 @@ def parse_args(argv: list[str] | None = None):
     _add_override(parser, "--pass-loss-weights", type=float, nargs="*")
     _add_override(parser, "--memory-update-gate", choices=["on", "off"])
     _add_override(parser, "--memory-gate-bias", type=float)
+    _add_override(parser, "--memory-gate-init", type=float)
     _add_override(parser, "--num-states", type=int)
     _add_override(parser, "--label-pool-size", type=int)
     _add_override(parser, "--num-nodes", type=int)
