@@ -5,7 +5,7 @@ results/
 papers/
 archive/
 data/
-figures/*.ipynb
+figures/.ipynb_checkpoints/
 pytest_cache
 TODO_CODING.md
 TODO_EXPERIMENTS.md

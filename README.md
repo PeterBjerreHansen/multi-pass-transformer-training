@@ -391,7 +391,9 @@ python3 -m experiments.eval_trace_drift \
   --token-selection argmax
 ```
 
-The drift evaluator is post-training only. Each invocation evaluates one saved trace checkpoint under either `recompute` or `append_recurrent`, then writes `summary.json` and `per_position.jsonl`. A local `figures/plot_drift.ipynb` notebook can read these outputs when you want to plot them.
+The drift evaluator is post-training only. Each invocation evaluates one saved
+trace checkpoint under either `recompute` or `append_recurrent`, then writes
+`summary.json` and `per_position.jsonl`.
 
 Standalone memory-use and pass-dynamics diagnostics:
 
@@ -418,6 +420,36 @@ attention parameters, and any memory gate. For JointMemoryTape, only the memory
 key/value projection and its input normalization enter the memory-attention
 group; the shared query, token key/value, and output projections are part of the
 backbone group.
+
+### Plotting notebooks
+
+The tracked, output-free notebooks under `figures/` read the current artifact
+schemas directly:
+
+- `01_learning_and_compute.ipynb` plots seed-level and median learning curves,
+  per-pass refinement, subsystem gradient norms, gate evolution, and measured
+  training throughput.
+- `02_deployment_and_othello.ipynb` compares paired `recompute` and
+  `append_recurrent` quality, per-position free-generation drift,
+  teacher-forced schedule gaps, and Othello random-prefix/legal-set metrics.
+- `03_ablation_diagnostics.ipynb` mirrors the merge-decision rules with paired
+  seed deltas, quality–efficiency plots, memory interventions, extra-pass
+  dynamics, and schedule-gap comparisons.
+
+The notebooks do not automatically save or overwrite any tracked figures.
+Select a comparable result root and uncomment an individual `savefig` line
+only when a plot is worth keeping. Install the plotting extras and start
+Jupyter from the repository root:
+
+```bash
+python3 -m pip install ".[plot]"
+jupyter lab figures/
+```
+
+Measured throughput should only be compared across matched devices, batch
+sizes, task difficulty, evaluation counts, and output-length distributions.
+The notebooks show individual seeds alongside unsmoothed medians and avoid
+confidence bands that would overstate what a three-seed ablation establishes.
 
 ### Architecture Examples
 
