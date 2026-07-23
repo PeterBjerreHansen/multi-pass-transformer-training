@@ -161,6 +161,9 @@ def evaluate_run(cli_args) -> Path:
         "token_selection": args.token_selection,
         "block_size": block_size,
         "vocab_size": len(vocab),
+        "batch_size": args.batch_size,
+        "eval_batches": args.eval_batches,
+        "evaluation_examples": sum(int(batch.idx.shape[0]) for batch in batches),
         "metrics": metrics,
     }
     write_json(summary_path, summary)

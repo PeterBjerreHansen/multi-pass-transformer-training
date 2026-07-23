@@ -38,6 +38,7 @@ def _base_defaults(
         "memory_update_gate": "off",
         "memory_gate_bias": -1.0,
         "memory_read_pattern": "all",
+        "memory_gate_init": 0.1,
         "inference_mode": inference_mode,
         "token_selection": token_selection,
         "batch_size": 1 if smoke else 64,
@@ -168,6 +169,31 @@ shortest_path_smoke.update(
 TRACE_PRESETS["shortest_path_smoke"] = ExperimentPreset(
     "Tiny unique shortest-path smoke setup.",
     shortest_path_smoke,
+)
+
+shortest_path_gate_init_control = deepcopy(shortest_path_main)
+shortest_path_gate_init_control.update(
+    architecture="memory_tape",
+    batch_size=16,
+    train_steps=5_000,
+    eval_interval=500,
+    eval_batches=2,
+    num_nodes=8,
+    shortest_path_length=3,
+    branching_factor=2,
+    distractor_edges=5,
+    memory_gate_init=0.1,
+)
+TRACE_PRESETS["shortest_path_gate_init_control"] = ExperimentPreset(
+    "MemoryTape gate-initialization control on easy shortest path.",
+    shortest_path_gate_init_control,
+)
+
+shortest_path_gate_init_unit = deepcopy(shortest_path_gate_init_control)
+shortest_path_gate_init_unit["memory_gate_init"] = 1.0
+TRACE_PRESETS["shortest_path_gate_init_unit"] = ExperimentPreset(
+    "Unit-initialized MemoryTape gate treatment on easy shortest path.",
+    shortest_path_gate_init_unit,
 )
 
 

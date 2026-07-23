@@ -52,6 +52,9 @@ def build_model(args, vocab_size: int, block_size: int, device: str):
                     getattr(args, "memory_read_pattern", "all"),
                     args.n_layer,
                 ),
+                # Old run configs predate this CLI option. Their checkpoints
+                # retain the original 0.1 initialization contract.
+                memory_gate_init=getattr(args, "memory_gate_init", 0.1),
             )
         )
     elif args.architecture == "joint_memory_tape":
