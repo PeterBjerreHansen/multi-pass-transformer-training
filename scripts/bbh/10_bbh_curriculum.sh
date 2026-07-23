@@ -6,7 +6,7 @@ cd "${ROOT}"
 
 # TASK remains a backwards-compatible way to select one task. TASKS is the
 # multi-task interface used by the full launcher.
-TASKS="${TASKS:-${TASK:-permutation tracking pointer_chasing state_machine}}"
+TASKS="${TASKS:-${TASK:-pointer_chasing state_machine}}" # permutation tracking
 SEEDS="${SEEDS:-${SEED:-1337}}"
 ARCHITECTURES="${ARCHITECTURES:-transformer memory_tape joint_memory_tape memory_concat memory_update}"
 RESULT_ROOT="${RESULT_ROOT:-results/bbh}"

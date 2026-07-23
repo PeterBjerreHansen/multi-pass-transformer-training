@@ -37,7 +37,7 @@ def _base_defaults(
         else [0.0, 0.0, 1.0, 1.0],
         "memory_update_gate": "off",
         "memory_gate_bias": -1.0,
-        "memory_gate_init": 0.1,
+        "memory_gate_init": 0.5,
         "inference_mode": inference_mode,
         "token_selection": token_selection,
         "batch_size": 1 if smoke else 64,
@@ -62,7 +62,7 @@ def _bbh_defaults(*, task: str, smoke: bool) -> dict[str, object]:
     values.update(
         # Keep the established curriculum settings for the main comparison.
         lr=1e-4,
-        eval_interval=1 if smoke else 5_000,
+        eval_interval=1 if smoke else 200,
         max_level=2 if smoke else 64,
         curriculum_threshold=0.95,
         review_easier_every=2,
