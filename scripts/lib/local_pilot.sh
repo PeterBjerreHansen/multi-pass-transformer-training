@@ -11,6 +11,40 @@ local_pilot_device() {
   python -c 'from experiments.common import auto_device; print(auto_device())'
 }
 
+run_bbh_pilot_variant() {
+  if [[ $# -lt 1 ]]; then
+    printf 'run_bbh_pilot_variant requires a variant name\n' >&2
+    return 2
+  fi
+
+  local variant="$1"
+  shift
+  local task="${PILOT_TASK:-pointer_chasing}"
+  local preset="${PILOT_PRESET:-${task}_main}"
+  local architecture="${PILOT_ARCHITECTURE:-memory_tape}"
+  local seed="${SEED:-1337}"
+  local device
+  device="$(local_pilot_device)"
+  local train_steps="${TRAIN_STEPS:-250}"
+  local eval_interval="${EVAL_INTERVAL:-${train_steps}}"
+  local eval_batches="${EVAL_BATCHES:-1}"
+  local batch_size="${BATCH_SIZE:-16}"
+  local result_root="${RESULT_ROOT:-results/local_pilots}"
+  local run_dir="${result_root}/${variant}/seed_${seed}"
+
+  python -m experiments.train_bbh \
+    --preset "${preset}" \
+    --architecture "${architecture}" \
+    --train-steps "${train_steps}" \
+    --eval-interval "${eval_interval}" \
+    --eval-batches "${eval_batches}" \
+    --batch-size "${batch_size}" \
+    --seed "${seed}" \
+    --device "${device}" \
+    --run-dir "${run_dir}" \
+    "$@"
+}
+
 run_trace_pilot_variant() {
   if [[ $# -lt 1 ]]; then
     printf 'run_trace_pilot_variant requires a variant name\n' >&2

@@ -315,40 +315,37 @@ Each training run writes:
 Run the main experiment matrices with:
 
 ```bash
-bash runs/bbh/10_bbh_curriculum.sh
-bash runs/trace/10_random_graph_walk_trace.sh
-bash runs/trace/10_othello_trace.sh
-bash runs/trace/10_shortest_path_trace.sh
+bash scripts/bbh/10_bbh_curriculum.sh
+bash scripts/trace/10_random_graph_walk_trace.sh
+bash scripts/trace/10_othello_trace.sh
+bash scripts/trace/10_shortest_path_trace.sh
 ```
 
-The canonical launchers retain their full defaults but accept environment
-overrides including `ARCHITECTURES`, `DEVICE`, `TRAIN_STEPS`, `EVAL_INTERVAL`,
-`EVAL_BATCHES`, `SEED`, and `RESULT_ROOT`. For example, a short local comparison
-without changing the scientific preset is:
+`scripts/` is the sole root for executable project workflows. Canonical
+launchers take all scientific settings from their named presets. They permit
+only matrix selection (`TASKS`, `ARCHITECTURES`, and `SEEDS`) and operational
+placement (`DEVICE` and `RESULT_ROOT`); they do not accept training,
+evaluation, task-difficulty, or model-hyperparameter overrides.
 
-```bash
-DEVICE=mps TRAIN_STEPS=250 ARCHITECTURES="transformer memory_tape" \
-  bash runs/trace/10_random_graph_walk_trace.sh
-```
+The BBH launcher runs all four tasks and all five architectures by default.
+Use `TASKS="tracking pointer_chasing"` for a subset, or the
+backwards-compatible `TASK=tracking`
+for one task. `SEEDS="1337 2027 4099"` expands independent repetitions without
+changing the preset.
 
-The BBH launcher runs all four tasks by default. Use `TASKS="tracking
-pointer_chasing"` for a subset, or the backwards-compatible `TASK=tracking`
-for one task. Optional environment overrides are added to the command only
-when set; otherwise each preset remains the single source of scientific
-defaults such as training steps, batch size, and evaluation frequency.
-
-Two local workflows sit between one-step smoke tests and the full experiments:
+Parameterized exploratory workflows live explicitly under `scripts/local/`
+and write under `results/local_pilots/`:
 
 ```bash
 # Broad, short pass over the four BBH tasks and three trace tasks.
-bash runs/local/10_main_matrix_pilot.sh
+bash scripts/local/10_main_matrix_pilot.sh
 
 # Longer learning-curve calibration for the two synthetic trace indicators.
 SEEDS="1337 2027" \
-  bash runs/local/20_trace_task_calibration.sh
+  bash scripts/local/20_trace_task_calibration.sh
 
 # Compare easier and harder versions before selecting benchmark difficulty.
-bash runs/local/30_trace_difficulty_sweep.sh
+bash scripts/local/30_trace_difficulty_sweep.sh
 ```
 
 The broad pilot defaults to the transformer and MemoryTape, 250 steps, one
@@ -370,16 +367,18 @@ evaluation-loss reduction. Inspect the task metrics and extend `TRAIN_STEPS`
 until Random Graph Walk legality and shortest-path optimal accuracy have
 clearly stabilized across seeds.
 
-MemoryTape's direct scalar reader gate retains its `0.1` initialization by
-default. To repeat the complete difficulty grid with a unit-initialized memory
-residual while keeping the control available, run:
+MemoryTape's direct scalar reader gate retains its `0.1` initialization in the
+main presets. The reported gate-initialization experiment has two named
+presets which are tested to differ only in that value (`0.1` versus `1.0`).
+Run the fixed three-seed control/treatment experiment with:
 
 ```bash
-DEVICE=mps MEMORY_GATE_INIT=1 bash runs/local/30_trace_difficulty_sweep.sh
+DEVICE=mps bash scripts/ablations/10_memory_gate_init.sh
 ```
 
-The selected initialization is saved in each run config and printed by the
-learning summarizer. It does not affect the other architectures.
+Its training, qualification, and diagnostic settings are fixed by the presets
+and script. For informal exploration of other gate values, the parameterized
+task sweep remains available under `scripts/local/`.
 
 Use `scripts/train_smoke.sh` for quick end-to-end checks.
 
