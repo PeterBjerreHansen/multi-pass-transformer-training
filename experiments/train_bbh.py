@@ -85,7 +85,7 @@ class BBHTask:
 
 BBH_TASKS = {
     "pointer_chasing": BBHTask(
-        "pointer_chasing", 0, ("num_nodes",),
+        "pointer_chasing", 1, ("num_nodes",),
         pointer_chasing.build_pointer_chasing_vocab,
         pointer_chasing.required_block_size,
         pointer_chasing.build_pointer_chasing_batch,
@@ -134,7 +134,12 @@ def parse_args(argv: list[str] | None = None):
     _add_override(parser, "--memory-update-gate", choices=["on", "off"])
     _add_override(parser, "--memory-gate-bias", type=float)
     _add_override(parser, "--memory-gate-init", type=float)
-    _add_override(parser, "--num-nodes", type=int)
+    _add_override(
+        parser,
+        "--num-nodes",
+        type=int,
+        help="pointer-chasing label-pool capacity; level L uses 2L+1 active nodes",
+    )
     _add_override(parser, "--num-objects", type=int)
     _add_override(parser, "--num-states", type=int)
     _add_override(parser, "--alphabet-size", type=int)

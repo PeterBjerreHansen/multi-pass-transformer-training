@@ -4,7 +4,7 @@ import argparse
 from copy import deepcopy
 from dataclasses import dataclass
 
-from tasks.bbh import permutation, state_machine, tracking
+from tasks.bbh import permutation, pointer_chasing, state_machine, tracking
 from tasks.trace import othello, random_graph_walk, shortest_path
 
 
@@ -229,10 +229,12 @@ def _add_bbh_pair(
 
 _add_bbh_pair(
     "pointer_chasing",
-    # Preserve the established benchmark scale. Larger graph sizes should be
-    # named experiments rather than a silent redefinition of this preset.
-    {"num_nodes": 8, "curriculum_start_level": 0},
-    {"num_nodes": 4, "curriculum_start_level": 0},
+    {
+        "num_nodes": pointer_chasing.DEFAULT_NUM_NODES,
+        "curriculum_start_level": 1,
+        "max_level": pointer_chasing.DEFAULT_MAX_LEVEL,
+    },
+    {"num_nodes": 5, "curriculum_start_level": 1},
 )
 _add_bbh_pair(
     "tracking",

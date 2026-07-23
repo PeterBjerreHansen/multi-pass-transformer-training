@@ -233,7 +233,7 @@ Experiment entry points live under `experiments/`. Shared batching utilities liv
 
 The current experiment tasks are:
 
-- `pointer_chasing`: functional-graph pointer chasing from a queried start node; level 0 is a direct edge lookup, then curriculum level increases hop count while the preset fixes the graph size.
+- `pointer_chasing`: answer-only pointer composition on shuffled directed odd cycles. Level `L` uses the nested label set `n0` through `n(2L)` and asks for the node reached after exactly `L` transitions, so the seen vocabulary, graph size, and required composition depth grow together.
 - `state_machine`: per-example deterministic finite-state machines with balanced shuffled transition tables and action sequences.
 - `tracking`: shuffled-object tracking with swap, rotate, and reverse operations.
 - `permutation`: permutation composition by repeated swaps.

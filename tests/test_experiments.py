@@ -38,15 +38,15 @@ def _args() -> SimpleNamespace:
         batch_size=2,
         eval_batches=2,
         task="pointer_chasing",
-        num_nodes=4,
-        curriculum_start_level=0,
+        num_nodes=5,
+        curriculum_start_level=1,
         max_level=2,
     )
 
 
 def test_fixed_eval_batches_are_identical_every_time():
     args = _args()
-    _vocab, stoi, _ = pointer_chasing.build_pointer_chasing_vocab(4)
+    _vocab, stoi, _ = pointer_chasing.build_pointer_chasing_vocab(5)
     task = BBH_TASKS["pointer_chasing"]
     a = build_fixed_eval_batches(args, task, stoi, 2)
     b = build_fixed_eval_batches(args, task, stoi, 2)
@@ -57,9 +57,9 @@ def test_fixed_eval_batches_are_identical_every_time():
 
 def test_evaluation_sampling_is_repeatable_and_does_not_change_global_rng():
     args = _args()
-    model = MemoryTapeTransformer(MemoryTapeConfig(24, 11, 1, 1, 8, 3))
-    _vocab, stoi, _ = pointer_chasing.build_pointer_chasing_vocab(4)
-    batch = pointer_chasing.build_pointer_chasing_batch(2, 4, 2, stoi, device="cpu", rng=random.Random(2))
+    model = MemoryTapeTransformer(MemoryTapeConfig(24, 12, 1, 1, 8, 3))
+    _vocab, stoi, _ = pointer_chasing.build_pointer_chasing_vocab(5)
+    batch = pointer_chasing.build_pointer_chasing_batch(2, 5, 2, stoi, device="cpu", rng=random.Random(2))
     before = torch.get_rng_state().clone()
     first = evaluate_prebuilt_batches(model, args, [batch], generation_seed=123)
     middle = torch.get_rng_state().clone()
@@ -72,9 +72,9 @@ def test_evaluation_sampling_is_repeatable_and_does_not_change_global_rng():
 
 
 def test_memory_interventions_pass_dynamics_and_schedule_gap_return_finite_values():
-    model = MemoryTapeTransformer(MemoryTapeConfig(24, 11, 1, 1, 8, 3))
-    _vocab, stoi, _ = pointer_chasing.build_pointer_chasing_vocab(4)
-    batch = pointer_chasing.build_pointer_chasing_batch(2, 4, 2, stoi, device="cpu", rng=random.Random(2))
+    model = MemoryTapeTransformer(MemoryTapeConfig(24, 12, 1, 1, 8, 3))
+    _vocab, stoi, _ = pointer_chasing.build_pointer_chasing_vocab(5)
+    batch = pointer_chasing.build_pointer_chasing_batch(2, 5, 2, stoi, device="cpu", rng=random.Random(2))
     full_output = model(batch.idx)
     interventions = memory_interventions(model, batch, seed=3)
     assert interventions["losses"]["correct"] == model.calc_loss(full_output.logits, batch.targets).item()
@@ -106,9 +106,9 @@ def test_memory_interventions_pass_dynamics_and_schedule_gap_return_finite_value
 
 
 def test_joint_memory_tape_diagnostics_return_finite_values():
-    model = JointMemoryTapeTransformer(MultiPassConfig(24, 11, 1, 1, 8, 3))
-    _vocab, stoi, _ = pointer_chasing.build_pointer_chasing_vocab(4)
-    batch = pointer_chasing.build_pointer_chasing_batch(2, 4, 2, stoi, device="cpu", rng=random.Random(2))
+    model = JointMemoryTapeTransformer(MultiPassConfig(24, 12, 1, 1, 8, 3))
+    _vocab, stoi, _ = pointer_chasing.build_pointer_chasing_vocab(5)
+    batch = pointer_chasing.build_pointer_chasing_batch(2, 5, 2, stoi, device="cpu", rng=random.Random(2))
     interventions = memory_interventions(model, batch, seed=3)
     assert all(torch.isfinite(torch.tensor(value)) for value in interventions["losses"].values())
     assert {"zero_memory_bank", "masked_memory_source"} <= set(interventions["losses"])
@@ -120,9 +120,9 @@ def test_joint_memory_tape_diagnostics_return_finite_values():
 
 
 def test_gradient_norms_cover_memory_subsystems_after_backward():
-    model = MemoryTapeTransformer(MemoryTapeConfig(24, 11, 1, 1, 8, 3))
-    _vocab, stoi, _ = pointer_chasing.build_pointer_chasing_vocab(4)
-    batch = pointer_chasing.build_pointer_chasing_batch(2, 4, 2, stoi, device="cpu", rng=random.Random(2))
+    model = MemoryTapeTransformer(MemoryTapeConfig(24, 12, 1, 1, 8, 3))
+    _vocab, stoi, _ = pointer_chasing.build_pointer_chasing_vocab(5)
+    batch = pointer_chasing.build_pointer_chasing_batch(2, 5, 2, stoi, device="cpu", rng=random.Random(2))
     output = model(batch.idx)
     loss = model.calc_total_loss(output, batch.targets, [0, 0, 1]).loss
     loss.backward()
@@ -132,9 +132,9 @@ def test_gradient_norms_cover_memory_subsystems_after_backward():
 
 
 def test_joint_memory_tape_gradient_norms_cover_memory_attention_after_backward():
-    model = JointMemoryTapeTransformer(MultiPassConfig(24, 11, 1, 1, 8, 3))
-    _vocab, stoi, _ = pointer_chasing.build_pointer_chasing_vocab(4)
-    batch = pointer_chasing.build_pointer_chasing_batch(2, 4, 2, stoi, device="cpu", rng=random.Random(2))
+    model = JointMemoryTapeTransformer(MultiPassConfig(24, 12, 1, 1, 8, 3))
+    _vocab, stoi, _ = pointer_chasing.build_pointer_chasing_vocab(5)
+    batch = pointer_chasing.build_pointer_chasing_batch(2, 5, 2, stoi, device="cpu", rng=random.Random(2))
     output = model(batch.idx)
     loss = model.calc_total_loss(output, batch.targets, [0, 0, 1]).loss
     loss.backward()
@@ -210,13 +210,19 @@ def test_cli_has_only_two_inference_modes_and_no_cache_source():
     assert not hasattr(args, "memory_tape_gate")
 
 
-def test_main_presets_preserve_established_experiment_scales():
+def test_main_presets_use_declared_experiment_scales():
     from experiments.presets import BBH_PRESETS, TRACE_PRESETS
 
     pointer = BBH_PRESETS["pointer_chasing_main"].values
-    assert pointer["num_nodes"] == 8
+    assert pointer["num_nodes"] == 65
+    assert pointer["curriculum_start_level"] == 1
+    assert pointer["max_level"] == 32
+    assert pointer_chasing.required_block_size(
+        pointer["num_nodes"],
+        pointer["max_level"],
+    ) == 232
     assert pointer["lr"] == 1e-4
-    assert pointer["eval_interval"] == 5_000
+    assert pointer["eval_interval"] == 200
     assert pointer["batch_size"] == 64
 
     graph = TRACE_PRESETS["random_graph_walk_main"].values
@@ -389,7 +395,7 @@ def test_main_bbh_preset_contract_is_frozen():
         "train_steps": 50_000,
         "lr": 1e-4,
         "weight_decay": 0.0,
-        "eval_interval": 5_000,
+        "eval_interval": 200,
         "eval_batches": 4,
         "seed": 1337,
         "max_level": 64,
@@ -397,13 +403,14 @@ def test_main_bbh_preset_contract_is_frozen():
         "review_easier_every": 2,
         "token_selection": "argmax",
         "inference_mode": "recompute",
-        "memory_gate_init": 0.1,
+        "memory_gate_init": 0.5,
     }
     task_contracts = {
         "pointer_chasing_main": {
             "task": "pointer_chasing",
-            "num_nodes": 8,
-            "curriculum_start_level": 0,
+            "num_nodes": 65,
+            "curriculum_start_level": 1,
+            "max_level": 32,
         },
         "tracking_main": {
             "task": "tracking",
@@ -436,7 +443,7 @@ def test_main_trace_preset_contract_is_frozen():
         "weight_decay": 0.0,
         "seed": 1337,
         "inference_mode": "append_recurrent",
-        "memory_gate_init": 0.1,
+        "memory_gate_init": 0.5,
     }
     contracts = {
         "random_graph_walk_main": {

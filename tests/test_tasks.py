@@ -13,8 +13,8 @@ from tasks.trace import othello, random_graph_walk, shortest_path
 def test_bbh_task_solvers_match_sampled_answers():
     rng = random.Random(3)
 
-    _vocab, stoi, _ = pointer_chasing.build_pointer_chasing_vocab(5)
-    _prompt, _answer, pointers, start, final = pointer_chasing.sample_pointer_chasing_example(5, 4, stoi, rng)
+    _vocab, stoi, _ = pointer_chasing.build_pointer_chasing_vocab(9)
+    _prompt, _answer, pointers, start, final = pointer_chasing.sample_pointer_chasing_example(9, 4, stoi, rng)
     assert pointer_chasing.solve_pointer_chasing(pointers, start, 4)[1] == final
 
     _vocab, stoi, _ = permutation.build_permutation_vocab(4)
@@ -29,6 +29,107 @@ def test_bbh_task_solvers_match_sampled_answers():
     sample = state_machine.sample_state_machine_example(4, 2, 5, stoi, rng)
     _prompt, _answer, table, start, actions, _trace, final = sample
     assert state_machine.solve_state_machine(table, start, actions)[1] == final
+
+
+def test_pointer_chasing_level_scales_odd_cycle_without_shortcuts():
+    max_level = 8
+    label_pool_size = 2 * max_level + 3
+    _vocab, stoi, _ = pointer_chasing.build_pointer_chasing_vocab(label_pool_size)
+
+    for level in range(1, max_level + 1):
+        prompt, answer, pointers, start, final = pointer_chasing.sample_pointer_chasing_example(
+            label_pool_size,
+            level,
+            stoi,
+            random.Random(100 + level),
+        )
+        active_nodes = {
+            source for source, target in enumerate(pointers)
+            if source != target
+        }
+        trace, solved_final = pointer_chasing.solve_pointer_chasing(
+            pointers,
+            start,
+            level,
+        )
+
+        assert len(active_nodes) == 2 * level + 1
+        assert active_nodes == set(range(2 * level + 1))
+        assert start in active_nodes
+        assert solved_final == final
+        assert answer == [stoi[pointer_chasing.node_token(final)]]
+        assert len({start, *trace}) == level + 1
+        assert final not in [start, *trace[:-1]]
+        assert pointer_chasing.solve_pointer_chasing(
+            pointers,
+            final,
+            level + 1,
+        )[1] == start
+        assert prompt.index(stoi["<query>"]) == 3 * len(active_nodes)
+        assert pointer_chasing.required_block_size(
+            label_pool_size,
+            level,
+        ) == len(prompt) + 3
+
+
+def test_pointer_chasing_rejects_too_small_label_pool():
+    with pytest.raises(ValueError, match="2 \\* num_hops \\+ 1"):
+        pointer_chasing.required_block_size(num_nodes=8, num_hops=4)
+    with pytest.raises(ValueError, match="at least 1"):
+        pointer_chasing.active_num_nodes(0)
+    with pytest.raises(ValueError, match="at least 3"):
+        pointer_chasing.build_pointer_chasing_vocab(2)
+
+
+def test_pointer_chasing_level_one_is_learnable_with_full_vocabulary():
+    torch.manual_seed(1337)
+    label_pool_size = pointer_chasing.DEFAULT_NUM_NODES
+    vocab, stoi, _ = pointer_chasing.build_pointer_chasing_vocab(label_pool_size)
+    model = CausalTransformer(
+        TransformerConfig(
+            block_size=pointer_chasing.required_block_size(
+                label_pool_size,
+                pointer_chasing.DEFAULT_MAX_LEVEL,
+            ),
+            vocab_size=len(vocab),
+            n_layer=4,
+            n_head=4,
+            n_embd=128,
+        )
+    )
+    optimizer = torch.optim.AdamW(model.parameters(), lr=1e-4, weight_decay=0.0)
+    train_rng = random.Random(1337)
+
+    for _step in range(400):
+        batch = pointer_chasing.build_pointer_chasing_batch(
+            batch_size=64,
+            num_nodes=label_pool_size,
+            num_hops=1,
+            stoi=stoi,
+            device="cpu",
+            rng=train_rng,
+        )
+        optimizer.zero_grad(set_to_none=True)
+        output = model(batch.idx)
+        loss = model.calc_loss(output.logits, batch.targets)
+        loss.backward()
+        optimizer.step()
+
+    eval_batch = pointer_chasing.build_pointer_chasing_batch(
+        batch_size=256,
+        num_nodes=label_pool_size,
+        num_hops=1,
+        stoi=stoi,
+        device="cpu",
+        rng=random.Random(2027),
+    )
+    with torch.no_grad():
+        logits = model(eval_batch.idx).logits
+    rows = torch.arange(eval_batch.idx.size(0))
+    answer_positions = eval_batch.prompt_lengths - 1
+    predictions = logits[rows, answer_positions].argmax(dim=-1)
+    targets = eval_batch.targets[rows, answer_positions]
+    assert (predictions == targets).float().mean().item() >= 0.99
 
 
 def test_random_graph_walk_prompt_parsing_and_legality():

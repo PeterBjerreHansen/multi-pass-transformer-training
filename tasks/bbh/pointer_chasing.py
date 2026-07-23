@@ -1,8 +1,14 @@
-"""Pointer-chasing task: read a directed graph where each node points to one next node,
-start from a queried node, follow the pointer chain for a fixed number of hops, and predict the destination.
+"""Pointer-chasing task on level-scaled directed odd cycles.
+
+At curriculum level ``L``, each example uses the first ``2L + 1`` labels from a
+fixed maximum vocabulary, arranges them into a directed cycle, and asks for the
+node reached after exactly ``L`` hops. Each promotion adds two labels alongside
+one transition. The forward route has length ``L`` while the reverse route has
+length ``L + 1``, so increasing the curriculum level genuinely increases the
+required pointer-composition depth.
 
 Example sequence:
-<bos> n0 -> n2 n1 -> n0 n2 -> n1 <query> n0 hop hop <sep> n1 <eos>
+<bos> n4 -> n1 n1 -> n7 n7 -> n4 <query> n4 hop <sep> n1 <eos>
 """
 
 from typing import Dict, List, Sequence, Tuple
@@ -25,26 +31,40 @@ from tasks.common import (
 
 EDGE_TOKEN = "->"
 STEP_TOKEN = "hop"
-DEFAULT_NUM_NODES = 32
+DEFAULT_MAX_LEVEL = 32
+DEFAULT_NUM_NODES = 2 * DEFAULT_MAX_LEVEL + 1
 
 
 def node_token(index: int) -> str:
     return f"n{index}"
 
 
+def active_num_nodes(num_hops: int) -> int:
+    if num_hops < 1:
+        raise ValueError("num_hops must be at least 1")
+    return 2 * num_hops + 1
+
+
+def _validate_node_pool(num_nodes: int, num_hops: int) -> int:
+    active_count = active_num_nodes(num_hops)
+    if num_nodes < active_count:
+        raise ValueError(
+            f"num_nodes must be at least {active_count} for {num_hops} hops "
+            "(the label pool must hold a 2 * num_hops + 1 cycle)"
+        )
+    return active_count
+
+
 def required_block_size(num_nodes: int, num_hops: int) -> int:
-    if num_nodes < 2:
-        raise ValueError("num_nodes must be at least 2")
-    if num_hops < 0:
-        raise ValueError("num_hops must be non-negative")
-    prompt_tokens = 3 * num_nodes + 2 + num_hops
+    active_count = _validate_node_pool(num_nodes, num_hops)
+    prompt_tokens = 3 * active_count + 2 + num_hops
     answer_len = 1
     return 2 + prompt_tokens + answer_len
 
 
 def build_pointer_chasing_vocab(num_nodes: int) -> Tuple[List[str], Dict[str, int], Dict[int, str]]:
-    if num_nodes < 2:
-        raise ValueError("num_nodes must be at least 2")
+    if num_nodes < 3:
+        raise ValueError("num_nodes must be at least 3")
     tokens = [PAD_TOKEN, BOS_TOKEN, SEP_TOKEN, EOS_TOKEN, QUERY_TOKEN, EDGE_TOKEN, STEP_TOKEN]
     tokens.extend(node_token(index) for index in range(num_nodes))
     return build_vocab(tokens)
@@ -75,20 +95,18 @@ def sample_pointer_chasing_example(
     stoi: Dict[str, int],
     rng: random.Random,
 ) -> tuple[list[int], list[int], list[int], int, int]:
-    if num_nodes < 2:
-        raise ValueError("num_nodes must be at least 2")
-    if num_hops < 0:
-        raise ValueError("num_hops must be non-negative")
+    active_count = _validate_node_pool(num_nodes, num_hops)
 
-    cycle_order = list(range(num_nodes))
+    # Grow the set of seen labels with the graph instead of asking the base
+    # level to bind arbitrary triples drawn from the full maximum vocabulary.
+    cycle_order = list(range(active_count))
     rng.shuffle(cycle_order)
-    pointers = [0] * num_nodes
+    pointers = list(range(num_nodes))
     for index, source in enumerate(cycle_order):
-        pointers[source] = cycle_order[(index + 1) % num_nodes]
-    start_node = rng.randrange(num_nodes)
-    edge_order = list(range(num_nodes))
-    if num_hops > 0:
-        rng.shuffle(edge_order)
+        pointers[source] = cycle_order[(index + 1) % active_count]
+    start_node = rng.choice(cycle_order)
+    edge_order = list(cycle_order)
+    rng.shuffle(edge_order)
 
     prompt: list[int] = []
     for source in edge_order:
@@ -96,10 +114,7 @@ def sample_pointer_chasing_example(
     prompt.extend([stoi[QUERY_TOKEN], stoi[node_token(start_node)]])
     prompt.extend(stoi[STEP_TOKEN] for _ in range(num_hops))
 
-    if num_hops == 0:
-        final_node = pointers[start_node]
-    else:
-        _, final_node = solve_pointer_chasing(pointers, start_node, num_hops)
+    _, final_node = solve_pointer_chasing(pointers, start_node, num_hops)
     answer = [stoi[node_token(final_node)]]
     return prompt, answer, pointers, start_node, final_node
 
@@ -121,6 +136,9 @@ def build_pointer_chasing_batch(
 
 
 __all__ = [
+    "DEFAULT_MAX_LEVEL",
+    "DEFAULT_NUM_NODES",
+    "active_num_nodes",
     "build_pointer_chasing_batch",
     "build_pointer_chasing_vocab",
     "decode_ids",
