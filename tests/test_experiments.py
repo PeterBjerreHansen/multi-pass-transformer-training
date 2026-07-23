@@ -29,6 +29,7 @@ from experiments.eval_diagnostics import (
     teacher_forced_schedule_gap,
 )
 from experiments.eval_othello import build_eval_examples, legal_set_step_metrics
+from experiments.presets import BBH_PRESETS, TRACE_PRESETS
 from experiments.train_bbh import BBH_TASKS, build_fixed_eval_batches, parse_args as parse_bbh_args
 from models import JointMemoryTapeTransformer, MemoryTapeConfig, MemoryTapeTransformer, MultiPassConfig
 from tasks.bbh import pointer_chasing
@@ -568,6 +569,117 @@ def test_runtime_resource_stats_reports_peak_rss():
     assert stats["process_peak_rss_bytes"] > 0
 
 
+def test_gate_init_ablation_presets_differ_only_in_gate_initialization():
+    control = TRACE_PRESETS["shortest_path_gate_init_control"].values
+    treatment = TRACE_PRESETS["shortest_path_gate_init_unit"].values
+    assert control["memory_gate_init"] == 0.1
+    assert treatment["memory_gate_init"] == 1.0
+    assert {
+        key: value for key, value in control.items() if key != "memory_gate_init"
+    } == {
+        key: value for key, value in treatment.items() if key != "memory_gate_init"
+    }
+
+
+def test_main_bbh_preset_contract_is_frozen():
+    common = {
+        "model_size": "small",
+        "n_pass": 4,
+        "pass_loss_weights": [0.0, 0.0, 1.0, 1.0],
+        "batch_size": 64,
+        "train_steps": 50_000,
+        "lr": 1e-4,
+        "weight_decay": 0.0,
+        "eval_interval": 5_000,
+        "eval_batches": 4,
+        "seed": 1337,
+        "max_level": 64,
+        "curriculum_threshold": 0.95,
+        "review_easier_every": 2,
+        "token_selection": "argmax",
+        "inference_mode": "recompute",
+        "memory_gate_init": 0.1,
+    }
+    task_contracts = {
+        "pointer_chasing_main": {
+            "task": "pointer_chasing",
+            "num_nodes": 8,
+            "curriculum_start_level": 0,
+        },
+        "tracking_main": {
+            "task": "tracking",
+            "num_objects": 4,
+            "curriculum_start_level": 1,
+        },
+        "permutation_main": {
+            "task": "permutation",
+            "num_objects": 4,
+            "curriculum_start_level": 1,
+        },
+        "state_machine_main": {
+            "task": "state_machine",
+            "num_states": 4,
+            "alphabet_size": 2,
+            "curriculum_start_level": 0,
+        },
+    }
+    for name, task_values in task_contracts.items():
+        values = BBH_PRESETS[name].values
+        for key, expected in {**common, **task_values}.items():
+            assert values[key] == expected, f"{name}.{key} changed"
+
+
+def test_main_trace_preset_contract_is_frozen():
+    common = {
+        "model_size": "small",
+        "n_pass": 4,
+        "pass_loss_weights": [0.0, 0.0, 1.0, 1.0],
+        "weight_decay": 0.0,
+        "seed": 1337,
+        "inference_mode": "append_recurrent",
+        "memory_gate_init": 0.1,
+    }
+    contracts = {
+        "random_graph_walk_main": {
+            "task": "random_graph_walk",
+            "batch_size": 64,
+            "train_steps": 50_000,
+            "lr": 3e-4,
+            "eval_interval": 1_000,
+            "eval_batches": 4,
+            "num_states": 6,
+            "label_pool_size": 4,
+            "max_level": 32,
+        },
+        "othello_main": {
+            "task": "othello",
+            "batch_size": 128,
+            "train_steps": 500_000,
+            "lr": 3e-4,
+            "eval_interval": 5_000,
+            "eval_batches": 1,
+            "othello_train_games": 5_000_000,
+            "othello_val_games": 1_024,
+        },
+        "shortest_path_main": {
+            "task": "shortest_path",
+            "batch_size": 64,
+            "train_steps": 50_000,
+            "lr": 3e-4,
+            "eval_interval": 1_000,
+            "eval_batches": 4,
+            "num_nodes": 24,
+            "shortest_path_length": 6,
+            "branching_factor": 3,
+            "distractor_edges": 40,
+        },
+    }
+    for name, contract in contracts.items():
+        values = TRACE_PRESETS[name].values
+        for key, expected in {**common, **contract}.items():
+            assert values[key] == expected, f"{name}.{key} changed"
+
+
 def test_ablation_recommendation_accepts_noninferior_efficiency_win():
     control = {
         str(seed): {
@@ -588,4 +700,24 @@ def test_ablation_recommendation_accepts_noninferior_efficiency_win():
     result = recommend(control, treatment, mode="pareto")
     assert result["quality_noninferior"]
     assert result["efficiency_win"]
+    assert result["recommend_merge"]
+
+
+def test_ablation_recommendation_accepts_task_specific_quality_metric():
+    control = {
+        str(seed): {"drift.append_recurrent.optimal_path": 0.30}
+        for seed in range(3)
+    }
+    treatment = {
+        str(seed): {"drift.append_recurrent.optimal_path": value}
+        for seed, value in enumerate((0.32, 0.31, 0.30))
+    }
+    result = recommend(
+        control,
+        treatment,
+        mode="quality-only",
+        quality_metric="drift.append_recurrent.optimal_path",
+    )
+    assert result["quality_metric"] == "drift.append_recurrent.optimal_path"
+    assert result["quality_win"]
     assert result["recommend_merge"]
