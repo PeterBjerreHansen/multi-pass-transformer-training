@@ -315,41 +315,70 @@ Each training run writes:
 Run the main experiment matrices with:
 
 ```bash
-bash runs/bbh/10_bbh_curriculum.sh
-bash runs/trace/10_random_graph_walk_trace.sh
-bash runs/trace/10_othello_trace.sh
-bash runs/trace/10_shortest_path_trace.sh
+bash scripts/bbh/10_bbh_curriculum.sh
+bash scripts/trace/10_random_graph_walk_trace.sh
+bash scripts/trace/10_othello_trace.sh
+bash scripts/trace/10_shortest_path_trace.sh
 ```
 
-The canonical launchers retain their full defaults but accept environment
-overrides including `ARCHITECTURES`, `DEVICE`, `TRAIN_STEPS`, `EVAL_INTERVAL`,
-`EVAL_BATCHES`, `SEED`, and `RESULT_ROOT`. For example, a short local comparison
-without changing the scientific preset is:
+`scripts/` is the sole root for executable project workflows. Canonical
+launchers take all scientific settings from their named presets. They permit
+only matrix selection (`TASKS`, `ARCHITECTURES`, and `SEEDS`) and operational
+placement (`DEVICE` and `RESULT_ROOT`); they do not accept training,
+evaluation, task-difficulty, or model-hyperparameter overrides.
 
-```bash
-DEVICE=mps TRAIN_STEPS=250 ARCHITECTURES="transformer memory_tape" \
-  bash runs/trace/10_random_graph_walk_trace.sh
-```
+The BBH launcher runs all four tasks and all five architectures by default.
+Use `TASKS="tracking pointer_chasing"` for a subset, or the
+backwards-compatible `TASK=tracking`
+for one task. `SEEDS="1337 2027 4099"` expands independent repetitions without
+changing the preset.
 
-Two local workflows sit between one-step smoke tests and the full experiments:
+Parameterized exploratory workflows live explicitly under `scripts/local/`
+and write under `results/local_pilots/`:
 
 ```bash
 # Broad, short pass over the four BBH tasks and three trace tasks.
-bash runs/local/10_main_matrix_pilot.sh
+bash scripts/local/10_main_matrix_pilot.sh
 
 # Longer learning-curve calibration for the two synthetic trace indicators.
-TRAIN_STEPS=5000 SEEDS="1337 2027" \
-  bash runs/local/20_trace_task_calibration.sh
+SEEDS="1337 2027" \
+  bash scripts/local/20_trace_task_calibration.sh
+
+# Compare easier and harder versions before selecting benchmark difficulty.
+bash scripts/local/30_trace_difficulty_sweep.sh
 ```
 
 The broad pilot defaults to the transformer and MemoryTape, 250 steps, one
-seed, and a reduced local Othello dataset. The calibration defaults to 5,000
+seed, and a reduced local Othello dataset. The calibration defaults to 50,000
 steps and records both inference schedules plus diagnostics for multi-pass
-models. `scripts/summarize_learning_runs.py` writes `learning_summary.json` and
-requires at least a five-percent evaluation-loss reduction in calibration
-mode. This is a learning-signal check, not a claim that 5,000 steps is enough:
-inspect task metrics and extend `TRAIN_STEPS` until Random Graph Walk legality
-and shortest-path optimal accuracy have clearly stabilized across seeds.
+models. Repeated training evaluations use two batches by default, while the
+post-training qualification uses 16 batches of 16 examples (256 examples) per
+inference mode. Override these independently with `TRAIN_EVAL_BATCHES`,
+`QUAL_EVAL_BATCHES`, and `DIAGNOSTIC_EVAL_BATCHES`.
+
+The difficulty sweep defaults to 5,000 steps, Random Graph Walk lengths 8, 16,
+and 32, and shortest-path settings `8/3/2/5`, `16/4/3/20`, and `24/6/3/40`
+(`nodes/path length/branching/distractors`). It skips the architecture
+diagnostics by default because its purpose is task calibration; set
+`RUN_DIAGNOSTICS=1` to include them. `scripts/summarize_learning_runs.py`
+writes `learning_summary.json`, including the larger per-inference-mode
+qualification metrics. Calibration mode requires at least a five-percent
+evaluation-loss reduction. Inspect the task metrics and extend `TRAIN_STEPS`
+until Random Graph Walk legality and shortest-path optimal accuracy have
+clearly stabilized across seeds.
+
+MemoryTape's direct scalar reader gate retains its `0.1` initialization in the
+main presets. The reported gate-initialization experiment has two named
+presets which are tested to differ only in that value (`0.1` versus `1.0`).
+Run the fixed three-seed control/treatment experiment with:
+
+```bash
+DEVICE=mps bash scripts/ablations/10_memory_gate_init.sh
+```
+
+Its training, qualification, and diagnostic settings are fixed by the presets
+and script. For informal exploration of other gate values, the parameterized
+task sweep remains available under `scripts/local/`.
 
 Use `scripts/train_smoke.sh` for quick end-to-end checks.
 

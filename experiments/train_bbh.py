@@ -142,6 +142,7 @@ def parse_args(argv: list[str] | None = None):
     _add_override(parser, "--append-train-loss-weight", type=float)
     _add_override(parser, "--append-train-warmup-steps", type=int)
     _add_override(parser, "--append-train-ramp-steps", type=int)
+    _add_override(parser, "--memory-gate-init", type=float)
     _add_override(parser, "--num-nodes", type=int)
     _add_override(parser, "--num-objects", type=int)
     _add_override(parser, "--num-states", type=int)
