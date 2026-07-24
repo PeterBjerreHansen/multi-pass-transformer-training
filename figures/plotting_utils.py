@@ -101,6 +101,8 @@ def _config_context(run_dir: Path, *, root: Path | None = None) -> dict:
         "device": args.get("device"),
         "n_pass": args.get("n_pass"),
         "inference_mode": args.get("inference_mode"),
+        "max_level": args.get("max_level"),
+        "curriculum_threshold": args.get("curriculum_threshold"),
         "total_parameters": model_stats.get("total_parameters"),
         "non_embedding_parameters": model_stats.get("non_embedding_parameters"),
     }
@@ -114,7 +116,17 @@ def load_training_records(root: str | Path) -> list[dict]:
     for metrics_path in sorted(root.rglob("metrics.jsonl")):
         run_dir = metrics_path.parent
         context = _config_context(run_dir, root=root)
-        for event in read_jsonl(metrics_path):
+        events = read_jsonl(metrics_path)
+        # Reusing a run directory appends a new run_start and a fresh metric
+        # stream. Plot only the latest logical run; otherwise old and new
+        # curriculum levels at the same optimizer step create false regressions.
+        run_starts = [
+            index for index, event in enumerate(events)
+            if event.get("event") == "run_start"
+        ]
+        if run_starts:
+            events = events[run_starts[-1] :]
+        for event in events:
             if event.get("event") != "eval":
                 continue
             record = {
@@ -323,6 +335,81 @@ def median_curve(records: Sequence[dict], metric: str) -> tuple[list[float], lis
             by_step[step].append(value)
     steps = sorted(by_step)
     return steps, [float(median(by_step[step])) for step in steps]
+
+
+def summarize_curriculum_levels(records: Sequence[dict]) -> list[dict]:
+    """Summarize level entry, mastery, and censoring for BBH curriculum runs.
+
+    A level is mastered at its first evaluation meeting the run's curriculum
+    threshold. The time spent mastering a level is measured from the previous
+    mastered level, avoiding the misleading loss/accuracy discontinuities that
+    occur when curriculum difficulty changes.
+    """
+    summaries = []
+    for (run_dir,), run_rows in grouped(records, "run_dir").items():
+        ordered = sorted(
+            (
+                row for row in run_rows
+                if _finite_number(row.get("step")) is not None
+                and _finite_number(row.get("level")) is not None
+            ),
+            key=lambda row: float(row["step"]),
+        )
+        if not ordered:
+            continue
+        threshold = _finite_number(ordered[0].get("curriculum_threshold"))
+        threshold = 0.95 if threshold is None else threshold
+        levels = sorted({int(row["level"]) for row in ordered})
+        previous_mastery_step = 0.0
+        final_level = levels[-1]
+        for level in levels:
+            level_rows = [row for row in ordered if int(row["level"]) == level]
+            mastery_rows = [
+                row for row in level_rows
+                if (_finite_number(row.get("exact_match")) or 0.0) >= threshold
+            ]
+            mastery_step = float(mastery_rows[0]["step"]) if mastery_rows else None
+            final_row = level_rows[-1]
+            summary = {
+                **{
+                    key: ordered[0].get(key)
+                    for key in (
+                        "run_dir",
+                        "relative_run",
+                        "task",
+                        "architecture",
+                        "preset",
+                        "seed",
+                        "device",
+                        "max_level",
+                        "curriculum_threshold",
+                    )
+                },
+                "level": level,
+                "entry_step": previous_mastery_step,
+                "last_observed_step": float(final_row["step"]),
+                "mastery_step": mastery_step,
+                "steps_to_mastery": (
+                    mastery_step - previous_mastery_step
+                    if mastery_step is not None
+                    else None
+                ),
+                "final_exact_match": _finite_number(final_row.get("exact_match")),
+                "peak_exact_match": max(
+                    (
+                        value
+                        for row in level_rows
+                        if (value := _finite_number(row.get("exact_match"))) is not None
+                    ),
+                    default=None,
+                ),
+                "mastered": mastery_step is not None,
+                "censored": level == final_level and mastery_step is None,
+            }
+            summaries.append(summary)
+            if mastery_step is not None:
+                previous_mastery_step = mastery_step
+    return summaries
 
 
 def mean_by_category(records: Sequence[dict], category: str, metric: str) -> dict[str, float]:

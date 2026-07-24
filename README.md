@@ -426,13 +426,15 @@ backbone group.
 The tracked, output-free notebooks under `figures/` read the current artifact
 schemas directly:
 
-- `01_learning_and_compute.ipynb` plots seed-level and median learning curves,
-  per-pass refinement, subsystem gradient norms, gate evolution, and measured
-  training throughput.
-- `02_deployment_and_othello.ipynb` compares paired `recompute` and
+- `01_bbh_curricula.ipynb` plots BBH difficulty frontiers, per-level mastery
+  time, and end-of-budget curriculum coverage. It deliberately avoids joining
+  loss or accuracy across difficulty changes.
+- `02_trace_learning.ipynb` plots conventional fixed-difficulty learning curves
+  and measured throughput for Random Graph Walk, Othello, and shortest path.
+- `03_deployment_and_othello.ipynb` compares paired `recompute` and
   `append_recurrent` quality, per-position free-generation drift,
   teacher-forced schedule gaps, and Othello random-prefix/legal-set metrics.
-- `03_ablation_diagnostics.ipynb` mirrors the merge-decision rules with paired
+- `04_ablation_diagnostics.ipynb` mirrors the merge-decision rules with paired
   seed deltas, quality–efficiency plots, memory interventions, extra-pass
   dynamics, and schedule-gap comparisons.
 

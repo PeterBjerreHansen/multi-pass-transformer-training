@@ -31,9 +31,10 @@ def test_readme_uses_local_figure_paths_and_no_fetch_helper_exists():
 
 def test_plotting_notebooks_are_valid_output_free_python():
     expected = {
-        "01_learning_and_compute.ipynb",
-        "02_deployment_and_othello.ipynb",
-        "03_ablation_diagnostics.ipynb",
+        "01_bbh_curricula.ipynb",
+        "02_trace_learning.ipynb",
+        "03_deployment_and_othello.ipynb",
+        "04_ablation_diagnostics.ipynb",
     }
     paths = {path.name: path for path in (ROOT / "figures").glob("*.ipynb")}
     assert expected <= paths.keys()
@@ -48,18 +49,34 @@ def test_plotting_notebooks_are_valid_output_free_python():
             assert cell.get("execution_count") is None
             compile("".join(cell["source"]), f"{name}:cell-{index}", "exec")
 
-    learning = json.loads(
-        (ROOT / "figures" / "01_learning_and_compute.ipynb").read_text(
+    bbh = json.loads(
+        (ROOT / "figures" / "01_bbh_curricula.ipynb").read_text(
             encoding="utf-8"
         )
     )
-    learning_source = "\n".join(
+    bbh_source = "\n".join(
         "".join(cell["source"])
-        for cell in learning["cells"]
+        for cell in bbh["cells"]
         if cell["cell_type"] == "code"
     )
-    assert 'TASK = "pointer_chasing"' in learning_source
-    assert "if not selected:" in learning_source
+    assert 'TASK = "pointer_chasing"' in bbh_source
+    assert "summarize_curriculum_levels" in bbh_source
+    assert "steps_to_mastery" in bbh_source
+    assert "def find_repo_root(start):" in bbh_source
+    assert bbh_source.count("plt.show()") == 3
+
+    trace = json.loads(
+        (ROOT / "figures" / "02_trace_learning.ipynb").read_text(
+            encoding="utf-8"
+        )
+    )
+    trace_source = "\n".join(
+        "".join(cell["source"])
+        for cell in trace["cells"]
+        if cell["cell_type"] == "code"
+    )
+    assert 'RESULT_ROOT = REPO_ROOT / "results" / "trace"' in trace_source
+    assert "row.get(\"level\") is None" in trace_source
 
 
 def test_plotting_loaders_follow_current_artifact_schemas(tmp_path):
@@ -74,6 +91,7 @@ def test_plotting_loaders_follow_current_artifact_schemas(tmp_path):
         load_othello_examples,
         load_training_records,
         plot_seed_and_median_curves,
+        summarize_curriculum_levels,
     )
 
     run_dir = tmp_path / "control" / "seed_1337"
@@ -217,6 +235,52 @@ def test_plotting_loaders_follow_current_artifact_schemas(tmp_path):
     assert axis.lines[-1].get_ydata().tolist() == [0.5]
     plt.close(figure)
 
+    curriculum_records = [
+        {
+            "run_dir": "run-a",
+            "task": "pointer_chasing",
+            "architecture": "memory_tape",
+            "seed": 1337,
+            "device": "cpu",
+            "max_level": 4,
+            "curriculum_threshold": 0.95,
+            "step": 100,
+            "level": 1,
+            "exact_match": 0.8,
+        },
+        {
+            "run_dir": "run-a",
+            "task": "pointer_chasing",
+            "architecture": "memory_tape",
+            "seed": 1337,
+            "device": "cpu",
+            "max_level": 4,
+            "curriculum_threshold": 0.95,
+            "step": 200,
+            "level": 1,
+            "exact_match": 0.96,
+        },
+        {
+            "run_dir": "run-a",
+            "task": "pointer_chasing",
+            "architecture": "memory_tape",
+            "seed": 1337,
+            "device": "cpu",
+            "max_level": 4,
+            "curriculum_threshold": 0.95,
+            "step": 300,
+            "level": 2,
+            "exact_match": 0.4,
+        },
+    ]
+    curriculum = summarize_curriculum_levels(curriculum_records)
+    assert curriculum[0]["steps_to_mastery"] == 200
+    assert curriculum[0]["mastered"] is True
+    assert curriculum[0]["censored"] is False
+    assert curriculum[1]["steps_to_mastery"] is None
+    assert curriculum[1]["mastered"] is False
+    assert curriculum[1]["censored"] is True
+
     drift = load_drift_records(tmp_path)
     assert drift[0]["optimal_path"] == 0.5
     assert drift[0]["per_position"][0]["token_legality"] == 0.75
@@ -233,3 +297,49 @@ def test_plotting_loaders_follow_current_artifact_schemas(tmp_path):
 
     ablation = load_ablation_rows(tmp_path)
     assert ablation[0]["drift.append_recurrent.optimal_path"] == 0.5
+
+
+def test_training_loader_uses_latest_logical_run(tmp_path):
+    from figures.plotting_utils import load_training_records
+
+    run_dir = tmp_path / "pointer_chasing" / "transformer" / "seed_1337"
+    run_dir.mkdir(parents=True)
+    (run_dir / "config.json").write_text(
+        json.dumps(
+            {
+                "args": {
+                    "task": "pointer_chasing",
+                    "architecture": "transformer",
+                    "seed": 1337,
+                    "max_level": 32,
+                    "curriculum_threshold": 0.95,
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    events = [
+        {"event": "run_start"},
+        {
+            "event": "eval",
+            "step": 100,
+            "level": 7,
+            "metrics": {"exact_match": 0.99},
+        },
+        {"event": "run_start"},
+        {
+            "event": "eval",
+            "step": 100,
+            "level": 2,
+            "metrics": {"exact_match": 0.60},
+        },
+    ]
+    (run_dir / "metrics.jsonl").write_text(
+        "".join(json.dumps(event) + "\n" for event in events),
+        encoding="utf-8",
+    )
+
+    records = load_training_records(tmp_path)
+    assert len(records) == 1
+    assert records[0]["level"] == 2
+    assert records[0]["exact_match"] == 0.60
