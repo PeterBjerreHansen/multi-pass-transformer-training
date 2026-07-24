@@ -48,15 +48,32 @@ def test_plotting_notebooks_are_valid_output_free_python():
             assert cell.get("execution_count") is None
             compile("".join(cell["source"]), f"{name}:cell-{index}", "exec")
 
+    learning = json.loads(
+        (ROOT / "figures" / "01_learning_and_compute.ipynb").read_text(
+            encoding="utf-8"
+        )
+    )
+    learning_source = "\n".join(
+        "".join(cell["source"])
+        for cell in learning["cells"]
+        if cell["cell_type"] == "code"
+    )
+    assert 'TASK = "pointer_chasing"' in learning_source
+    assert "if not selected:" in learning_source
+
 
 def test_plotting_loaders_follow_current_artifact_schemas(tmp_path):
-    pytest.importorskip("matplotlib")
+    matplotlib = pytest.importorskip("matplotlib")
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
     from figures.plotting_utils import (
         load_ablation_rows,
         load_diagnostic_records,
         load_drift_records,
         load_othello_examples,
         load_training_records,
+        plot_seed_and_median_curves,
     )
 
     run_dir = tmp_path / "control" / "seed_1337"
@@ -194,6 +211,11 @@ def test_plotting_loaders_follow_current_artifact_schemas(tmp_path):
     assert training[0]["pass_4_loss"] == 1.4
     assert training[0]["gradient_memory_writer_mean"] == 0.2
     assert training[0]["memory_gate_mean_abs_effective"] == 0.4
+    figure, axis = plt.subplots()
+    plot_seed_and_median_curves(axis, training, metric="optimal_path")
+    assert len(axis.lines) == 2
+    assert axis.lines[-1].get_ydata().tolist() == [0.5]
+    plt.close(figure)
 
     drift = load_drift_records(tmp_path)
     assert drift[0]["optimal_path"] == 0.5
