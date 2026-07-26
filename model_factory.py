@@ -37,6 +37,7 @@ def build_model(args, vocab_size: int, block_size: int, device: str):
             MemoryTapeConfig(
                 **common,
                 n_pass=args.n_pass,
+                use_null_memory_slot=getattr(args, "null_memory_slot", "off") == "on",
             )
         )
     elif args.architecture == "memory_add":

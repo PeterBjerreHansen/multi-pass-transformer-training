@@ -71,6 +71,7 @@ def parse_args(argv: list[str] | None = None):
         "--shortest-path-distribution",
         choices=["easy", "main"],
     )
+    _add_override(parser, "--null-memory-slot", choices=["off", "on"])
     _add_override(parser, "--othello-data-dir")
     _add_override(parser, "--othello-train-games", type=int)
     _add_override(parser, "--othello-val-games", type=int)

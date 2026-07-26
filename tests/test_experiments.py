@@ -186,6 +186,9 @@ def test_memory_interventions_pass_dynamics_and_schedule_gap_return_finite_value
         for name, value in position.items():
             if name not in {"generated_position", "count"}:
                 assert torch.isfinite(torch.tensor(value)), name
+    attention = model.memory_attention_diagnostics(batch.idx)
+    assert "diagnostic_precondition" in attention
+    assert torch.isfinite(torch.tensor(attention["mean_effective_sources"]))
 
 
 def test_relative_linf_residual_is_per_example_and_ignores_padding():

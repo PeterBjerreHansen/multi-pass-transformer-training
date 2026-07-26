@@ -508,6 +508,7 @@ def diagnose_memory(cli_args) -> Path:
         intervention_results = []
         dynamics_results = []
         schedule_gap_results = []
+        attention_results = []
         for batch_index, batch in enumerate(batches):
             intervention_results.append(
                 memory_interventions(
@@ -520,6 +521,9 @@ def diagnose_memory(cli_args) -> Path:
             schedule_gap_results.append(
                 teacher_forced_schedule_gap(model, batch, horizon=cli_args.schedule_gap_horizon)
             )
+            attention_method = getattr(model, "memory_attention_diagnostics", None)
+            if attention_method is not None:
+                attention_results.append(attention_method(batch.idx))
     finally:
         model.train(was_training)
 
@@ -539,6 +543,8 @@ def diagnose_memory(cli_args) -> Path:
     }
     if bbh_level is not None:
         payload["evaluated_level"] = bbh_level
+    if attention_results:
+        payload["memory_attention"] = _mean_numbers(attention_results)
     output = Path(cli_args.output).resolve() if cli_args.output else run_dir / "diagnostics.json"
     write_json(output, payload)
     print(f"wrote {output}")
