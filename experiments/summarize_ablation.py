@@ -28,7 +28,7 @@ def parse_args(argv: list[str] | None = None):
     parser.add_argument("--output-dir", default=None)
     parser.add_argument(
         "--recommendation-mode",
-        choices=["pareto", "quality-only"],
+        choices=["pareto", "quality-only", "generation-aligned"],
         default="pareto",
     )
     parser.add_argument(
@@ -91,7 +91,15 @@ def collect_run(run_dir: Path) -> dict[str, float | str]:
     numeric: dict[str, float] = {}
     _flatten("model", config.get("model_stats", {}), numeric)
     _flatten("model_config", config.get("model_config", {}), numeric)
-    _flatten("train", {key: final_eval.get(key) for key in ("step", "train_loss", "train_tok_per_s")}, numeric)
+    _flatten(
+        "train",
+        {
+            key: final_eval.get(key)
+            for key in ("step", "train_loss", "train_objective_loss", "train_tok_per_s")
+        },
+        numeric,
+    )
+    _flatten("train.append", final_eval.get("append_train_stats", {}), numeric)
     _flatten("eval", final_eval.get("metrics", {}), numeric)
     _flatten("resource", final_eval.get("resource_stats", {}), numeric)
     _flatten("diagnostics", diagnostics, numeric)
@@ -200,6 +208,35 @@ def recommend(
     )
 
     eligible = quality_win if mode == "quality-only" else quality_win or (noninferior and efficiency_win)
+    schedule_gap_deltas = []
+    schedule_gap_improved = None
+    recompute_noninferior = None
+    if mode == "generation-aligned":
+        schedule_gap_deltas = _paired_delta(
+            control,
+            treatment,
+            "diagnostics.teacher_forced_schedule_gap.overall.nll_delta",
+        )
+        schedule_gap_median = _median(schedule_gap_deltas)
+        schedule_gap_improved = bool(
+            schedule_gap_median is not None
+            and schedule_gap_median < 0
+            and sum(delta < 0 for delta in schedule_gap_deltas) >= 2
+        )
+        recompute_deltas = _paired_delta(
+            control,
+            treatment,
+            "drift.recompute.token_legality",
+        )
+        recompute_median = _median(recompute_deltas)
+        recompute_noninferior = bool(
+            recompute_median is not None
+            and recompute_median >= -QUALITY_MARGIN
+            and sum(delta >= -QUALITY_MARGIN for delta in recompute_deltas) >= 2
+        )
+        eligible = recompute_noninferior and (
+            quality_win or (noninferior and schedule_gap_improved)
+        )
 
     return {
         "recommend_merge": eligible,
@@ -213,6 +250,9 @@ def recommend(
         "median_append_eval_throughput_ratio": eval_ratio,
         "median_parameter_ratio": parameter_ratio,
         "median_tape_bytes_ratio": tape_ratio,
+        "paired_schedule_gap_deltas": schedule_gap_deltas,
+        "schedule_gap_improved": schedule_gap_improved,
+        "recompute_quality_noninferior": recompute_noninferior,
     }
 
 

@@ -13,6 +13,7 @@ from experiments.common import (
     clip_gradients,
     effective_inference_mode,
     evaluate_prebuilt_batches,
+    generation_aligned_loss,
     format_checkpoint_line,
     format_default_eval_metrics,
     format_gradient_norms,
@@ -21,6 +22,7 @@ from experiments.common import (
     gradient_norms,
     load_checkpoint_payload,
     model_benchmark_stats,
+    new_append_train_stats,
     prepare_run_artifacts,
     provenance_metadata,
     resolve_device_arg,
@@ -33,6 +35,7 @@ from experiments.common import (
     stable_seed,
     synchronize_device,
     summarize_gradient_norm_window,
+    update_append_train_stats,
     update_gradient_norm_window,
     validate_model_args,
     validate_training_args,
@@ -132,6 +135,12 @@ def parse_args(argv: list[str] | None = None):
     _add_override(parser, "--n-embd", type=int)
     _add_override(parser, "--n-pass", type=int)
     _add_override(parser, "--pass-loss-weights", type=float, nargs="*")
+    _add_override(parser, "--append-train-prob", type=float)
+    _add_override(parser, "--append-train-microbatch-size", type=int)
+    _add_override(parser, "--append-train-horizon", type=int)
+    _add_override(parser, "--append-train-loss-weight", type=float)
+    _add_override(parser, "--append-train-warmup-steps", type=int)
+    _add_override(parser, "--append-train-ramp-steps", type=int)
     _add_override(
         parser,
         "--num-nodes",
@@ -262,6 +271,10 @@ def run_answer_curriculum(args) -> None:
     )
 
     train_rng = random.Random(stable_seed(args.seed, "bbh", args.task, "train"))
+    append_train_rng = random.Random(
+        stable_seed(args.seed, "bbh", args.task, "append_train")
+    )
+    append_train_stats = new_append_train_stats(args.append_train_prob)
     current_level = args.curriculum_start_level
     promotion_history: list[tuple[int, int, float]] = []
     best_eval_score: tuple[int, float, float] | None = None
@@ -278,6 +291,8 @@ def run_answer_curriculum(args) -> None:
         if "lr" in explicit_optimization_overrides:
             for parameter_group in optimizer.param_groups:
                 parameter_group["lr"] = explicit_optimization_overrides["lr"]
+        append_train_rng.setstate(extra["append_train_rng_state"])
+        append_train_stats = extra["append_train_stats"]
 
     print(f"device: {args.device}")
     print(f"task: {args.task}")
@@ -289,6 +304,16 @@ def run_answer_curriculum(args) -> None:
         normalized = [weight / sum(args.pass_loss_weights) for weight in args.pass_loss_weights]
         print(f"n_pass: {args.n_pass}")
         print(f"pass_loss_weights_normalized: {normalized}")
+        print(f"append_train_prob: {args.append_train_prob}")
+        if args.append_train_prob > 0:
+            print(
+                "append_train: "
+                f"microbatch={args.append_train_microbatch_size} "
+                f"horizon={args.append_train_horizon} "
+                f"weight={args.append_train_loss_weight} "
+                f"warmup={args.append_train_warmup_steps} "
+                f"ramp={args.append_train_ramp_steps}"
+            )
     append_jsonl(
         artifacts.metrics_path,
         {
@@ -307,6 +332,7 @@ def run_answer_curriculum(args) -> None:
     window_start = time.perf_counter()
     window_tokens = 0
     gradient_norm_window: dict[str, dict[str, float]] = {}
+    append_train_window_stats = new_append_train_stats(args.append_train_prob)
 
     for step in range(start_step, final_step + 1):
         model.train()
@@ -319,8 +345,20 @@ def run_answer_curriculum(args) -> None:
             rng=train_rng,
         )
         optimizer.zero_grad(set_to_none=True)
-        loss, _output, pass_losses = forward_and_loss(model, batch, args)
+        loss, output, pass_losses = forward_and_loss(model, batch, args)
         loss.backward()
+        append_loss, append_step_stats = generation_aligned_loss(
+            model,
+            batch,
+            output,
+            args,
+            step=step,
+            rng=append_train_rng,
+        )
+        if append_loss is not None:
+            append_loss.backward()
+        update_append_train_stats(append_train_stats, append_step_stats)
+        update_append_train_stats(append_train_window_stats, append_step_stats)
         update_gradient_norm_window(gradient_norm_window, gradient_norms(model))
         clip_gradients(model, args.max_grad_norm)
         optimizer.step()
@@ -338,6 +376,12 @@ def run_answer_curriculum(args) -> None:
         fields.append(format_gradient_norms(gradient_summary))
         if args.architecture != "transformer":
             fields.append(f"pass_losses {format_pass_losses(pass_losses)}")
+            if append_train_window_stats["applied_updates"]:
+                fields.append(
+                    "append_loss "
+                    f"{append_train_window_stats['mean_raw_loss']:.4f} "
+                    f"({append_train_window_stats['applied_updates']} updates)"
+                )
         print(format_checkpoint_line(f"step {step}", fields))
 
         evaluated_level = current_level
@@ -371,7 +415,12 @@ def run_answer_curriculum(args) -> None:
                 "level": evaluated_level,
                 "sampled_train_level": sampled_level,
                 "train_loss": float(loss.item()),
+                "train_objective_loss": float(loss.item())
+                + (float(append_step_stats["weighted_loss"]) if append_step_stats["applied"] else 0.0),
                 "pass_losses": [float(item.item()) for item in pass_losses],
+                "append_train_step": append_step_stats,
+                "append_train_window_stats": append_train_window_stats,
+                "append_train_stats": append_train_stats,
                 "metrics": metrics,
                 "gradient_norms": gradient_summary,
                 "train_tok_per_s": tok_per_s,
@@ -394,6 +443,8 @@ def run_answer_curriculum(args) -> None:
             "train_rng_state": train_rng.getstate(),
             "best_eval_score": best_eval_score,
             "best_eval_step": best_eval_step,
+            "append_train_rng_state": append_train_rng.getstate(),
+            "append_train_stats": append_train_stats,
         }
         save_latest_checkpoint(
             artifacts,
@@ -420,6 +471,7 @@ def run_answer_curriculum(args) -> None:
         window_start = time.perf_counter()
         window_tokens = 0
         gradient_norm_window = {}
+        append_train_window_stats = new_append_train_stats(args.append_train_prob)
 
     append_jsonl(
         artifacts.metrics_path,

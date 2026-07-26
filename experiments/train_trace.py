@@ -12,6 +12,7 @@ from experiments.common import (
     clip_gradients,
     effective_inference_mode,
     evaluate_prebuilt_batches,
+    generation_aligned_loss,
     format_checkpoint_line,
     format_gradient_norms,
     format_pass_losses,
@@ -19,6 +20,7 @@ from experiments.common import (
     gradient_norms,
     load_checkpoint_payload,
     model_benchmark_stats,
+    new_append_train_stats,
     prepare_run_artifacts,
     provenance_metadata,
     resolve_device_arg,
@@ -31,6 +33,7 @@ from experiments.common import (
     stable_seed,
     synchronize_device,
     summarize_gradient_norm_window,
+    update_append_train_stats,
     update_gradient_norm_window,
     validate_model_args,
     validate_training_args,
@@ -71,6 +74,12 @@ def parse_args(argv: list[str] | None = None):
         "--shortest-path-distribution",
         choices=["easy", "main"],
     )
+    _add_override(parser, "--append-train-prob", type=float)
+    _add_override(parser, "--append-train-microbatch-size", type=int)
+    _add_override(parser, "--append-train-horizon", type=int)
+    _add_override(parser, "--append-train-loss-weight", type=float)
+    _add_override(parser, "--append-train-warmup-steps", type=int)
+    _add_override(parser, "--append-train-ramp-steps", type=int)
     _add_override(parser, "--othello-data-dir")
     _add_override(parser, "--othello-train-games", type=int)
     _add_override(parser, "--othello-val-games", type=int)
@@ -205,6 +214,10 @@ def run_trace_training(args) -> None:
     train_rng = random.Random(stable_seed(args.seed, "trace", args.task, "train"))
     best_eval_loss = float("inf")
     best_eval_step: int | None = None
+    append_train_rng = random.Random(
+        stable_seed(args.seed, "trace", args.task, "append_train")
+    )
+    append_train_stats = new_append_train_stats(args.append_train_prob)
     if checkpoint is not None:
         restore_checkpoint_state(checkpoint, model=model, optimizer=optimizer, device=args.device)
         extra = checkpoint["extra_state"]
@@ -213,6 +226,8 @@ def run_trace_training(args) -> None:
         best_eval_step = None if saved_best_step is None else int(saved_best_step)
         train_rng.setstate(extra["train_rng_state"])
         apply_learning_rate(optimizer, args, resume_step)
+        append_train_rng.setstate(extra["append_train_rng_state"])
+        append_train_stats = extra["append_train_stats"]
 
     print(f"device: {args.device}")
     print(f"task: {args.task}")
@@ -233,6 +248,16 @@ def run_trace_training(args) -> None:
         total_weight = sum(args.pass_loss_weights)
         print(f"n_pass: {args.n_pass}")
         print(f"pass_loss_weights_normalized: {[weight / total_weight for weight in args.pass_loss_weights]}")
+        print(f"append_train_prob: {args.append_train_prob}")
+        if args.append_train_prob > 0:
+            print(
+                "append_train: "
+                f"microbatch={args.append_train_microbatch_size} "
+                f"horizon={args.append_train_horizon} "
+                f"weight={args.append_train_loss_weight} "
+                f"warmup={args.append_train_warmup_steps} "
+                f"ramp={args.append_train_ramp_steps}"
+            )
     append_jsonl(
         artifacts.metrics_path,
         {
@@ -252,14 +277,27 @@ def run_trace_training(args) -> None:
     window_start = time.perf_counter()
     window_tokens = 0
     gradient_norm_window: dict[str, dict[str, float]] = {}
+    append_train_window_stats = new_append_train_stats(args.append_train_prob)
 
     for step in range(start_step, final_step + 1):
         current_lr = apply_learning_rate(optimizer, args, step)
         model.train()
         batch = build_task_batch(args, stoi, train_rng, split="train")
         optimizer.zero_grad(set_to_none=True)
-        loss, _output, pass_losses = forward_and_loss(model, batch, args)
+        loss, output, pass_losses = forward_and_loss(model, batch, args)
         loss.backward()
+        append_loss, append_step_stats = generation_aligned_loss(
+            model,
+            batch,
+            output,
+            args,
+            step=step,
+            rng=append_train_rng,
+        )
+        if append_loss is not None:
+            append_loss.backward()
+        update_append_train_stats(append_train_stats, append_step_stats)
+        update_append_train_stats(append_train_window_stats, append_step_stats)
         update_gradient_norm_window(gradient_norm_window, gradient_norms(model))
         clip_gradients(model, args.max_grad_norm)
         optimizer.step()
@@ -281,6 +319,12 @@ def run_trace_training(args) -> None:
         fields.append(format_gradient_norms(gradient_summary))
         if args.architecture != "transformer":
             fields.append(f"pass_losses {format_pass_losses(pass_losses)}")
+            if append_train_window_stats["applied_updates"]:
+                fields.append(
+                    "append_loss "
+                    f"{append_train_window_stats['mean_raw_loss']:.4f} "
+                    f"({append_train_window_stats['applied_updates']} updates)"
+                )
         print(format_checkpoint_line(f"step {step}", fields))
 
         metrics = evaluate_prebuilt_batches(
@@ -309,7 +353,12 @@ def run_trace_training(args) -> None:
                 "step": step,
                 "learning_rate": current_lr,
                 "train_loss": float(loss.item()),
+                "train_objective_loss": float(loss.item())
+                + (float(append_step_stats["weighted_loss"]) if append_step_stats["applied"] else 0.0),
                 "pass_losses": [float(item.item()) for item in pass_losses],
+                "append_train_step": append_step_stats,
+                "append_train_window_stats": append_train_window_stats,
+                "append_train_stats": append_train_stats,
                 "metrics": metrics,
                 "gradient_norms": gradient_summary,
                 "train_tok_per_s": tok_per_s,
@@ -323,6 +372,8 @@ def run_trace_training(args) -> None:
             "train_rng_state": train_rng.getstate(),
             "best_eval_loss": best_eval_loss,
             "best_eval_step": best_eval_step,
+            "append_train_rng_state": append_train_rng.getstate(),
+            "append_train_stats": append_train_stats,
         }
         save_latest_checkpoint(
             artifacts,
@@ -346,6 +397,7 @@ def run_trace_training(args) -> None:
         window_start = time.perf_counter()
         window_tokens = 0
         gradient_norm_window = {}
+        append_train_window_stats = new_append_train_stats(args.append_train_prob)
 
     append_jsonl(artifacts.metrics_path, {"event": "run_end", "task": args.task})
     print(f"run_dir: {artifacts.run_dir}")
