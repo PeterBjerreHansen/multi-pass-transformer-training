@@ -23,7 +23,7 @@ run_eval() {
 for seed in ${SEEDS}; do
   for pattern in all early middle late; do
     run_dir="${RESULT_ROOT}/${pattern}/seed_${seed}"
-    python -m experiments.train_trace --preset random_graph_walk_main --architecture memory_tape \
+    python -m experiments.train_trace --preset shortest_path_main --architecture memory_tape \
       --memory-read-pattern "${pattern}" --token-selection argmax --train-steps "${TRAIN_STEPS}" \
       --device "${DEVICE}" --seed "${seed}" --run-dir "${run_dir}"
     run_eval "${run_dir}" "${seed}"

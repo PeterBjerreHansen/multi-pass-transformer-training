@@ -92,7 +92,7 @@ def test_memory_read_pattern_is_saved_and_reported(tmp_path):
     run_dir = tmp_path / "read_layers"
     _run(
         "-m", "experiments.train_trace",
-        "--preset", "random_graph_walk_smoke",
+        "--preset", "shortest_path_smoke",
         "--architecture", "memory_tape",
         "--memory-read-pattern", "early",
         "--device", "cpu",
