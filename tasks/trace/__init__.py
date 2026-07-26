@@ -1,3 +1,3 @@
-from . import othello, random_graph_walk, shortest_path
+from . import othello, shortest_path
 
-__all__ = ["othello", "random_graph_walk", "shortest_path"]
+__all__ = ["othello", "shortest_path"]

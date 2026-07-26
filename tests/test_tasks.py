@@ -7,7 +7,7 @@ import torch
 
 from models import CausalTransformer, TransformerConfig
 from tasks.bbh import permutation, pointer_chasing, state_machine, tracking
-from tasks.trace import othello, random_graph_walk, shortest_path
+from tasks.trace import othello, shortest_path
 
 
 class _ForcedChoiceRandom(random.Random):
@@ -224,21 +224,6 @@ def test_pointer_chasing_level_one_is_learnable_with_full_vocabulary():
     predictions = logits[rows, answer_positions].argmax(dim=-1)
     targets = eval_batch.targets[rows, answer_positions]
     assert (predictions == targets).float().mean().item() >= 0.99
-
-
-def test_random_graph_walk_prompt_parsing_and_legality():
-    rng = random.Random(11)
-    _vocab, stoi, _ = random_graph_walk.build_random_graph_walk_vocab(5, 4)
-    prompt, _answer, table, start, actions, _trace, _final = random_graph_walk.sample_random_graph_walk_example(
-        5, 4, 8, stoi, rng
-    )
-    parsed_table, parsed_start = random_graph_walk.parse_prompt_metadata(prompt, num_states=5, label_pool_size=4)
-    assert [sorted(row) for row in parsed_table] == [sorted(row) for row in table]
-    assert parsed_start == start
-    action_ids = [stoi[random_graph_walk.label_token(action)] for action in actions]
-    assert random_graph_walk.legal_prefix_length(
-        prompt, action_ids, num_states=5, label_pool_size=4
-    ) == (8, True)
 
 
 def test_othello_generated_games_are_legal_and_dataset_cache_is_deterministic(tmp_path):

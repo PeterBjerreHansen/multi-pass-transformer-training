@@ -38,7 +38,6 @@ PRIMARY_METRICS = {
     "tracking": "exact_match",
     "permutation": "exact_match",
     "state_machine": "exact_match",
-    "random_graph_walk": "token_legality",
     "othello": "token_legality",
     "shortest_path": "optimal_path",
 }

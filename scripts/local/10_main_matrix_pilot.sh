@@ -14,7 +14,7 @@ EVAL_BATCHES="${EVAL_BATCHES:-1}"
 BATCH_SIZE="${BATCH_SIZE:-16}"
 ARCHITECTURES="${ARCHITECTURES:-transformer memory_tape}"
 BBH_TASKS="${BBH_TASKS:-pointer_chasing tracking permutation state_machine}"
-TRACE_TASKS="${TRACE_TASKS:-random_graph_walk shortest_path}"
+TRACE_TASKS="${TRACE_TASKS:-shortest_path}"
 RUN_ID="${RUN_ID:-$(date +%Y%m%d_%H%M%S)}"
 RESULT_ROOT="${RESULT_ROOT:-results/local_pilots/main_matrix/${RUN_ID}}"
 

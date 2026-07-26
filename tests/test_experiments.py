@@ -30,7 +30,7 @@ from models import (
     MultiPassConfig,
 )
 from tasks.bbh import pointer_chasing
-from tasks.trace import othello, random_graph_walk
+from tasks.trace import othello
 from tasks.trace.registry import TRACE_TASKS
 
 
@@ -290,11 +290,6 @@ def test_main_presets_use_declared_experiment_scales():
     assert pointer["eval_interval"] == 200
     assert pointer["batch_size"] == 64
 
-    graph = TRACE_PRESETS["random_graph_walk_main"].values
-    assert graph["lr"] == 3e-4
-    assert graph["eval_interval"] == 1_000
-    assert graph["inference_mode"] == "append_recurrent"
-
     othello_main = TRACE_PRESETS["othello_main"].values
     assert othello_main["othello_train_games"] == 5_000_000
     assert othello_main["othello_val_games"] == 1_024
@@ -349,35 +344,6 @@ def test_othello_prefix_examples_and_legal_set_metrics_are_deterministic():
 
 
 def test_trace_registry_preserves_seeded_task_behavior(tmp_path):
-    graph_args = SimpleNamespace(
-        num_states=4,
-        label_pool_size=4,
-        max_level=5,
-        batch_size=3,
-        device="cpu",
-    )
-    graph_task = TRACE_TASKS["random_graph_walk"]
-    direct_vocab = random_graph_walk.build_random_graph_walk_vocab(4, 4)
-    assert graph_task.build_vocab(graph_args) == direct_vocab
-    assert graph_task.required_block_size(graph_args) == random_graph_walk.required_block_size(4, 4, 5)
-    direct_graph_batch = random_graph_walk.build_random_graph_walk_batch(
-        batch_size=3,
-        num_states=4,
-        label_pool_size=4,
-        num_steps=5,
-        stoi=direct_vocab[1],
-        device="cpu",
-        rng=random.Random(2026),
-    )
-    registered_graph_batch = graph_task.build_batch(
-        graph_args,
-        direct_vocab[1],
-        random.Random(2026),
-        split="train",
-    )
-    assert torch.equal(registered_graph_batch.idx, direct_graph_batch.idx)
-    assert torch.equal(registered_graph_batch.targets, direct_graph_batch.targets)
-
     othello_args = SimpleNamespace(
         batch_size=3,
         device="cpu",
@@ -511,17 +477,6 @@ def test_main_trace_preset_contract_is_frozen():
         "memory_gate_init": 0.5,
     }
     contracts = {
-        "random_graph_walk_main": {
-            "task": "random_graph_walk",
-            "batch_size": 64,
-            "train_steps": 50_000,
-            "lr": 3e-4,
-            "eval_interval": 1_000,
-            "eval_batches": 4,
-            "num_states": 6,
-            "label_pool_size": 4,
-            "max_level": 32,
-        },
         "othello_main": {
             "task": "othello",
             "batch_size": 128,

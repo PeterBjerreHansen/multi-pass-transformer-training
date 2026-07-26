@@ -11,7 +11,7 @@ for ARCH in memory_tape joint_memory_tape memory_concat memory_add memory_state 
     --device cpu
 
   python -m experiments.train_trace \
-    --preset random_graph_walk_smoke \
+    --preset shortest_path_smoke \
     --architecture "${ARCH}" \
     --device cpu
 done

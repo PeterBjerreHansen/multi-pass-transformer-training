@@ -57,13 +57,10 @@ def parse_args(argv: list[str] | None = None):
     _add_override(parser, "--memory-update-gate", choices=["on", "off"])
     _add_override(parser, "--memory-gate-bias", type=float)
     _add_override(parser, "--memory-gate-init", type=float)
-    _add_override(parser, "--num-states", type=int)
-    _add_override(parser, "--label-pool-size", type=int)
     _add_override(parser, "--num-nodes", type=int)
     _add_override(parser, "--shortest-path-length", type=int)
     _add_override(parser, "--branching-factor", type=int)
     _add_override(parser, "--distractor-edges", type=int)
-    _add_override(parser, "--max-level", type=int)
     _add_override(parser, "--othello-data-dir")
     _add_override(parser, "--othello-train-games", type=int)
     _add_override(parser, "--othello-val-games", type=int)
@@ -83,7 +80,7 @@ def parse_args(argv: list[str] | None = None):
     return resolve_preset_args(
         parser.parse_args(argv),
         TRACE_PRESETS,
-        default_preset="random_graph_walk_main",
+        default_preset="shortest_path_main",
         parser=parser,
     )
 

@@ -5,7 +5,7 @@ from copy import deepcopy
 from dataclasses import dataclass
 
 from tasks.bbh import permutation, pointer_chasing, state_machine, tracking
-from tasks.trace import othello, random_graph_walk, shortest_path
+from tasks.trace import othello, shortest_path
 
 
 @dataclass(frozen=True)
@@ -90,24 +90,6 @@ def _trace_defaults(
 
 
 TRACE_PRESETS: dict[str, ExperimentPreset] = {}
-
-rgw_main = _trace_defaults(task="random_graph_walk", smoke=False, token_selection="sample")
-rgw_main.update(
-    num_states=random_graph_walk.DEFAULT_NUM_STATES,
-    label_pool_size=random_graph_walk.DEFAULT_LABEL_POOL_SIZE,
-    max_level=32,
-)
-TRACE_PRESETS["random_graph_walk_main"] = ExperimentPreset(
-    "Main random-graph-walk trace setup.",
-    rgw_main,
-)
-
-rgw_smoke = _trace_defaults(task="random_graph_walk", smoke=True, token_selection="argmax")
-rgw_smoke.update(num_states=4, label_pool_size=4, max_level=2)
-TRACE_PRESETS["random_graph_walk_smoke"] = ExperimentPreset(
-    "Tiny deterministic random-graph-walk smoke setup.",
-    rgw_smoke,
-)
 
 othello_main = _trace_defaults(task="othello", smoke=False, token_selection="sample")
 othello_main.update(

@@ -274,7 +274,6 @@ The current experiment tasks are:
 - `state_machine`: per-example deterministic finite-state machines with balanced shuffled transition tables and action sequences.
 - `tracking`: shuffled-object tracking with swap, rotate, and reverse operations.
 - `permutation`: permutation composition by repeated swaps.
-- `random_graph_walk`: state-graph traces where each state exposes only a subset of overlapping action labels, so the next legal action must be interpreted in the context of the current state.
 - `othello`: legal Othello move-trace generation from the fixed opening prefix, evaluated both by exact suffix match and legality of the generated continuation.
 - `shortest_path`: shuffled, node-permuted directed acyclic graphs with exactly one shortest route from the declared start to goal; the model generates the complete optimal node path.
 
@@ -287,15 +286,6 @@ python3 -m experiments.train_bbh \
   --preset pointer_chasing_main \
   --architecture memory_update \
   --run-dir results/bbh/pointer_chasing/memory_update/example_run
-```
-
-Trace training on `random_graph_walk`:
-
-```bash
-python3 -m experiments.train_trace \
-  --preset random_graph_walk_main \
-  --architecture memory_update \
-  --run-dir results/trace/random_graph_walk/memory_update/example_run
 ```
 
 Trace training on `othello`:
@@ -353,7 +343,6 @@ Run the main experiment matrices with:
 
 ```bash
 bash scripts/bbh/10_bbh_curriculum.sh
-bash scripts/trace/10_random_graph_walk_trace.sh
 bash scripts/trace/10_othello_trace.sh
 bash scripts/trace/10_shortest_path_trace.sh
 ```
@@ -374,10 +363,10 @@ Parameterized exploratory workflows live explicitly under `scripts/local/`
 and write under `results/local_pilots/`:
 
 ```bash
-# Broad, short pass over the four BBH tasks and three trace tasks.
+# Broad, short pass over the four BBH tasks and two trace tasks.
 bash scripts/local/10_main_matrix_pilot.sh
 
-# Longer learning-curve calibration for the two synthetic trace indicators.
+# Longer learning-curve calibration for shortest path.
 SEEDS="1337 2027" \
   bash scripts/local/20_trace_task_calibration.sh
 
@@ -393,20 +382,19 @@ post-training qualification uses 16 batches of 16 examples (256 examples) per
 inference mode. Override these independently with `TRAIN_EVAL_BATCHES`,
 `QUAL_EVAL_BATCHES`, and `DIAGNOSTIC_EVAL_BATCHES`.
 
-The difficulty sweep defaults to 5,000 steps, Random Graph Walk lengths 8, 16,
-and 32, and shortest-path settings `8/3/2/5`, `16/4/3/20`, and `24/6/3/40`
+The difficulty sweep defaults to 5,000 steps and shortest-path settings
+`8/3/2/5`, `16/4/3/20`, and `24/6/3/40`
 (`nodes/path length/branching/distractors`). It skips the architecture
 diagnostics by default because its purpose is task calibration; set
 `RUN_DIAGNOSTICS=1` to include them. `scripts/summarize_learning_runs.py`
 writes `learning_summary.json`, including the larger per-inference-mode
 qualification metrics. Calibration mode requires at least a five-percent
 evaluation-loss reduction. Inspect the task metrics and extend `TRAIN_STEPS`
-until Random Graph Walk legality and shortest-path optimal accuracy have
-clearly stabilized across seeds.
+until shortest-path optimal accuracy has clearly stabilized across seeds.
 
-MemoryTape's direct scalar reader gate retains its `0.1` initialization in the
-main presets. The reported gate-initialization experiment has two named
-presets which are tested to differ only in that value (`0.1` versus `1.0`).
+MemoryTape's direct scalar reader gate uses `0.5` in the main presets. The
+reported gate-initialization experiment has two named presets which are tested
+to differ only in that value (`0.1` versus `1.0`).
 Run the fixed three-seed control/treatment experiment with:
 
 ```bash
@@ -423,7 +411,7 @@ Drift evaluation:
 
 ```bash
 python3 -m experiments.eval_trace_drift \
-  --input-run-dir results/trace/random_graph_walk/memory_tape/example_run \
+  --input-run-dir results/trace/shortest_path/memory_tape/example_run \
   --inference-mode append_recurrent \
   --token-selection argmax
 ```
@@ -436,7 +424,7 @@ Standalone memory-use and pass-dynamics diagnostics:
 
 ```bash
 python3 -m experiments.eval_diagnostics \
-  --input-run-dir results/trace/random_graph_walk/memory_tape/example_run \
+  --input-run-dir results/trace/shortest_path/memory_tape/example_run \
   --extra-passes 6 \
   --schedule-gap-horizon 16
 ```
@@ -467,7 +455,7 @@ schemas directly:
   time, and end-of-budget curriculum coverage. It deliberately avoids joining
   loss or accuracy across difficulty changes.
 - `02_trace_learning.ipynb` plots conventional fixed-difficulty learning curves
-  and measured throughput for Random Graph Walk, Othello, and shortest path.
+  and measured throughput for Othello and shortest path.
 - `03_deployment_and_othello.ipynb` compares paired `recompute` and
   `append_recurrent` quality, per-position free-generation drift,
   teacher-forced schedule gaps, and Othello random-prefix/legal-set metrics.

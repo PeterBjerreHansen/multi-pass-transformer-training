@@ -37,7 +37,6 @@ def test_launcher_architecture_registry_matches_model_factory():
 def test_canonical_training_launchers_do_not_accept_scientific_overrides():
     launchers = [
         ROOT / "scripts" / "bbh" / "10_bbh_curriculum.sh",
-        ROOT / "scripts" / "trace" / "10_random_graph_walk_trace.sh",
         ROOT / "scripts" / "trace" / "10_shortest_path_trace.sh",
         ROOT / "scripts" / "trace" / "10_othello_trace.sh",
     ]
