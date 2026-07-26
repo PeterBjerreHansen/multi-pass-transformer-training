@@ -27,7 +27,7 @@ for seed in ${SEEDS}; do
     if [[ "${variant}" == null_on ]]; then
       null_args=(--null-memory-slot on)
     fi
-    python -m experiments.train_trace --preset random_graph_walk_main --architecture memory_tape \
+    python -m experiments.train_trace --preset shortest_path_main --architecture memory_tape \
       --token-selection argmax --train-steps "${TRAIN_STEPS}" --device "${DEVICE}" \
       --seed "${seed}" --run-dir "${run_dir}" "${null_args[@]}"
     run_eval "${run_dir}" "${seed}"

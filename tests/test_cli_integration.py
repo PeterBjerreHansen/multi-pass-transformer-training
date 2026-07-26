@@ -92,7 +92,7 @@ def test_null_slot_checkpoint_and_diagnostics(tmp_path):
     run_dir = tmp_path / "null_slot"
     _run(
         "-m", "experiments.train_trace",
-        "--preset", "random_graph_walk_smoke",
+        "--preset", "shortest_path_smoke",
         "--architecture", "memory_tape",
         "--null-memory-slot", "on",
         "--device", "cpu",
