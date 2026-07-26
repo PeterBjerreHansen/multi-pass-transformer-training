@@ -48,6 +48,7 @@ def parse_args(argv: list[str] | None = None):
     parser.add_argument("--token-selection", choices=["sample", "argmax"], default="argmax")
     parser.add_argument("--inference-mode", choices=["recompute", "append_recurrent"], required=True)
     parser.add_argument("--seed", type=int, default=1337)
+    parser.add_argument("--eval-position-offset", type=int, default=None)
     return parser.parse_args(argv)
 
 
@@ -61,6 +62,8 @@ def _load_eval_args(cli_args) -> tuple[SimpleNamespace, Path]:
     saved["token_selection"] = cli_args.token_selection
     saved["inference_mode"] = cli_args.inference_mode
     saved["seed"] = cli_args.seed
+    if cli_args.eval_position_offset is not None:
+        saved["eval_position_offset"] = cli_args.eval_position_offset
     saved["run_dir"] = str(input_dir)
     saved["resume_from"] = str(input_dir)
     args = SimpleNamespace(**saved)
@@ -76,7 +79,6 @@ def _default_output_dir(cli_args, args, input_dir: Path) -> Path:
         return Path(cli_args.output_dir).resolve()
     name = f"{args.architecture}_{cli_args.inference_mode}_{cli_args.token_selection}"
     return Path("results", "eval", args.task, name, input_dir.name).resolve()
-
 
 def evaluate_run(cli_args) -> Path:
     args, input_dir = _load_eval_args(cli_args)
@@ -119,6 +121,7 @@ def evaluate_run(cli_args) -> Path:
         "effective_inference_mode": effective_inference_mode(args, cli_args.inference_mode),
         "token_selection": args.token_selection,
         "block_size": block_size,
+        "eval_position_offset": args.eval_position_offset,
         "vocab_size": len(vocab),
         "batch_size": args.batch_size,
         "eval_batches": args.eval_batches,

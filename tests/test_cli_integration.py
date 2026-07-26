@@ -88,6 +88,22 @@ def test_memory_add_bbh_cli_reports_fusion_gradients(tmp_path):
     assert (run_dir / "latest.pt").exists()
 
 
+def test_position_offset_training_logs_sampled_offset(tmp_path):
+    run_dir = tmp_path / "position_offsets"
+    _run(
+        "-m", "experiments.train_trace",
+        "--preset", "random_graph_walk_smoke",
+        "--architecture", "memory_tape",
+        "--max-position-embeddings", "105",
+        "--train-position-offset-max", "64",
+        "--device", "cpu",
+        "--run-dir", str(run_dir),
+    )
+    events = [json.loads(line) for line in (run_dir / "metrics.jsonl").read_text(encoding="utf-8").splitlines()]
+    evaluation = next(event for event in events if event["event"] == "eval")
+    assert 0 <= evaluation["sampled_position_offset"] <= 64
+
+
 def test_trace_training_evaluation_and_diagnostics_cli(tmp_path):
     run_dir = tmp_path / "trace"
     _run(

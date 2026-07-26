@@ -26,6 +26,7 @@ from experiments.common import (
     restore_checkpoint_state,
     runtime_resource_stats,
     save_best_checkpoint,
+    sample_train_position_offset,
     save_latest_checkpoint,
     set_seed,
     stable_seed,
@@ -93,6 +94,9 @@ def parse_args(argv: list[str] | None = None):
     _add_override(parser, "--seed", type=int)
     _add_override(parser, "--device")
     _add_override(parser, "--block-size", type=int)
+    _add_override(parser, "--max-position-embeddings", type=int)
+    _add_override(parser, "--train-position-offset-max", type=int)
+    _add_override(parser, "--eval-position-offset", type=int)
     _add_override(parser, "--run-dir")
     _add_override(parser, "--resume-from")
     raw_args = parser.parse_args(argv)
@@ -205,6 +209,7 @@ def run_trace_training(args) -> None:
     train_rng = random.Random(stable_seed(args.seed, "trace", args.task, "train"))
     best_eval_loss = float("inf")
     best_eval_step: int | None = None
+    position_rng = random.Random(stable_seed(args.seed, "trace", args.task, "position_offset"))
     if checkpoint is not None:
         restore_checkpoint_state(checkpoint, model=model, optimizer=optimizer, device=args.device)
         extra = checkpoint["extra_state"]
@@ -213,6 +218,7 @@ def run_trace_training(args) -> None:
         best_eval_step = None if saved_best_step is None else int(saved_best_step)
         train_rng.setstate(extra["train_rng_state"])
         apply_learning_rate(optimizer, args, resume_step)
+        position_rng.setstate(extra["position_rng_state"])
 
     print(f"device: {args.device}")
     print(f"task: {args.task}")
@@ -258,7 +264,10 @@ def run_trace_training(args) -> None:
         model.train()
         batch = build_task_batch(args, stoi, train_rng, split="train")
         optimizer.zero_grad(set_to_none=True)
-        loss, _output, pass_losses = forward_and_loss(model, batch, args)
+        sampled_position_offset = sample_train_position_offset(args, position_rng)
+        loss, _output, pass_losses = forward_and_loss(
+            model, batch, args, position_offset=sampled_position_offset
+        )
         loss.backward()
         update_gradient_norm_window(gradient_norm_window, gradient_norms(model))
         clip_gradients(model, args.max_grad_norm)
@@ -317,10 +326,12 @@ def run_trace_training(args) -> None:
                 "is_best_checkpoint": is_best_checkpoint,
                 "best_eval_loss": best_eval_loss,
                 "best_eval_step": best_eval_step,
+                "sampled_position_offset": sampled_position_offset,
             },
         )
         checkpoint_extra = {
             "train_rng_state": train_rng.getstate(),
+            "position_rng_state": position_rng.getstate(),
             "best_eval_loss": best_eval_loss,
             "best_eval_step": best_eval_step,
         }
