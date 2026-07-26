@@ -92,7 +92,7 @@ def test_independent_memory_width_is_saved_in_run_config(tmp_path):
     run_dir = tmp_path / "memory_width"
     _run(
         "-m", "experiments.train_trace",
-        "--preset", "random_graph_walk_smoke",
+        "--preset", "shortest_path_smoke",
         "--architecture", "memory_tape",
         "--n-memory-embd", "8",
         "--device", "cpu",
