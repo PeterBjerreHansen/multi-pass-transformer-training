@@ -35,6 +35,8 @@ def _base_defaults(
         "pass_loss_weights": [0.0] * (n_pass - 1) + [1.0]
         if smoke
         else [0.0, 0.0, 1.0, 1.0],
+        "train_pass_range": None,
+        "sampled_tail_loss_weights": [0.3, 0.7],
         "inference_mode": inference_mode,
         "token_selection": token_selection,
         "batch_size": 1 if smoke else 64,

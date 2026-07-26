@@ -26,6 +26,8 @@ from experiments.common import (
     restore_checkpoint_state,
     runtime_resource_stats,
     save_best_checkpoint,
+    sample_train_pass_depth,
+    sampled_pass_loss_weights,
     save_latest_checkpoint,
     set_seed,
     stable_seed,
@@ -66,6 +68,8 @@ def parse_args(argv: list[str] | None = None):
     _add_override(parser, "--n-embd", type=int)
     _add_override(parser, "--n-pass", type=int)
     _add_override(parser, "--pass-loss-weights", type=float, nargs="*")
+    _add_override(parser, "--train-pass-range", type=int, nargs=2, metavar=("MIN", "MAX"))
+    _add_override(parser, "--sampled-tail-loss-weights", type=float, nargs=2, metavar=("EARLIER", "FINAL"))
     _add_override(
         parser,
         "--shortest-path-distribution",
@@ -205,6 +209,8 @@ def run_trace_training(args) -> None:
     train_rng = random.Random(stable_seed(args.seed, "trace", args.task, "train"))
     best_eval_loss = float("inf")
     best_eval_step: int | None = None
+    depth_rng = random.Random(stable_seed(args.seed, "trace", args.task, "pass_depth"))
+    sampled_pass_histogram: dict[int, int] = {}
     if checkpoint is not None:
         restore_checkpoint_state(checkpoint, model=model, optimizer=optimizer, device=args.device)
         extra = checkpoint["extra_state"]
@@ -213,6 +219,11 @@ def run_trace_training(args) -> None:
         best_eval_step = None if saved_best_step is None else int(saved_best_step)
         train_rng.setstate(extra["train_rng_state"])
         apply_learning_rate(optimizer, args, resume_step)
+        depth_rng.setstate(extra["depth_rng_state"])
+        sampled_pass_histogram = {
+            int(key): int(value)
+            for key, value in extra["sampled_pass_histogram"].items()
+        }
 
     print(f"device: {args.device}")
     print(f"task: {args.task}")
@@ -258,7 +269,17 @@ def run_trace_training(args) -> None:
         model.train()
         batch = build_task_batch(args, stoi, train_rng, split="train")
         optimizer.zero_grad(set_to_none=True)
-        loss, _output, pass_losses = forward_and_loss(model, batch, args)
+        sampled_n_pass = sample_train_pass_depth(args, depth_rng)
+        dynamic_weights = (
+            sampled_pass_loss_weights(sampled_n_pass, args.sampled_tail_loss_weights)
+            if sampled_n_pass is not None
+            else None
+        )
+        loss, _output, pass_losses = forward_and_loss(
+            model, batch, args, n_pass=sampled_n_pass, loss_weights=dynamic_weights
+        )
+        if sampled_n_pass is not None:
+            sampled_pass_histogram[sampled_n_pass] = sampled_pass_histogram.get(sampled_n_pass, 0) + 1
         loss.backward()
         update_gradient_norm_window(gradient_norm_window, gradient_norms(model))
         clip_gradients(model, args.max_grad_norm)
@@ -317,10 +338,15 @@ def run_trace_training(args) -> None:
                 "is_best_checkpoint": is_best_checkpoint,
                 "best_eval_loss": best_eval_loss,
                 "best_eval_step": best_eval_step,
+                "sampled_n_pass": sampled_n_pass,
+                "sampled_pass_histogram": sampled_pass_histogram,
+                "effective_pass_loss_weights": dynamic_weights or args.pass_loss_weights,
             },
         )
         checkpoint_extra = {
             "train_rng_state": train_rng.getstate(),
+            "depth_rng_state": depth_rng.getstate(),
+            "sampled_pass_histogram": sampled_pass_histogram,
             "best_eval_loss": best_eval_loss,
             "best_eval_step": best_eval_step,
         }
