@@ -88,6 +88,21 @@ def test_memory_add_bbh_cli_reports_fusion_gradients(tmp_path):
     assert (run_dir / "latest.pt").exists()
 
 
+def test_independent_memory_width_is_saved_in_run_config(tmp_path):
+    run_dir = tmp_path / "memory_width"
+    _run(
+        "-m", "experiments.train_trace",
+        "--preset", "random_graph_walk_smoke",
+        "--architecture", "memory_tape",
+        "--n-memory-embd", "8",
+        "--device", "cpu",
+        "--run-dir", str(run_dir),
+    )
+    config = json.loads((run_dir / "config.json").read_text(encoding="utf-8"))
+    assert config["model_config"]["n_memory_embd"] == 8
+    assert config["model_stats"]["memory_bytes_per_token"] == 32
+
+
 def test_trace_training_evaluation_and_diagnostics_cli(tmp_path):
     run_dir = tmp_path / "trace"
     _run(

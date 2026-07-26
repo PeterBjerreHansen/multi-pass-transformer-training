@@ -37,6 +37,7 @@ def build_model(args, vocab_size: int, block_size: int, device: str):
             MemoryTapeConfig(
                 **common,
                 n_pass=args.n_pass,
+                n_memory_embd=getattr(args, "n_memory_embd", None),
             )
         )
     elif args.architecture == "memory_add":
