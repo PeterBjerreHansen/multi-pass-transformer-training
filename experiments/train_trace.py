@@ -4,10 +4,13 @@ import argparse
 import random
 import time
 
+import torch
+
 from tasks.trace.registry import TRACE_TASKS, get_trace_task
 from experiments.common import (
     apply_learning_rate,
     append_jsonl,
+    build_stale_memory_source_plan,
     build_model_and_optimizer,
     clip_gradients,
     effective_inference_mode,
@@ -19,6 +22,7 @@ from experiments.common import (
     gradient_norms,
     load_checkpoint_payload,
     model_benchmark_stats,
+    new_stale_memory_stats,
     prepare_run_artifacts,
     provenance_metadata,
     resolve_device_arg,
@@ -31,6 +35,7 @@ from experiments.common import (
     stable_seed,
     synchronize_device,
     summarize_gradient_norm_window,
+    update_stale_memory_stats,
     update_gradient_norm_window,
     validate_model_args,
     validate_training_args,
@@ -71,6 +76,7 @@ def parse_args(argv: list[str] | None = None):
         "--shortest-path-distribution",
         choices=["easy", "main"],
     )
+    _add_override(parser, "--stale-memory-prob", type=float)
     _add_override(parser, "--othello-data-dir")
     _add_override(parser, "--othello-train-games", type=int)
     _add_override(parser, "--othello-val-games", type=int)
@@ -205,6 +211,9 @@ def run_trace_training(args) -> None:
     train_rng = random.Random(stable_seed(args.seed, "trace", args.task, "train"))
     best_eval_loss = float("inf")
     best_eval_step: int | None = None
+    stale_memory_rng = torch.Generator(device="cpu")
+    stale_memory_rng.manual_seed(stable_seed(args.seed, "trace", args.task, "stale_memory"))
+    stale_memory_stats = new_stale_memory_stats(args.stale_memory_prob)
     if checkpoint is not None:
         restore_checkpoint_state(checkpoint, model=model, optimizer=optimizer, device=args.device)
         extra = checkpoint["extra_state"]
@@ -213,6 +222,8 @@ def run_trace_training(args) -> None:
         best_eval_step = None if saved_best_step is None else int(saved_best_step)
         train_rng.setstate(extra["train_rng_state"])
         apply_learning_rate(optimizer, args, resume_step)
+        stale_memory_rng.set_state(extra["stale_memory_rng_state"])
+        stale_memory_stats = extra["stale_memory_stats"]
 
     print(f"device: {args.device}")
     print(f"task: {args.task}")
@@ -233,6 +244,7 @@ def run_trace_training(args) -> None:
         total_weight = sum(args.pass_loss_weights)
         print(f"n_pass: {args.n_pass}")
         print(f"pass_loss_weights_normalized: {[weight / total_weight for weight in args.pass_loss_weights]}")
+        print(f"stale_memory_prob: {args.stale_memory_prob}")
     append_jsonl(
         artifacts.metrics_path,
         {
@@ -252,17 +264,31 @@ def run_trace_training(args) -> None:
     window_start = time.perf_counter()
     window_tokens = 0
     gradient_norm_window: dict[str, dict[str, float]] = {}
+    stale_memory_window_stats = new_stale_memory_stats(args.stale_memory_prob)
 
     for step in range(start_step, final_step + 1):
         current_lr = apply_learning_rate(optimizer, args, step)
         model.train()
         batch = build_task_batch(args, stoi, train_rng, split="train")
+        memory_source_passes, stale_memory_step_stats = build_stale_memory_source_plan(
+            batch,
+            n_pass=args.n_pass if args.architecture != "transformer" else 2,
+            probability=args.stale_memory_prob,
+            generator=stale_memory_rng,
+        )
         optimizer.zero_grad(set_to_none=True)
-        loss, _output, pass_losses = forward_and_loss(model, batch, args)
+        loss, _output, pass_losses = forward_and_loss(
+            model,
+            batch,
+            args,
+            memory_source_passes=memory_source_passes,
+        )
         loss.backward()
         update_gradient_norm_window(gradient_norm_window, gradient_norms(model))
         clip_gradients(model, args.max_grad_norm)
         optimizer.step()
+        update_stale_memory_stats(stale_memory_stats, stale_memory_step_stats)
+        update_stale_memory_stats(stale_memory_window_stats, stale_memory_step_stats)
         window_tokens += int(batch.idx.numel())
 
         should_eval = step == 1 or step % args.eval_interval == 0 or step == final_step
@@ -281,6 +307,9 @@ def run_trace_training(args) -> None:
         fields.append(format_gradient_norms(gradient_summary))
         if args.architecture != "transformer":
             fields.append(f"pass_losses {format_pass_losses(pass_losses)}")
+            fields.append(
+                f"stale_memory {stale_memory_window_stats['realized_stale_fraction']:.3f}"
+            )
         print(format_checkpoint_line(f"step {step}", fields))
 
         metrics = evaluate_prebuilt_batches(
@@ -312,6 +341,8 @@ def run_trace_training(args) -> None:
                 "pass_losses": [float(item.item()) for item in pass_losses],
                 "metrics": metrics,
                 "gradient_norms": gradient_summary,
+                "stale_memory_window_stats": stale_memory_window_stats,
+                "stale_memory_stats": stale_memory_stats,
                 "train_tok_per_s": tok_per_s,
                 "resource_stats": runtime_resource_stats(args.device),
                 "is_best_checkpoint": is_best_checkpoint,
@@ -323,6 +354,8 @@ def run_trace_training(args) -> None:
             "train_rng_state": train_rng.getstate(),
             "best_eval_loss": best_eval_loss,
             "best_eval_step": best_eval_step,
+            "stale_memory_rng_state": stale_memory_rng.get_state(),
+            "stale_memory_stats": stale_memory_stats,
         }
         save_latest_checkpoint(
             artifacts,
@@ -346,6 +379,7 @@ def run_trace_training(args) -> None:
         window_start = time.perf_counter()
         window_tokens = 0
         gradient_norm_window = {}
+        stale_memory_window_stats = new_stale_memory_stats(args.stale_memory_prob)
 
     append_jsonl(artifacts.metrics_path, {"event": "run_end", "task": args.task})
     print(f"run_dir: {artifacts.run_dir}")
