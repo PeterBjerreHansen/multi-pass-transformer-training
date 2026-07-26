@@ -10,6 +10,14 @@ from tasks.bbh import permutation, pointer_chasing, state_machine, tracking
 from tasks.trace import othello, random_graph_walk, shortest_path
 
 
+class _ForcedChoiceRandom(random.Random):
+    forced_choice: str
+
+    def choices(self, population, weights=None, *, cum_weights=None, k=1):
+        assert self.forced_choice in population
+        return [self.forced_choice] * k
+
+
 def test_bbh_task_solvers_match_sampled_answers():
     rng = random.Random(3)
 
@@ -29,6 +37,92 @@ def test_bbh_task_solvers_match_sampled_answers():
     sample = state_machine.sample_state_machine_example(4, 2, 5, stoi, rng)
     _prompt, _answer, table, start, actions, _trace, final = sample
     assert state_machine.solve_state_machine(table, start, actions)[1] == final
+
+
+def test_state_machine_level_zero_uses_shuffled_full_table_factorizations():
+    num_states = 4
+    alphabet_size = 2
+    _vocab, stoi, _ = state_machine.build_state_machine_vocab(
+        num_states,
+        alphabet_size,
+    )
+    prefix_len = 1 + num_states + 1 + alphabet_size + 1
+    table_token_len = 3 * num_states * alphabet_size
+    canonical_pairs = [
+        (source, action)
+        for source in range(num_states)
+        for action in range(alphabet_size)
+    ]
+
+    starts_by_part = {}
+    table_orders_by_part = {}
+    prompt_lengths = set()
+    for part, expected_weight in state_machine.LEVEL_ZERO_PART_WEIGHTS:
+        assert expected_weight in {20, 40}
+        starts = set()
+        orders = set()
+        for seed in range(32):
+            rng = _ForcedChoiceRandom(seed)
+            rng.forced_choice = part
+            sample = state_machine.sample_state_machine_example(
+                num_states,
+                alphabet_size,
+                0,
+                stoi,
+                rng,
+            )
+            prompt, answer, table, start, actions, trace, final = sample
+            prompt_lengths.add(len(prompt))
+            starts.add(start)
+
+            table_tokens = prompt[prefix_len : prefix_len + table_token_len]
+            pairs = []
+            for offset in range(0, table_token_len, 3):
+                source_id, action_id, target_id = table_tokens[offset : offset + 3]
+                source = source_id - stoi[state_machine.state_token(0)]
+                action = action_id - stoi[state_machine.action_token(0)]
+                target = target_id - stoi[state_machine.state_token(0)]
+                assert table[source][action] == target
+                pairs.append((source, action))
+            assert sorted(pairs) == canonical_pairs
+            orders.add(tuple(pairs))
+
+            assert len(actions) == 1
+            assert trace == [final]
+            assert answer == [stoi[state_machine.state_token(final)]]
+            assert state_machine.solve_state_machine(table, start, actions)[1] == final
+
+            if part == "source_only_full_table":
+                assert all(len(set(row)) == 1 for row in table)
+            elif part == "action_only_full_table":
+                assert all(
+                    len({row[action] for row in table}) == 1
+                    for action in range(alphabet_size)
+                )
+            else:
+                assert part == "full_lookup"
+                assert all(len(set(row)) == alphabet_size for row in table)
+
+        starts_by_part[part] = starts
+        table_orders_by_part[part] = orders
+
+    assert dict(state_machine.LEVEL_ZERO_PART_WEIGHTS) == {
+        "source_only_full_table": 40,
+        "action_only_full_table": 40,
+        "full_lookup": 20,
+    }
+    assert all(starts == set(range(num_states)) for starts in starts_by_part.values())
+    assert all(len(orders) > 1 for orders in table_orders_by_part.values())
+    assert all(tuple(canonical_pairs) not in orders for orders in table_orders_by_part.values())
+
+    level_one_prompt = state_machine.sample_state_machine_example(
+        num_states,
+        alphabet_size,
+        1,
+        stoi,
+        random.Random(100),
+    )[0]
+    assert prompt_lengths == {len(level_one_prompt)}
 
 
 def test_pointer_chasing_level_scales_odd_cycle_without_shortcuts():

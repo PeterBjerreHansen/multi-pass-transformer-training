@@ -30,9 +30,9 @@ ACTIONS_TOKEN = "<actions>"
 DEFAULT_NUM_STATES = 4
 DEFAULT_ALPHABET_SIZE = 2
 LEVEL_ZERO_PART_WEIGHTS = (
-    ("copy_no_action", 20),
     ("source_only_full_table", 40),
-    ("action_lookup_fixed_source", 40),
+    ("action_only_full_table", 40),
+    ("full_lookup", 20),
 )
 
 
@@ -139,14 +139,14 @@ def _sample_source_only_transition_table(num_states: int, alphabet_size: int, rn
     return [[targets[source]] * alphabet_size for source in range(num_states)]
 
 
-def _sample_fixed_source_action_lookup_table(num_states: int, alphabet_size: int, rng: random.Random) -> list[list[int]]:
-    active_row = rng.sample(range(num_states), k=alphabet_size)
-    rows = [list(active_row)]
-    for _ in range(1, num_states):
-        row = list(range(num_states))
-        rng.shuffle(row)
-        rows.append(row[:alphabet_size])
-    return rows
+def _sample_action_only_transition_table(
+    num_states: int,
+    alphabet_size: int,
+    rng: random.Random,
+) -> list[list[int]]:
+    """Sample T(s, a) = g(a), with distinct uniformly sampled destinations."""
+    action_targets = rng.sample(range(num_states), k=alphabet_size)
+    return [list(action_targets) for _ in range(num_states)]
 
 
 def _append_transition_table(
@@ -216,29 +216,21 @@ def _sample_level_zero_example(
     )[0]
     if part == "source_only_full_table":
         transition_table = _sample_source_only_transition_table(num_states, alphabet_size, rng)
-        start_state = rng.randrange(num_states)
-        actions = [rng.randrange(alphabet_size)]
-    elif part == "action_lookup_fixed_source":
-        transition_table = _sample_fixed_source_action_lookup_table(num_states, alphabet_size, rng)
-        start_state = 0
-        actions = [rng.randrange(alphabet_size)]
+    elif part == "action_only_full_table":
+        transition_table = _sample_action_only_transition_table(num_states, alphabet_size, rng)
     else:
         transition_table = sample_transition_table(num_states, alphabet_size, rng)
-        start_state = rng.randrange(num_states)
-        actions = []
+    start_state = rng.randrange(num_states)
+    actions = [rng.randrange(alphabet_size)]
 
     prompt = [stoi[STATES_TOKEN]]
     prompt.extend(stoi[state_token(state)] for state in range(num_states))
     prompt.append(stoi[ALPHABET_TOKEN])
     prompt.extend(stoi[action_token(action)] for action in range(alphabet_size))
     prompt.append(stoi[TABLE_TOKEN])
-    _append_transition_table(prompt, transition_table, stoi, rng, shuffle=False)
+    _append_transition_table(prompt, transition_table, stoi, rng)
 
-    if not actions:
-        trace: list[int] = []
-        final_state = start_state
-    else:
-        trace, final_state = solve_state_machine(transition_table, start_state, actions)
+    trace, final_state = solve_state_machine(transition_table, start_state, actions)
     prompt.extend([stoi[START_TOKEN], stoi[state_token(start_state)], stoi[ACTIONS_TOKEN]])
     prompt.extend(stoi[action_token(action)] for action in actions)
     answer = [stoi[state_token(final_state)]]
