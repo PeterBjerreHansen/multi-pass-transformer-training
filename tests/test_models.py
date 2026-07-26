@@ -13,7 +13,9 @@ from models import (
     JointMemoryTapeTransformer,
     LayerNorm,
     MemoryBlock,
+    MemoryAddTransformer,
     MemoryConcatTransformer,
+    MemoryStateTransformer,
     MemoryTapeConfig,
     MemoryTapeTransformer,
     MemoryUpdateConfig,
@@ -215,6 +217,8 @@ def test_multipass_variants_return_all_passes_and_finite_losses():
         (MemoryTapeTransformer, MemoryTapeConfig(8, 17, 1, 1, 8, 3)),
         (JointMemoryTapeTransformer, MultiPassConfig(8, 17, 1, 1, 8, 3)),
         (MemoryConcatTransformer, MultiPassConfig(8, 17, 1, 1, 8, 3)),
+        (MemoryAddTransformer, MultiPassConfig(8, 17, 1, 1, 8, 3)),
+        (MemoryStateTransformer, MultiPassConfig(8, 17, 1, 1, 8, 3)),
         (MemoryUpdateTransformer, MemoryUpdateConfig(8, 17, 1, 1, 8, 3)),
     ]
     tokens = torch.randint(0, 17, (2, 6))
@@ -303,6 +307,121 @@ def test_joint_memory_tape_final_pass_loss_reaches_memory_writer_and_reader():
         assert reader.grad.abs().sum().item() > 0
 
 
+def test_memory_add_starts_as_exact_token_only_repeated_passes():
+    model = MemoryAddTransformer(MultiPassConfig(8, 17, 1, 1, 8, 3))
+    tokens = torch.randint(0, 17, (2, 6))
+    output = model(tokens)
+
+    assert torch.count_nonzero(model.memory_projection.weight).item() == 0
+    for item in output.passes[1:]:
+        assert torch.equal(item.hidden_states, output.passes[0].hidden_states)
+        assert torch.equal(item.logits, output.passes[0].logits)
+        assert item.memory_states is not None
+        assert torch.equal(item.memory_states, output.passes[0].memory_states)
+
+    token_stream = model.embed_tokens(tokens)
+    random_memory = torch.randn_like(token_stream)
+    baseline = model.forward_pass(token_stream, torch.zeros_like(token_stream))
+    with_memory = model.forward_pass(token_stream, random_memory)
+    assert torch.equal(with_memory.hidden_states, baseline.hidden_states)
+    assert torch.equal(with_memory.logits, baseline.logits)
+
+
+def test_memory_add_projection_learns_before_memory_writer():
+    model = MemoryAddTransformer(MultiPassConfig(8, 17, 1, 1, 8, 3))
+    optimizer = torch.optim.SGD(model.parameters(), lr=0.1)
+    tokens = torch.randint(0, 17, (2, 6))
+    targets = torch.randint(0, 17, (2, 6))
+
+    first = model.calc_total_loss(model(tokens), targets, [0, 0, 1]).loss
+    first.backward()
+    assert model.memory_projection.weight.grad is not None
+    assert model.memory_projection.weight.grad.abs().sum().item() > 0
+    assert model.mem_head.weight.grad is not None
+    assert model.mem_head.weight.grad.abs().sum().item() == 0
+
+    optimizer.step()
+    optimizer.zero_grad(set_to_none=True)
+    second = model.calc_total_loss(model(tokens), targets, [0, 0, 1]).loss
+    second.backward()
+    assert model.mem_head.weight.grad is not None
+    assert model.mem_head.weight.grad.abs().sum().item() > 0
+
+
+def test_memory_add_shifted_memory_is_causal():
+    model = MemoryAddTransformer(MultiPassConfig(8, 17, 1, 1, 8, 2))
+    model.eval()
+    with torch.no_grad():
+        model.memory_projection.weight.copy_(torch.eye(model.config.n_embd))
+    tokens = torch.tensor([[1, 2, 3, 4, 5, 6]])
+    token_stream = model.embed_tokens(tokens)
+    base = torch.zeros_like(token_stream)
+    changed = base.clone()
+    changed[:, 2, :] = torch.randn_like(changed[:, 2, :])
+
+    output_base = model.forward_pass(token_stream, base)
+    output_changed = model.forward_pass(token_stream, changed)
+    assert torch.allclose(output_base.logits[:, :3], output_changed.logits[:, :3], atol=1e-6, rtol=0)
+    assert not torch.allclose(output_base.logits[:, 3:], output_changed.logits[:, 3:])
+
+
+def test_memory_state_uses_identity_token_projection_and_memory_update_fusion():
+    config = MultiPassConfig(8, 17, 1, 1, 8, 3)
+    memory_state = MemoryStateTransformer(config)
+    memory_update = MemoryUpdateTransformer(
+        MemoryUpdateConfig(8, 17, 1, 1, 8, 3)
+    )
+    memory_update.mem_in_ln.load_state_dict(memory_state.mem_in_ln.state_dict())
+    memory_update.token_in_ln.load_state_dict(memory_state.token_in_ln.state_dict())
+    memory_update.token_to_memory.load_state_dict(memory_state.token_to_memory.state_dict())
+
+    assert torch.equal(memory_state.token_to_memory.weight, torch.eye(config.n_embd))
+    token_stream = torch.randn(2, 6, config.n_embd)
+    memory_tape = torch.randn_like(token_stream)
+    state_inputs = []
+    update_inputs = []
+    state_hook = memory_state.transformer.h[0].register_forward_pre_hook(
+        lambda _module, inputs: state_inputs.append(inputs[0].detach().clone())
+    )
+    update_hook = memory_update.transformer.h[0].register_forward_pre_hook(
+        lambda _module, inputs: update_inputs.append(inputs[0].detach().clone())
+    )
+    try:
+        memory_state._run_full_pass(token_stream, memory_tape)
+        memory_update._run_full_pass(token_stream, memory_tape)
+    finally:
+        state_hook.remove()
+        update_hook.remove()
+    assert torch.equal(state_inputs[0], update_inputs[0])
+
+
+def test_memory_state_writer_receives_gradient_on_first_step():
+    model = MemoryStateTransformer(MultiPassConfig(8, 17, 1, 1, 8, 3))
+    tokens = torch.randint(0, 17, (2, 6))
+    targets = torch.randint(0, 17, (2, 6))
+    loss = model.calc_total_loss(model(tokens), targets, [0, 0, 1]).loss
+    loss.backward()
+    assert model.token_to_memory.weight.grad is not None
+    assert model.token_to_memory.weight.grad.abs().sum().item() > 0
+    assert model.mem_head.weight.grad is not None
+    assert model.mem_head.weight.grad.abs().sum().item() > 0
+
+
+def test_memory_state_shifted_memory_is_causal():
+    model = MemoryStateTransformer(MultiPassConfig(8, 17, 1, 1, 8, 2))
+    model.eval()
+    tokens = torch.tensor([[1, 2, 3, 4, 5, 6]])
+    token_stream = model.embed_tokens(tokens)
+    base = torch.zeros_like(token_stream)
+    changed = base.clone()
+    changed[:, 2, :] = torch.randn_like(changed[:, 2, :])
+
+    output_base = model.forward_pass(token_stream, base)
+    output_changed = model.forward_pass(token_stream, changed)
+    assert torch.allclose(output_base.logits[:, :3], output_changed.logits[:, :3], atol=1e-6, rtol=0)
+    assert not torch.allclose(output_base.logits[:, 3:], output_changed.logits[:, 3:])
+
+
 def test_final_pass_can_be_reproduced_from_previous_pass_memory_input():
     model = tiny_memory_model()
     tokens = torch.randint(0, 19, (2, 8))
@@ -368,6 +487,8 @@ def test_generation_restores_mode_and_validates_sampling_even_for_zero_tokens():
         MemoryTapeTransformer(MemoryTapeConfig(8, 17, 1, 1, 8, 3)),
         JointMemoryTapeTransformer(MultiPassConfig(8, 17, 1, 1, 8, 3)),
         MemoryConcatTransformer(MultiPassConfig(8, 17, 1, 1, 8, 3)),
+        MemoryAddTransformer(MultiPassConfig(8, 17, 1, 1, 8, 3)),
+        MemoryStateTransformer(MultiPassConfig(8, 17, 1, 1, 8, 3)),
         MemoryUpdateTransformer(MemoryUpdateConfig(8, 17, 1, 1, 8, 3)),
     ],
 )
@@ -392,6 +513,8 @@ def test_model_factory_constructs_all_variants():
         "memory_tape": MemoryTapeTransformer,
         "joint_memory_tape": JointMemoryTapeTransformer,
         "memory_concat": MemoryConcatTransformer,
+        "memory_add": MemoryAddTransformer,
+        "memory_state": MemoryStateTransformer,
         "memory_update": MemoryUpdateTransformer,
     }
     for architecture, cls in expected.items():

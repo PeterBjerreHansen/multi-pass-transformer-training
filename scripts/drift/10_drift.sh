@@ -24,5 +24,5 @@ for MODE in recompute append_recurrent; do
     --inference-mode "${MODE}" \
     --token-selection argmax \
     --seed "${SEED}" \
-    "${runtime_args[@]}"
+    "${runtime_args[@]+"${runtime_args[@]}"}"
 done

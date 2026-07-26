@@ -264,6 +264,10 @@ def gradient_norms(model) -> dict[str, float]:
             group = "memory_attention"
         elif "cross_attn" in name or "token_attn" in name:
             group = "memory_attention"
+        elif name.startswith(
+            ("memory_projection", "mem_in_ln", "token_to_memory", "token_in_ln")
+        ):
+            group = "memory_fusion"
         elif name.startswith(("mem_head", "ln_mem")):
             group = "memory_writer"
         else:

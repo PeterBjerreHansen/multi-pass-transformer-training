@@ -10,6 +10,21 @@ import pytest
 ROOT = Path(__file__).resolve().parents[1]
 
 
+def test_plotting_architecture_registry_matches_model_factory():
+    pytest.importorskip("matplotlib")
+    from figures.plotting_utils import ARCHITECTURE_COLORS
+    from model_factory import ARCHITECTURES
+
+    assert tuple(ARCHITECTURE_COLORS) == ARCHITECTURES
+    for name in (
+        "01_bbh_curricula.ipynb",
+        "02_trace_learning.ipynb",
+        "03_deployment_and_othello.ipynb",
+    ):
+        source = (ROOT / "figures" / name).read_text(encoding="utf-8")
+        assert "ARCHITECTURES = list(ARCHITECTURE_COLORS)" in source
+
+
 def test_readme_uses_local_figure_paths_and_no_fetch_helper_exists():
     readme = (ROOT / "README.md").read_text(encoding="utf-8")
     expected = {
@@ -233,6 +248,7 @@ def test_plotting_loaders_follow_current_artifact_schemas(tmp_path):
     plot_seed_and_median_curves(axis, training, metric="optimal_path")
     assert len(axis.lines) == 2
     assert axis.lines[-1].get_ydata().tolist() == [0.5]
+    assert axis.lines[-1].get_marker() == "o"
     plt.close(figure)
 
     curriculum_records = [

@@ -23,6 +23,8 @@ ARCHITECTURE_COLORS = {
     "memory_tape": "#e68613",
     "joint_memory_tape": "#2878b5",
     "memory_concat": "#8e5ea2",
+    "memory_add": "#2a9d8f",
+    "memory_state": "#55a868",
     "memory_update": "#c44e52",
 }
 
@@ -455,7 +457,15 @@ def plot_seed_and_median_curves(
                 )
         steps, values = median_curve(label_rows, metric)
         if steps:
-            ax.plot(steps, values, color=color, linewidth=2.4, label=str(label))
+            single_point_style = {"marker": "o", "markersize": 4} if len(steps) == 1 else {}
+            ax.plot(
+                steps,
+                values,
+                color=color,
+                linewidth=2.4,
+                label=str(label),
+                **single_point_style,
+            )
     ax.set_xlabel("Optimizer step")
     ax.set_ylabel(metric_label(metric))
 

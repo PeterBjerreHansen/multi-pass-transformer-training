@@ -21,7 +21,14 @@ from experiments.eval_diagnostics import memory_interventions, pass_dynamics, te
 from experiments.eval_othello import build_eval_examples, legal_set_step_metrics
 from experiments.presets import BBH_PRESETS, TRACE_PRESETS
 from experiments.train_bbh import BBH_TASKS, build_fixed_eval_batches, parse_args as parse_bbh_args
-from models import JointMemoryTapeTransformer, MemoryTapeConfig, MemoryTapeTransformer, MultiPassConfig
+from models import (
+    JointMemoryTapeTransformer,
+    MemoryAddTransformer,
+    MemoryStateTransformer,
+    MemoryTapeConfig,
+    MemoryTapeTransformer,
+    MultiPassConfig,
+)
 from tasks.bbh import pointer_chasing
 from tasks.trace import othello, random_graph_walk
 from tasks.trace.registry import TRACE_TASKS
@@ -119,6 +126,28 @@ def test_joint_memory_tape_diagnostics_return_finite_values():
     assert all(torch.isfinite(torch.tensor(value)) for value in schedule_gap["overall"].values())
 
 
+@pytest.mark.parametrize("model_class", [MemoryAddTransformer, MemoryStateTransformer])
+def test_additive_memory_diagnostics_return_finite_values(model_class):
+    model = model_class(MultiPassConfig(24, 12, 1, 1, 8, 3))
+    _vocab, stoi, _ = pointer_chasing.build_pointer_chasing_vocab(5)
+    batch = pointer_chasing.build_pointer_chasing_batch(
+        2,
+        5,
+        2,
+        stoi,
+        device="cpu",
+        rng=random.Random(2),
+    )
+    interventions = memory_interventions(model, batch, seed=3)
+    assert all(torch.isfinite(torch.tensor(value)) for value in interventions["losses"].values())
+    dynamics = pass_dynamics(model, batch, extra_passes=2)
+    assert len(dynamics["trained_passes"]) == 3
+    assert len(dynamics["extra_passes"]) == 2
+    schedule_gap = teacher_forced_schedule_gap(model, batch, horizon=2)
+    assert schedule_gap["overall"]["count"] == 4
+    assert all(torch.isfinite(torch.tensor(value)) for value in schedule_gap["overall"].values())
+
+
 def test_gradient_norms_cover_memory_subsystems_after_backward():
     model = MemoryTapeTransformer(MemoryTapeConfig(24, 12, 1, 1, 8, 3))
     _vocab, stoi, _ = pointer_chasing.build_pointer_chasing_vocab(5)
@@ -153,6 +182,42 @@ def test_joint_memory_tape_gradient_norms_cover_memory_attention_after_backward(
         if gradient is not None
     ).sqrt().item()
     assert norms["memory_attention"] == pytest.approx(expected_memory_norm)
+
+
+def test_memory_add_gradient_norms_report_fusion_branch():
+    model = MemoryAddTransformer(MultiPassConfig(24, 12, 1, 1, 8, 3))
+    _vocab, stoi, _ = pointer_chasing.build_pointer_chasing_vocab(5)
+    batch = pointer_chasing.build_pointer_chasing_batch(
+        2,
+        5,
+        2,
+        stoi,
+        device="cpu",
+        rng=random.Random(2),
+    )
+    loss = model.calc_total_loss(model(batch.idx), batch.targets, [0, 0, 1]).loss
+    loss.backward()
+    norms = gradient_norms(model)
+    assert norms["memory_fusion"] > 0
+    assert norms["memory_writer"] == 0
+
+
+def test_memory_state_gradient_norms_report_fusion_and_writer():
+    model = MemoryStateTransformer(MultiPassConfig(24, 12, 1, 1, 8, 3))
+    _vocab, stoi, _ = pointer_chasing.build_pointer_chasing_vocab(5)
+    batch = pointer_chasing.build_pointer_chasing_batch(
+        2,
+        5,
+        2,
+        stoi,
+        device="cpu",
+        rng=random.Random(2),
+    )
+    loss = model.calc_total_loss(model(batch.idx), batch.targets, [0, 0, 1]).loss
+    loss.backward()
+    norms = gradient_norms(model)
+    assert norms["memory_fusion"] > 0
+    assert norms["memory_writer"] > 0
 
 
 def _one_step(model, optimizer, tokens, targets):

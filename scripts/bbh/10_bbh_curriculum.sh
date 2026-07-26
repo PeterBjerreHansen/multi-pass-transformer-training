@@ -3,26 +3,32 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "${ROOT}"
+source "${ROOT}/scripts/lib/model_matrix.sh"
 
 # TASK remains a backwards-compatible way to select one task. TASKS is the
 # multi-task interface used by the full launcher.
-TASKS="${TASKS:-${TASK:-pointer_chasing state_machine}}" # permutation tracking
+TASKS="${TASKS:-${TASK:-permutation tracking pointer_chasing state_machine}}"
 SEEDS="${SEEDS:-${SEED:-1337}}"
-ARCHITECTURES="${ARCHITECTURES:-transformer memory_tape joint_memory_tape memory_concat memory_update}"
+ARCHITECTURES="${ARCHITECTURES:-transformer memory_tape joint_memory_tape memory_concat memory_add memory_state memory_update}"
 RESULT_ROOT="${RESULT_ROOT:-results/bbh}"
 
 runtime_args=()
 [[ -n "${DEVICE:-}" ]] && runtime_args+=(--device "${DEVICE}")
 
-for task in ${TASKS}; do
-  for ARCH in ${ARCHITECTURES}; do
-    for seed in ${SEEDS}; do
+read -r -a task_matrix <<< "${TASKS}"
+read -r -a architecture_matrix <<< "${ARCHITECTURES}"
+read -r -a seed_matrix <<< "${SEEDS}"
+validate_architecture_matrix "${architecture_matrix[@]}"
+
+for task in "${task_matrix[@]}"; do
+  for ARCH in "${architecture_matrix[@]}"; do
+    for seed in "${seed_matrix[@]}"; do
       python -m experiments.train_bbh \
         --preset "${task}_main" \
         --architecture "${ARCH}" \
         --seed "${seed}" \
         --run-dir "${RESULT_ROOT}/${task}/${ARCH}/seed_${seed}" \
-        "${runtime_args[@]}"
+        "${runtime_args[@]+"${runtime_args[@]}"}"
     done
   done
 done

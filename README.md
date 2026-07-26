@@ -193,6 +193,43 @@ MemoryConcat removes the separate memory reader. Its decoder is:
 
 The token stream remains the main object transformed by the decoder. Memory is an aligned input feature, not an independently addressable source. This is the direct ablation for whether a recurrent signal helps at all, versus whether MemoryTape specifically benefits from content-addressed reads. The implementation initializes the fusion projection so the token half starts near an identity map and the memory half starts small. This keeps the initial model close to a normal transformer while allowing training to learn how much memory to use.
 
+### Residual Memory Fusion: The MemoryAdd Architecture
+
+MemoryAdd keeps the ordinary token stream intact and learns a residual
+correction from the shifted recurrent tape:
+
+> **MemoryAdd decoder**
+>
+> $`H = X + W_{\mathrm{mem}}\mathrm{LN}_{\mathrm{mem}}(R)`$<br>
+> $`\textbf{for each causal decoder block:}`$<br>
+> &nbsp;&nbsp; $`H = \mathrm{DecoderBlock}(H)`$<br>
+
+The bias-free memory projection starts at exactly zero. Consequently all
+passes initially reproduce the same token-only computation, while the
+projection can immediately learn whether and how to incorporate memory.
+Unlike MemoryUpdate, MemoryAdd does not repeatedly cross-attend to a separate
+token bank: after input fusion it uses the same standard decoder blocks as
+MemoryConcat. The explicit token residual prevents recurrent memory from
+erasing the current-token representation.
+
+### Memory-First Fusion Without Token Reads: The MemoryState Architecture
+
+MemoryState uses MemoryUpdate's input rule but retains ordinary causal decoder
+blocks:
+
+> **MemoryState decoder**
+>
+> $`H = \mathrm{LN}_{\mathrm{mem\_in}}(R) + W_{\mathrm{token\to mem}}\mathrm{LN}_{\mathrm{token\_in}}(X)`$<br>
+> $`\textbf{for each causal decoder block:}`$<br>
+> &nbsp;&nbsp; $`H = \mathrm{DecoderBlock}(H)`$<br>
+
+The token projection starts as an identity map. Unlike MemoryAdd, the
+normalized shifted tape is therefore active immediately and forms the direct
+residual stream. Unlike MemoryUpdate, there is no per-layer cross-attention
+back to a separate token bank. MemoryState isolates whether memory-first input
+fusion is sufficient on its own, and provides a direct ablation for the
+additional token-reading computation in MemoryUpdate.
+
 ### Memory-First Working Stream: The MemoryUpdate Architecture
 
 MemoryUpdate tests a different inductive bias. Instead of transforming a token stream and writing memory afterward, its decoder makes a memory-derived state stream $S$ the object transformed by the blocks:
@@ -304,7 +341,7 @@ length, and remaining suffix length. Transformer checkpoints evaluate only in
 `recompute`; multi-pass checkpoints can be compared under both inference
 schedules.
 
-The available architectures are `transformer`, `memory_tape`, `joint_memory_tape`, `memory_concat`, and `memory_update`.
+The available architectures are `transformer`, `memory_tape`, `joint_memory_tape`, `memory_concat`, `memory_add`, `memory_state`, and `memory_update`.
 
 Each training run writes:
 
@@ -327,10 +364,10 @@ only matrix selection (`TASKS`, `ARCHITECTURES`, and `SEEDS`) and operational
 placement (`DEVICE` and `RESULT_ROOT`); they do not accept training,
 evaluation, task-difficulty, or model-hyperparameter overrides.
 
-The BBH launcher runs all four tasks and all five architectures by default.
-Use `TASKS="tracking pointer_chasing"` for a subset, or the
-backwards-compatible `TASK=tracking`
-for one task. `SEEDS="1337 2027 4099"` expands independent repetitions without
+The BBH launcher supports all four tasks and all seven architectures. Use
+`TASKS`, `ARCHITECTURES`, and `SEEDS` to select the matrix without changing
+any scientific preset; the backwards-compatible `TASK=tracking` form selects
+one task. `SEEDS="1337 2027 4099"` expands independent repetitions without
 changing the preset.
 
 Parameterized exploratory workflows live explicitly under `scripts/local/`
@@ -485,6 +522,22 @@ MemoryConcat:
 python3 -m experiments.train_bbh \
   --preset permutation_main \
   --architecture memory_concat
+```
+
+MemoryAdd:
+
+```bash
+python3 -m experiments.train_bbh \
+  --preset permutation_main \
+  --architecture memory_add
+```
+
+MemoryState:
+
+```bash
+python3 -m experiments.train_bbh \
+  --preset permutation_main \
+  --architecture memory_state
 ```
 
 MemoryUpdate:

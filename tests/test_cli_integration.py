@@ -6,6 +6,8 @@ from pathlib import Path
 import subprocess
 import sys
 
+import pytest
+
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -41,6 +43,26 @@ def test_bbh_training_cli_writes_restorable_checkpoint(tmp_path):
     evaluation = next(event for event in events if event["event"] == "eval")
     assert "gradient_norms" in evaluation
     assert evaluation["gradient_norms"]["global"]["max"] > 0
+
+
+@pytest.mark.parametrize("architecture", ["memory_add", "memory_state"])
+def test_additive_memory_bbh_cli_reports_fusion_gradients(tmp_path, architecture):
+    run_dir = tmp_path / f"{architecture}_bbh"
+    result = _run(
+        "-m", "experiments.train_bbh",
+        "--preset", "pointer_chasing_smoke",
+        "--architecture", architecture,
+        "--device", "cpu",
+        "--run-dir", str(run_dir),
+    )
+    assert f"architecture: {architecture}" in result.stdout
+    events = [
+        json.loads(line)
+        for line in (run_dir / "metrics.jsonl").read_text(encoding="utf-8").splitlines()
+    ]
+    evaluation = next(event for event in events if event["event"] == "eval")
+    assert evaluation["gradient_norms"]["memory_fusion"]["max"] > 0
+    assert (run_dir / "latest.pt").exists()
 
 
 def test_trace_training_drift_and_diagnostics_cli(tmp_path):

@@ -738,6 +738,81 @@ class MemoryConcatTransformer(MultiPassTransformer):
         return hidden
 
 
+class MemoryAddTransformer(MultiPassTransformer):
+    """Causal decoder with a residual projection of the shifted memory tape.
+
+    The zero-initialized memory branch makes every pass exactly equivalent at
+    initialization while preserving the ordinary token stream as an
+    unmodified residual path. Training can then learn a memory correction
+    without first having to recover token information from a fused stream.
+    """
+
+    block_cls = Block
+
+    def __init__(self, config: MultiPassConfig):
+        super().__init__(config)
+        self.mem_in_ln = LayerNorm(config.n_embd)
+        self.memory_projection = nn.Linear(config.n_embd, config.n_embd, bias=False)
+        self.finish_initialization()
+        nn.init.zeros_(self.memory_projection.weight)
+
+    def _run_full_pass(self, token_stream: torch.Tensor, memory_tape: torch.Tensor) -> torch.Tensor:
+        hidden = token_stream + self.memory_projection(self.mem_in_ln(memory_tape))
+        for block in self.transformer.h:
+            hidden = block(hidden)
+        return hidden
+
+
+def _fuse_memory_state_inputs(
+    memory_tape: torch.Tensor,
+    token_stream: torch.Tensor,
+    *,
+    mem_in_ln: LayerNorm,
+    token_in_ln: LayerNorm,
+    token_to_memory: nn.Linear,
+) -> torch.Tensor:
+    """Apply the shared MemoryState/MemoryUpdate input-fusion contract."""
+    return mem_in_ln(memory_tape) + token_to_memory(token_in_ln(token_stream))
+
+
+class MemoryStateTransformer(MultiPassTransformer):
+    """Memory-first additive fusion followed by ordinary decoder blocks.
+
+    This isolates MemoryUpdate's input rule from its per-layer token
+    cross-attention: the shifted tape is the direct residual stream, while a
+    normalized token stream enters through an identity-initialized projection.
+    """
+
+    block_cls = Block
+
+    def __init__(self, config: MultiPassConfig):
+        super().__init__(config)
+        self.mem_in_ln = LayerNorm(config.n_embd)
+        self.token_in_ln = LayerNorm(config.n_embd)
+        self.token_to_memory = nn.Linear(config.n_embd, config.n_embd, bias=False)
+        self.finish_initialization()
+        with torch.no_grad():
+            self.token_to_memory.weight.copy_(
+                torch.eye(
+                    config.n_embd,
+                    device=self.token_to_memory.weight.device,
+                    dtype=self.token_to_memory.weight.dtype,
+                )
+            )
+
+    def _run_full_pass(self, token_stream: torch.Tensor, memory_tape: torch.Tensor) -> torch.Tensor:
+        hidden = _fuse_memory_state_inputs(
+            memory_tape,
+            token_stream,
+            mem_in_ln=self.mem_in_ln,
+            token_in_ln=self.token_in_ln,
+            token_to_memory=self.token_to_memory,
+        )
+        for block in self.transformer.h:
+            hidden = block(hidden)
+        return hidden
+
+
 class MemoryBlock(nn.Module):
     def __init__(self, config: MemoryTapeConfig):
         super().__init__()
@@ -910,7 +985,13 @@ class MemoryUpdateTransformer(MultiPassTransformer):
             block.set_gate_bias(config.memory_gate_bias)
 
     def _run_full_pass(self, token_stream: torch.Tensor, memory_tape: torch.Tensor) -> torch.Tensor:
-        memory_states = self.mem_in_ln(memory_tape) + self.token_to_memory(self.token_in_ln(token_stream))
+        memory_states = _fuse_memory_state_inputs(
+            memory_tape,
+            token_stream,
+            mem_in_ln=self.mem_in_ln,
+            token_in_ln=self.token_in_ln,
+            token_to_memory=self.token_to_memory,
+        )
         for block in self.transformer.h:
             memory_states = block(memory_states, token_stream)
         return memory_states
