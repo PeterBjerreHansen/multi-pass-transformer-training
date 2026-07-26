@@ -92,7 +92,7 @@ def test_variable_depth_training_logs_sampled_depth(tmp_path):
     run_dir = tmp_path / "variable_depth"
     _run(
         "-m", "experiments.train_trace",
-        "--preset", "random_graph_walk_smoke",
+        "--preset", "shortest_path_smoke",
         "--architecture", "memory_tape",
         "--train-pass-range", "2", "6",
         "--sampled-tail-loss-weights", "0.3", "0.7",

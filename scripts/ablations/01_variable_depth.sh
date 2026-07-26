@@ -22,13 +22,13 @@ run_eval() {
 
 for seed in ${SEEDS}; do
   control_dir="${RESULT_ROOT}/fixed_k4/seed_${seed}"
-  python -m experiments.train_trace --preset random_graph_walk_main --architecture memory_tape \
+  python -m experiments.train_trace --preset shortest_path_main --architecture memory_tape \
     --pass-loss-weights 0 0 0.3 0.7 --token-selection argmax --train-steps "${TRAIN_STEPS}" \
     --device "${DEVICE}" --seed "${seed}" --run-dir "${control_dir}"
   run_eval "${control_dir}" "${seed}"
 
   treatment_dir="${RESULT_ROOT}/uniform_k2_k6/seed_${seed}"
-  python -m experiments.train_trace --preset random_graph_walk_main --architecture memory_tape \
+  python -m experiments.train_trace --preset shortest_path_main --architecture memory_tape \
     --pass-loss-weights 0 0 0.3 0.7 --train-pass-range 2 6 \
     --sampled-tail-loss-weights 0.3 0.7 --token-selection argmax --train-steps "${TRAIN_STEPS}" \
     --device "${DEVICE}" --seed "${seed}" --run-dir "${treatment_dir}"

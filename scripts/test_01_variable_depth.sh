@@ -8,7 +8,7 @@ cd "${ROOT}"
 
 pytest -q
 python -m experiments.train_trace \
-  --preset random_graph_walk_smoke \
+  --preset shortest_path_smoke \
   --architecture memory_tape \
   --train-pass-range 2 6 \
   --sampled-tail-loss-weights 0.3 0.7 \
@@ -17,7 +17,7 @@ python -m experiments.train_trace \
 
 if python -c 'import torch,sys; sys.exit(0 if torch.backends.mps.is_available() else 1)'; then
   python -m experiments.train_trace \
-    --preset random_graph_walk_smoke \
+    --preset shortest_path_smoke \
     --architecture memory_tape \
     --train-pass-range 2 6 \
     --device mps \
