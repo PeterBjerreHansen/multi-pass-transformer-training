@@ -33,8 +33,8 @@ for seed in ${SEEDS}; do
     if [[ "${variant}" == offset_uniform_0_64 ]]; then
       extra_args+=(--train-position-offset-max 64)
     fi
-    python -m experiments.train_trace --preset random_graph_walk_main --architecture memory_tape \
-      --max-position-embeddings 149 --token-selection argmax --train-steps "${TRAIN_STEPS}" \
+    python -m experiments.train_trace --preset shortest_path_main --architecture memory_tape \
+      --max-position-embeddings 195 --token-selection argmax --train-steps "${TRAIN_STEPS}" \
       --device "${DEVICE}" --seed "${seed}" --run-dir "${run_dir}" "${extra_args[@]}"
     run_eval "${run_dir}" "${seed}"
   done

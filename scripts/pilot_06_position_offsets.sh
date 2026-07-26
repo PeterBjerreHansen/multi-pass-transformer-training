@@ -13,13 +13,13 @@ export TRAIN_STEPS="${TRAIN_STEPS:-250}"
 export EVAL_INTERVAL="${EVAL_INTERVAL:-${TRAIN_STEPS}}"
 export EVAL_BATCHES="${EVAL_BATCHES:-1}"
 export BATCH_SIZE="${BATCH_SIZE:-16}"
-export PILOT_PRESET=random_graph_walk_main
+export PILOT_PRESET=shortest_path_main
 export PILOT_ARCHITECTURE=memory_tape
 
 run_trace_pilot_variant offset_zero \
-  --max-position-embeddings 149
+  --max-position-embeddings 195
 run_trace_pilot_variant offset_uniform_0_64 \
-  --max-position-embeddings 149 \
+  --max-position-embeddings 195 \
   --train-position-offset-max 64
 
 python scripts/summarize_learning_runs.py --root "${RESULT_ROOT}"

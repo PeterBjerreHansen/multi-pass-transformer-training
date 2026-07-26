@@ -92,7 +92,7 @@ def test_position_offset_training_logs_sampled_offset(tmp_path):
     run_dir = tmp_path / "position_offsets"
     _run(
         "-m", "experiments.train_trace",
-        "--preset", "random_graph_walk_smoke",
+        "--preset", "shortest_path_smoke",
         "--architecture", "memory_tape",
         "--max-position-embeddings", "105",
         "--train-position-offset-max", "64",
