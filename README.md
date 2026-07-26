@@ -372,6 +372,9 @@ SEEDS="1337 2027" \
 
 # Compare easier and harder versions before selecting benchmark difficulty.
 bash scripts/local/30_trace_difficulty_sweep.sh
+
+# Overnight adaptive shortest-path calibration with automatic recommendation.
+bash scripts/local/40_shortest_path_overnight_calibration.sh
 ```
 
 The broad pilot defaults to the transformer and MemoryTape, 250 steps, one
@@ -391,6 +394,16 @@ writes `learning_summary.json`, including the larger per-inference-mode
 qualification metrics. Calibration mode requires at least a five-percent
 evaluation-loss reduction. Inspect the task metrics and extend `TRAIN_STEPS`
 until shortest-path optimal accuracy has clearly stabilized across seeds.
+
+`scripts/local/40_shortest_path_overnight_calibration.sh` is the decisive
+follow-up. Stage one trains a nine-point Transformer grid for 10,000 steps and
+selects distinct configurations nearest 15% and 45% exact-path accuracy.
+Stage two extends those configurations to 25,000 steps for Transformer and
+MemoryTape over seeds `1337`, `2027`, and `4099`, evaluates 1,024 held-out
+examples in every supported inference mode, and runs memory interventions and
+schedule-gap diagnostics. It writes CSV, JSON, and Markdown reports with an
+automatic benchmark recommendation. Runs resume from existing checkpoints,
+and macOS execution is wrapped in `caffeinate` to prevent overnight sleep.
 
 MemoryTape's direct scalar reader gate uses `0.5` in the main presets. The
 reported gate-initialization experiment has two named presets which are tested

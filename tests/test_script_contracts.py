@@ -11,6 +11,9 @@ def test_all_project_workflows_live_under_scripts():
     assert (ROOT / "scripts" / "bbh" / "10_bbh_curriculum.sh").is_file()
     assert (ROOT / "scripts" / "trace" / "10_shortest_path_trace.sh").is_file()
     assert (ROOT / "scripts" / "local" / "10_main_matrix_pilot.sh").is_file()
+    assert (
+        ROOT / "scripts" / "local" / "40_shortest_path_overnight_calibration.sh"
+    ).is_file()
     assert (ROOT / "scripts" / "ablations" / "10_memory_gate_init.sh").is_file()
 
 
