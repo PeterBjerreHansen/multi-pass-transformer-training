@@ -10,7 +10,7 @@ CPU_RUN="${RESULT_ROOT}/cpu"
 pytest -q
 
 python -m experiments.train_trace \
-  --preset random_graph_walk_smoke \
+  --preset shortest_path_smoke \
   --architecture memory_tape \
   --append-train-prob 1 \
   --append-train-microbatch-size 1 \
@@ -21,7 +21,7 @@ python -m experiments.train_trace \
   --run-dir "${CPU_RUN}"
 
 python -m experiments.train_trace \
-  --preset random_graph_walk_smoke \
+  --preset shortest_path_smoke \
   --resume-from "${CPU_RUN}" \
   --train-steps 1 \
   --device cpu \
@@ -46,7 +46,7 @@ done
 
 if python -c 'import torch; raise SystemExit(0 if torch.backends.mps.is_available() else 1)'; then
   python -m experiments.train_trace \
-    --preset random_graph_walk_smoke \
+    --preset shortest_path_smoke \
     --architecture memory_tape \
     --append-train-prob 1 \
     --append-train-microbatch-size 1 \

@@ -29,7 +29,7 @@ for specification in "${VARIANTS[@]}"; do
     run_dir="${RESULT_ROOT}/${variant}/seed_${seed}"
 
     python -m experiments.train_trace \
-      --preset random_graph_walk_main \
+      --preset shortest_path_main \
       --architecture memory_tape \
       --append-train-prob "${probability}" \
       --append-train-microbatch-size "${APPEND_MICROBATCH_SIZE}" \

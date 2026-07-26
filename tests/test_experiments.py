@@ -304,17 +304,18 @@ def test_append_train_probability_schedule_and_stats():
 
 
 def test_generation_aligned_loss_reuses_prefix_and_trains_recurrent_path():
-    vocab, stoi, _ = random_graph_walk.build_random_graph_walk_vocab(4, 4)
-    block_size = random_graph_walk.required_block_size(4, 4, 4)
+    vocab, stoi, _ = shortest_path.build_shortest_path_vocab(8, 3, 2, 5)
+    block_size = shortest_path.required_block_size(8, 3, 2, 5)
     model = MemoryTapeTransformer(
         MemoryTapeConfig(block_size, len(vocab), 1, 1, 8, 3)
     )
-    batch = random_graph_walk.build_random_graph_walk_batch(
-        2,
-        4,
-        4,
-        4,
-        stoi,
+    batch = shortest_path.build_shortest_path_batch(
+        batch_size=2,
+        num_nodes=8,
+        path_length=3,
+        branching_factor=2,
+        distractor_edges=5,
+        stoi=stoi,
         device="cpu",
         rng=random.Random(2),
     )
