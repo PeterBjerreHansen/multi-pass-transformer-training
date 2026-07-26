@@ -88,6 +88,23 @@ def test_memory_add_bbh_cli_reports_fusion_gradients(tmp_path):
     assert (run_dir / "latest.pt").exists()
 
 
+def test_memory_read_pattern_is_saved_and_reported(tmp_path):
+    run_dir = tmp_path / "read_layers"
+    _run(
+        "-m", "experiments.train_trace",
+        "--preset", "random_graph_walk_smoke",
+        "--architecture", "memory_tape",
+        "--memory-read-pattern", "early",
+        "--device", "cpu",
+        "--run-dir", str(run_dir),
+    )
+    config = json.loads((run_dir / "config.json").read_text(encoding="utf-8"))
+    assert config["model_config"]["memory_read_layers"] == [0]
+    events = [json.loads(line) for line in (run_dir / "metrics.jsonl").read_text(encoding="utf-8").splitlines()]
+    evaluation = next(event for event in events if event["event"] == "eval")
+    assert evaluation["memory_gate_stats"]["read_enabled"] == [True]
+
+
 def test_trace_training_evaluation_and_diagnostics_cli(tmp_path):
     run_dir = tmp_path / "trace"
     _run(

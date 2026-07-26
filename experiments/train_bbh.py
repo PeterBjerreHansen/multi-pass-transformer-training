@@ -132,6 +132,7 @@ def parse_args(argv: list[str] | None = None):
     _add_override(parser, "--n-embd", type=int)
     _add_override(parser, "--n-pass", type=int)
     _add_override(parser, "--pass-loss-weights", type=float, nargs="*")
+    _add_override(parser, "--memory-read-pattern", choices=["all", "early", "middle", "late"])
     _add_override(
         parser,
         "--num-nodes",
