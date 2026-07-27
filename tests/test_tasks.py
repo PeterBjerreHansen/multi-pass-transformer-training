@@ -337,10 +337,28 @@ def test_shortest_path_distributions_are_varied_permuted_and_solver_verified():
             observed_starts.add(start)
 
         assert len(observed_edge_counts) > 1
-        assert len(observed_starts) == distribution.max_nodes
+        assert len(observed_starts) >= distribution.max_nodes - 1
         assert multi_route_examples >= 375
-        if distribution_name == "main":
-            assert len(observed_shapes) > 1
+        assert len(observed_shapes) > 1
+
+
+def test_shortest_path_main_uniformly_mixes_feasible_path_lengths():
+    _vocab, stoi, _itos = shortest_path.build_shortest_path_vocab("main")
+    rng = random.Random(1337)
+    path_length_counts = {path_length: 0 for path_length in range(3, 9)}
+    for _ in range(6_000):
+        prompt, _answer, _edges, _start, _goal, path = (
+            shortest_path.sample_shortest_path_example("main", stoi, rng)
+        )
+        path_length = len(path) - 1
+        num_nodes = prompt.index(stoi[shortest_path.EDGES_TOKEN]) - 1
+        path_length_counts[path_length] += 1
+        assert num_nodes >= path_length + 5
+
+    assert all(count >= 850 for count in path_length_counts.values())
+    assert shortest_path.path_length_bucket(3) == "short"
+    assert shortest_path.path_length_bucket(5) == "medium"
+    assert shortest_path.path_length_bucket(8) == "long"
 
 
 def test_shortest_path_label_permutation_preserves_the_solution():

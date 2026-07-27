@@ -129,8 +129,21 @@ shortest_path_main.update(
     shortest_path_distribution="main",
 )
 TRACE_PRESETS["shortest_path_main"] = ExperimentPreset(
-    "Main varied, solver-verified shortest-path distribution.",
+    "Main mixed-difficulty, solver-verified shortest-path distribution.",
     shortest_path_main,
+)
+
+shortest_path_easy = _trace_defaults(
+    task="shortest_path",
+    smoke=False,
+    token_selection="argmax",
+)
+shortest_path_easy.update(
+    shortest_path_distribution="easy",
+)
+TRACE_PRESETS["shortest_path_easy"] = ExperimentPreset(
+    "Full training setup for the easy shortest-path distribution.",
+    shortest_path_easy,
 )
 
 shortest_path_smoke = _trace_defaults(
@@ -144,28 +157,6 @@ shortest_path_smoke.update(
 TRACE_PRESETS["shortest_path_smoke"] = ExperimentPreset(
     "One-step software check using the easy shortest-path distribution.",
     shortest_path_smoke,
-)
-
-shortest_path_gate_init_control = deepcopy(shortest_path_main)
-shortest_path_gate_init_control.update(
-    architecture="memory_tape",
-    batch_size=16,
-    train_steps=5_000,
-    eval_interval=500,
-    eval_batches=2,
-    shortest_path_distribution="easy",
-    memory_gate_init=0.1,
-)
-TRACE_PRESETS["shortest_path_gate_init_control"] = ExperimentPreset(
-    "MemoryTape gate-initialization control on easy shortest path.",
-    shortest_path_gate_init_control,
-)
-
-shortest_path_gate_init_unit = deepcopy(shortest_path_gate_init_control)
-shortest_path_gate_init_unit["memory_gate_init"] = 1.0
-TRACE_PRESETS["shortest_path_gate_init_unit"] = ExperimentPreset(
-    "Unit-initialized MemoryTape gate treatment on easy shortest path.",
-    shortest_path_gate_init_unit,
 )
 
 

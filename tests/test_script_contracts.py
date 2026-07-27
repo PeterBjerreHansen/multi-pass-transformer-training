@@ -90,8 +90,14 @@ def test_trace_launcher_runs_task_matrix_into_task_first_results(tmp_path):
     assert "--preset shortest_path_main" in training_calls[0]
     assert "--preset othello_main" in training_calls[1]
     assert all("--architecture memory_add" in call for call in training_calls)
-    assert f"--run-dir {tmp_path}/results/shortest_path/memory_add/seed_1337" in training_calls[0]
-    assert f"--run-dir {tmp_path}/results/othello/memory_add/seed_1337" in training_calls[1]
+    assert (
+        f"--run-dir {tmp_path}/results/shortest_path/main/memory_add/seed_1337"
+        in training_calls[0]
+    )
+    assert (
+        f"--run-dir {tmp_path}/results/othello/main/memory_add/seed_1337"
+        in training_calls[1]
+    )
 
 
 def test_trace_eval_routes_to_task_specific_evaluator(tmp_path):

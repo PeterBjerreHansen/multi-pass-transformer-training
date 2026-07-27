@@ -278,8 +278,11 @@ def test_cli_has_only_two_inference_modes_and_no_cache_source():
 
 def test_shortest_path_cli_exposes_only_easy_and_main_distributions():
     main = parse_trace_args(["--preset", "shortest_path_main"])
+    easy = parse_trace_args(["--preset", "shortest_path_easy"])
     smoke = parse_trace_args(["--preset", "shortest_path_smoke"])
     assert main.shortest_path_distribution == "main"
+    assert easy.shortest_path_distribution == "easy"
+    assert easy.train_steps == main.train_steps == 50_000
     assert smoke.shortest_path_distribution == "easy"
     with pytest.raises(SystemExit):
         parse_trace_args(
@@ -324,7 +327,8 @@ def test_main_presets_use_declared_experiment_scales():
             "distractor_edges",
         )
     )
-    assert shortest_path.required_block_size("main") == 69
+    assert shortest_path.required_block_size("easy") == 69
+    assert shortest_path.required_block_size("main") == 103
 
 
 def test_othello_prefix_examples_and_legal_set_metrics_are_deterministic():
@@ -427,18 +431,6 @@ def test_memory_update_direct_default_matches_experiment_default():
 def test_runtime_resource_stats_reports_peak_rss():
     stats = runtime_resource_stats("cpu")
     assert stats["process_peak_rss_bytes"] > 0
-
-
-def test_gate_init_ablation_presets_differ_only_in_gate_initialization():
-    control = TRACE_PRESETS["shortest_path_gate_init_control"].values
-    treatment = TRACE_PRESETS["shortest_path_gate_init_unit"].values
-    assert control["memory_gate_init"] == 0.1
-    assert treatment["memory_gate_init"] == 1.0
-    assert {
-        key: value for key, value in control.items() if key != "memory_gate_init"
-    } == {
-        key: value for key, value in treatment.items() if key != "memory_gate_init"
-    }
 
 
 def test_main_bbh_preset_contract_is_frozen():

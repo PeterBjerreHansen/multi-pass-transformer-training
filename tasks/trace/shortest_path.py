@@ -30,6 +30,7 @@ EDGES_TOKEN = "<edges>"
 START_TOKEN = "<start>"
 GOAL_TOKEN = "<goal>"
 NODE_TOKEN_OFFSET = 8
+PATH_LENGTH_BUCKETS = ("short", "medium", "long")
 
 
 @dataclass(frozen=True)
@@ -52,19 +53,6 @@ class ShortestPathDistribution:
 SHORTEST_PATH_DISTRIBUTIONS = {
     "easy": ShortestPathDistribution(
         name="easy",
-        min_nodes=7,
-        max_nodes=7,
-        min_path_length=2,
-        max_path_length=3,
-        max_out_degree=2,
-        min_detours=1,
-        max_detours=1,
-        max_detour_penalty=2,
-        min_edge_probability=0.05,
-        max_edge_probability=0.25,
-    ),
-    "main": ShortestPathDistribution(
-        name="main",
         min_nodes=8,
         max_nodes=12,
         min_path_length=3,
@@ -76,6 +64,19 @@ SHORTEST_PATH_DISTRIBUTIONS = {
         min_edge_probability=0.05,
         max_edge_probability=0.25,
     ),
+    "main": ShortestPathDistribution(
+        name="main",
+        min_nodes=8,
+        max_nodes=18,
+        min_path_length=3,
+        max_path_length=8,
+        max_out_degree=2,
+        min_detours=2,
+        max_detours=3,
+        max_detour_penalty=4,
+        min_edge_probability=0.05,
+        max_edge_probability=0.25,
+    ),
 }
 
 
@@ -84,6 +85,16 @@ def get_shortest_path_distribution(name: str) -> ShortestPathDistribution:
         return SHORTEST_PATH_DISTRIBUTIONS[name]
     except KeyError as error:
         raise ValueError(f"unsupported shortest-path distribution: {name}") from error
+
+
+def path_length_bucket(path_length: int) -> str:
+    if path_length < 1:
+        raise ValueError("path length must be positive")
+    if path_length <= 4:
+        return "short"
+    if path_length <= 6:
+        return "medium"
+    return "long"
 
 
 def node_token(index: int) -> str:
@@ -215,11 +226,23 @@ def sample_shortest_path_graph(
     Labels are independently permuted only after graph construction.
     """
     distribution = get_shortest_path_distribution(distribution_name)
-    num_nodes = rng.randint(distribution.min_nodes, distribution.max_nodes)
     path_length = rng.randint(
         distribution.min_path_length,
         distribution.max_path_length,
     )
+    # Each minimally sized detour requires one internal node plus one feeder.
+    # Sampling path length first keeps every length equally represented while
+    # preventing impossible long-path/small-graph combinations.
+    minimum_nodes = max(
+        distribution.min_nodes,
+        path_length + 1 + 2 * distribution.min_detours,
+    )
+    if minimum_nodes > distribution.max_nodes:
+        raise ValueError(
+            f"{distribution.name} cannot fit path length {path_length} "
+            f"and {distribution.min_detours} detours"
+        )
+    num_nodes = rng.randint(minimum_nodes, distribution.max_nodes)
     path = list(range(path_length + 1))
     next_node = len(path)
     remaining_nodes = num_nodes - next_node
@@ -553,6 +576,7 @@ def shortest_path_generation_metrics(
         "optimal_path": 0.0,
         "exact_path": 0.0,
         "mean_generated_path_length": 0.0,
+        "mean_target_path_length": 0.0,
         "mean_node_count": 0.0,
         "mean_edge_count": 0.0,
         "mean_out_degree": 0.0,
@@ -564,6 +588,8 @@ def shortest_path_generation_metrics(
         "mean_relevant_edge_fraction": 0.0,
         "mean_random_legal_path_probability": 0.0,
     }
+    bucket_counts = {bucket: 0 for bucket in PATH_LENGTH_BUCKETS}
+    bucket_optimal = {bucket: 0.0 for bucket in PATH_LENGTH_BUCKETS}
 
     for row in range(batch.idx.shape[0]):
         prompt_len = int(batch.prompt_lengths[row].item())
@@ -591,6 +617,8 @@ def shortest_path_generation_metrics(
         edges, start, goal = parse_prompt_metadata(prompt_tokens)
         row_num_nodes = prompt_tokens.index(5) - 1
         target_path_ids = target_suffix[:-1]
+        target_path_length = len(target_path_ids) - 1
+        bucket = path_length_bucket(target_path_length)
         legal_length, _all_legal = legal_prefix_length(
             prompt_tokens,
             generated_path_ids,
@@ -639,6 +667,7 @@ def shortest_path_generation_metrics(
         totals["optimal_path"] += float(exact_path)
         totals["exact_path"] += float(complete)
         totals["mean_generated_path_length"] += float(len(generated_path_ids))
+        totals["mean_target_path_length"] += float(target_path_length)
         totals["mean_node_count"] += structure["node_count"]
         totals["mean_edge_count"] += structure["edge_count"]
         totals["mean_out_degree"] += structure["mean_out_degree"]
@@ -655,21 +684,38 @@ def shortest_path_generation_metrics(
         totals["mean_random_legal_path_probability"] += structure[
             "random_legal_path_probability"
         ]
+        bucket_counts[bucket] += 1
+        bucket_optimal[bucket] += float(exact_path)
 
     count = int(batch.idx.shape[0])
-    return {key: value / count for key, value in totals.items()}
+    result = {key: value / count for key, value in totals.items()}
+    for bucket in PATH_LENGTH_BUCKETS:
+        bucket_count = bucket_counts[bucket]
+        if bucket_count:
+            result[f"optimal_path_{bucket}"] = (
+                bucket_optimal[bucket] / bucket_count
+            )
+            result[f"examples_{bucket}"] = float(bucket_count)
+    return result
 
 
 def format_shortest_path_eval_metrics(metrics: dict[str, float]) -> str:
-    return (
-        f"optimal {metrics['optimal_path']:.3f} | "
-        f"goal {metrics['goal_reached']:.3f} | "
-        f"edge_valid {metrics['valid_edge_rate']:.3f}"
+    fields = [
+        f"optimal {metrics['optimal_path']:.3f}",
+        f"goal {metrics['goal_reached']:.3f}",
+        f"edge_valid {metrics['valid_edge_rate']:.3f}",
+    ]
+    fields.extend(
+        f"{bucket} {metrics[f'optimal_path_{bucket}']:.3f}"
+        for bucket in PATH_LENGTH_BUCKETS
+        if f"optimal_path_{bucket}" in metrics
     )
+    return " | ".join(fields)
 
 
 __all__ = [
     "SHORTEST_PATH_DISTRIBUTIONS",
+    "PATH_LENGTH_BUCKETS",
     "ShortestPathDistribution",
     "build_shortest_path_batch",
     "build_shortest_path_vocab",
@@ -678,6 +724,7 @@ __all__ = [
     "graph_structure_metrics",
     "legal_prefix_length",
     "node_token",
+    "path_length_bucket",
     "parse_prompt_metadata",
     "permute_graph_labels",
     "required_block_size",

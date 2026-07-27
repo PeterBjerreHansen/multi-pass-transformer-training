@@ -51,6 +51,9 @@ METRIC_LABELS = {
     "sequence_legality": "Fully legal sequence rate",
     "mean_legal_len": "Mean legal-prefix length",
     "optimal_path": "Optimal-path rate",
+    "optimal_path_short": "Optimal-path rate (3–4 edges)",
+    "optimal_path_medium": "Optimal-path rate (5–6 edges)",
+    "optimal_path_long": "Optimal-path rate (7–8 edges)",
     "goal_reached": "Goal-reached rate",
     "valid_edge_rate": "Valid-edge rate",
     "exact_path": "Exact-path rate",
@@ -104,6 +107,7 @@ def _config_context(run_dir: Path, *, root: Path | None = None) -> dict:
         "inference_mode": args.get("inference_mode"),
         "max_level": args.get("max_level"),
         "curriculum_threshold": args.get("curriculum_threshold"),
+        "shortest_path_distribution": args.get("shortest_path_distribution"),
         "total_parameters": model_stats.get("total_parameters"),
         "non_embedding_parameters": model_stats.get("non_embedding_parameters"),
     }

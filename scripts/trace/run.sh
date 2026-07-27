@@ -33,7 +33,7 @@ for task in "${task_matrix[@]}"; do
         --preset "${task}_main" \
         --architecture "${architecture}" \
         --seed "${seed}" \
-        --run-dir "${RESULT_ROOT}/${task}/${architecture}/seed_${seed}" \
+        --run-dir "${RESULT_ROOT}/${task}/main/${architecture}/seed_${seed}" \
         "${runtime_args[@]+"${runtime_args[@]}"}"
     done
   done

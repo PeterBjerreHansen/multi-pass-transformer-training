@@ -91,6 +91,8 @@ def test_plotting_notebooks_are_valid_output_free_python():
         if cell["cell_type"] == "code"
     )
     assert 'RESULT_ROOT = REPO_ROOT / "results" / "trace"' in trace_source
+    assert 'SHORTEST_PATH_DISTRIBUTION = "main"' in trace_source
+    assert "shortest_path_distribution=SHORTEST_PATH_DISTRIBUTION" in trace_source
     assert "row.get(\"level\") is None" in trace_source
 
 
@@ -121,6 +123,7 @@ def test_plotting_loaders_follow_current_artifact_schemas(tmp_path):
                     "seed": 1337,
                     "device": "cpu",
                     "n_pass": 4,
+                    "shortest_path_distribution": "main",
                 },
                 "model_stats": {
                     "total_parameters": 1200,
@@ -241,6 +244,7 @@ def test_plotting_loaders_follow_current_artifact_schemas(tmp_path):
         )
 
     training = load_training_records(tmp_path)
+    assert training[0]["shortest_path_distribution"] == "main"
     assert training[0]["pass_4_loss"] == 1.4
     assert training[0]["gradient_memory_writer_mean"] == 0.2
     assert training[0]["memory_gate_mean_abs_effective"] == 0.4

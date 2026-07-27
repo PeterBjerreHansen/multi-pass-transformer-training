@@ -166,7 +166,14 @@ def test_shortest_path_training_resume_drift_and_diagnostics_cli(tmp_path):
         for line in (run_dir / "metrics.jsonl").read_text(encoding="utf-8").splitlines()
     ]
     evaluation = next(event for event in events if event["event"] == "eval")
-    for metric in ("valid_edge_rate", "goal_reached", "optimal_path", "exact_path"):
+    for metric in (
+        "valid_edge_rate",
+        "goal_reached",
+        "optimal_path",
+        "exact_path",
+        "optimal_path_short",
+        "examples_short",
+    ):
         assert metric in evaluation["metrics"]
 
     _run(

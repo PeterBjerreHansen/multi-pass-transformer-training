@@ -294,7 +294,7 @@ Trace training on `othello`:
 python3 -m experiments.train_trace \
   --preset othello_main \
   --architecture memory_tape \
-  --run-dir results/trace/othello/memory_tape/example_run
+  --run-dir results/trace/othello/main/memory_tape/example_run
 ```
 
 Trace training on unique shortest paths:
@@ -303,7 +303,7 @@ Trace training on unique shortest paths:
 python3 -m experiments.train_trace \
   --preset shortest_path_main \
   --architecture memory_tape \
-  --run-dir results/trace/shortest_path/memory_tape/example_run
+  --run-dir results/trace/shortest_path/main/memory_tape/example_run
 ```
 
 Shortest-path training and held-out evaluation always draw from the same named
@@ -311,23 +311,29 @@ distribution. Evaluation reports valid-edge rate, sequence-legality rate,
 goal-reaching rate, optimal-path accuracy, exact path-plus-EOS accuracy, and
 per-position legality under both `recompute` and `append_recurrent`. It also
 records realized graph connectivity, decision-point, relevant-edge, and
-random-legal-policy baselines. Graph edges are shuffled and node labels are
-independently permuted per example; the generator verifies that every
-serialized graph has exactly one shortest path.
+random-legal-policy baselines. Main-distribution accuracy is also stratified
+into short (3–4 edges), medium (5–6), and long (7–8) paths. Graph edges are
+shuffled and node labels are independently permuted per example; the generator
+verifies that every serialized graph has exactly one shortest path.
 
 | Distribution | Nodes | Shortest-path edges | Maximum out-degree | Longer alternatives |
 | --- | ---: | ---: | ---: | ---: |
-| `easy` | 7 | 2–3 | 2 | 1 |
-| `main` | 8–12 | 3–4 | 2 | 1–2 |
+| `easy` | 8–12 | 3–4 | 2 | 1–2 |
+| `main` | 8–18 | 3–8, sampled uniformly | 2 | 2–3 |
 
-The number of serialized edges is deliberately not fixed. Background DAG
-edges are sampled at a randomized density and retained only when the planted
-answer remains the unique shortest path.
+For `main`, path length is sampled before graph size. The minimum graph size is
+then constrained to fit that path and two detours, so every path length is
+equally represented without impossible long-path/small-graph combinations.
+The number of serialized edges is deliberately not fixed. Background DAG edges
+are sampled at a randomized density and retained only when the planted answer
+remains the unique shortest path. Use `shortest_path_easy` for a full 50,000
+step run on the easier distribution; the one-step `shortest_path_smoke` preset
+uses the same distribution with tiny software-test settings.
 
 Post-training trace evaluation:
 
 ```bash
-RUN_DIR=results/trace/shortest_path/memory_tape/seed_1337 \
+RUN_DIR=results/trace/shortest_path/main/memory_tape/seed_1337 \
 DEVICE=mps \
 bash scripts/trace/eval.sh
 ```
@@ -371,11 +377,11 @@ bash scripts/trace/run.sh
 ```
 
 This writes the three runs to
-`results/trace/shortest_path/<architecture>/seed_<seed>`. Canonical launchers
-take all scientific settings from their named presets. They permit only matrix
-selection and operational placement (`DEVICE` and `RESULT_ROOT`); they do not
-accept training, evaluation, task-difficulty, or model-hyperparameter
-overrides.
+`results/trace/shortest_path/main/<architecture>/seed_<seed>`. Canonical
+launchers take all scientific settings from their named presets. They permit
+only matrix selection and operational placement (`DEVICE` and `RESULT_ROOT`);
+they do not accept training, evaluation, task-difficulty, or
+model-hyperparameter overrides.
 
 The BBH launcher supports all four tasks and all seven architectures. Use
 `TASKS`, `ARCHITECTURES`, and `SEEDS` to select the matrix without changing
@@ -389,7 +395,7 @@ Drift evaluation:
 
 ```bash
 python3 -m experiments.eval_trace_drift \
-  --input-run-dir results/trace/shortest_path/memory_tape/example_run \
+  --input-run-dir results/trace/shortest_path/main/memory_tape/example_run \
   --inference-mode append_recurrent \
   --token-selection argmax
 ```
@@ -402,7 +408,7 @@ Standalone memory-use and pass-dynamics diagnostics:
 
 ```bash
 python3 -m experiments.eval_diagnostics \
-  --input-run-dir results/trace/shortest_path/memory_tape/example_run \
+  --input-run-dir results/trace/shortest_path/main/memory_tape/example_run \
   --extra-passes 6 \
   --schedule-gap-horizon 16
 ```
