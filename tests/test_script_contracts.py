@@ -1,3 +1,4 @@
+import json
 import os
 from pathlib import Path
 import subprocess
@@ -12,8 +13,11 @@ def test_all_project_workflows_live_under_scripts():
     assert (ROOT / "scripts" / "trace" / "10_shortest_path_trace.sh").is_file()
     assert (ROOT / "scripts" / "local" / "10_main_matrix_pilot.sh").is_file()
     assert (
-        ROOT / "scripts" / "local" / "40_shortest_path_overnight_calibration.sh"
+        ROOT / "scripts" / "local" / "40_shortest_path_mastery.sh"
     ).is_file()
+    assert not (
+        ROOT / "scripts" / "local" / "40_shortest_path_overnight_calibration.sh"
+    ).exists()
     assert (ROOT / "scripts" / "ablations" / "10_memory_gate_init.sh").is_file()
 
 
@@ -65,6 +69,79 @@ def test_local_workflows_are_explicitly_parameterized():
     )
     assert "TRAIN_STEPS" in local
     assert "results/local_pilots" in local
+
+
+def test_shortest_path_workflows_use_only_smoke_and_main_distributions():
+    difficulty = (
+        ROOT / "scripts" / "local" / "30_trace_difficulty_sweep.sh"
+    ).read_text(encoding="utf-8")
+    assert 'SHORTEST_PATH_DISTRIBUTIONS="${SHORTEST_PATH_DISTRIBUTIONS:-smoke main}"' in difficulty
+    assert "--shortest-path-distribution" in difficulty
+    assert "SHORTEST_PATH_VARIANTS" not in difficulty
+
+    mastery = (
+        ROOT / "scripts" / "local" / "40_shortest_path_mastery.sh"
+    ).read_text(encoding="utf-8")
+    assert "run_distribution smoke" in mastery
+    assert "run_distribution main" in mastery
+    assert mastery.index("run_distribution smoke") < mastery.index(
+        "run_distribution main"
+    )
+    assert "check_shortest_path_mastery.py" in mastery
+
+
+def test_shortest_path_mastery_gate_requires_perfect_held_out_metrics(tmp_path):
+    summary_dir = (
+        tmp_path
+        / "smoke"
+        / "transformer"
+        / "seed_1337"
+        / "drift"
+        / "recompute"
+    )
+    summary_dir.mkdir(parents=True)
+    summary_path = summary_dir / "summary.json"
+    payload = {
+        "evaluation_examples": 1024,
+        "metrics": {
+            "exact_path": 1.0,
+            "sequence_legality": 1.0,
+            "goal_reached": 1.0,
+        },
+    }
+    summary_path.write_text(json.dumps(payload), encoding="utf-8")
+    command = [
+        "python",
+        str(ROOT / "scripts" / "check_shortest_path_mastery.py"),
+        "--root",
+        str(tmp_path),
+        "--distribution",
+        "smoke",
+        "--architectures",
+        "transformer",
+        "--minimum-examples",
+        "1024",
+    ]
+    mastered = subprocess.run(
+        command,
+        cwd=ROOT,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert mastered.returncode == 0
+
+    payload["metrics"]["exact_path"] = 1023 / 1024
+    summary_path.write_text(json.dumps(payload), encoding="utf-8")
+    imperfect = subprocess.run(
+        command,
+        cwd=ROOT,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert imperfect.returncode != 0
+    assert "not mastered" in imperfect.stderr
 
 
 def _fake_python(tmp_path):

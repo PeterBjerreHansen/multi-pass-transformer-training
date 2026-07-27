@@ -148,6 +148,23 @@ def test_symbolic_task_batches_follow_shared_contract(tmp_path):
             required_block_size=block_size,
         )
 
+    distribution_vocab = shortest_path.build_distribution_shortest_path_vocab(
+        "main"
+    )
+    distribution_batch = shortest_path.build_distribution_shortest_path_batch(
+        batch_size=3,
+        distribution_name="main",
+        stoi=distribution_vocab[1],
+        device="cpu",
+        rng=random.Random(2028),
+    )
+    _assert_symbolic_batch_contract(
+        distribution_batch,
+        stoi=distribution_vocab[1],
+        vocab_size=len(distribution_vocab[0]),
+        required_block_size=shortest_path.required_distribution_block_size("main"),
+    )
+
     kwargs = {
         "othello_data_dir": str(tmp_path / "othello_data"),
         "othello_train_games": 16,

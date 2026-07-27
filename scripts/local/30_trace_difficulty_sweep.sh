@@ -16,7 +16,7 @@ QUAL_EVAL_BATCHES="${QUAL_EVAL_BATCHES:-16}"
 DIAGNOSTIC_EVAL_BATCHES="${DIAGNOSTIC_EVAL_BATCHES:-${TRAIN_EVAL_BATCHES}}"
 MIN_QUAL_EXAMPLES="${MIN_QUAL_EXAMPLES:-256}"
 ARCHITECTURES="${ARCHITECTURES:-transformer memory_tape}"
-SHORTEST_PATH_VARIANTS="${SHORTEST_PATH_VARIANTS:-easy:8:3:2:5 intermediate:16:4:3:20 main:24:6:3:40}"
+SHORTEST_PATH_DISTRIBUTIONS="${SHORTEST_PATH_DISTRIBUTIONS:-smoke main}"
 RUN_DIAGNOSTICS="${RUN_DIAGNOSTICS:-0}"
 RUN_ID="${RUN_ID:-$(date +%Y%m%d_%H%M%S)}"
 RESULT_ROOT="${RESULT_ROOT:-results/local_pilots/trace_difficulty/${RUN_ID}}"
@@ -50,22 +50,16 @@ run_variant() {
     run_trace_pilot_variant "${variant}/${architecture}" "$@"
 }
 
-for specification in ${SHORTEST_PATH_VARIANTS}; do
-  IFS=: read -r name num_nodes path_length branching_factor distractor_edges \
-    <<<"${specification}"
-  if [[ -z "${name}" || -z "${num_nodes}" || -z "${path_length}" || \
-        -z "${branching_factor}" || -z "${distractor_edges}" ]]; then
-    printf 'invalid shortest-path specification: %s\n' "${specification}" >&2
+for distribution in ${SHORTEST_PATH_DISTRIBUTIONS}; do
+  if [[ "${distribution}" != "smoke" && "${distribution}" != "main" ]]; then
+    printf 'invalid shortest-path distribution: %s\n' "${distribution}" >&2
     exit 2
   fi
   for architecture in ${ARCHITECTURES}; do
     for seed in ${SEEDS}; do
       run_variant shortest_path_main \
-        "shortest_path/${name}" "${architecture}" "${seed}" \
-        --num-nodes "${num_nodes}" \
-        --shortest-path-length "${path_length}" \
-        --branching-factor "${branching_factor}" \
-        --distractor-edges "${distractor_edges}"
+        "shortest_path/${distribution}" "${architecture}" "${seed}" \
+        --shortest-path-distribution "${distribution}"
     done
   done
 done

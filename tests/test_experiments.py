@@ -21,6 +21,7 @@ from experiments.eval_diagnostics import memory_interventions, pass_dynamics, te
 from experiments.eval_othello import build_eval_examples, legal_set_step_metrics
 from experiments.presets import BBH_PRESETS, TRACE_PRESETS
 from experiments.train_bbh import BBH_TASKS, build_fixed_eval_batches, parse_args as parse_bbh_args
+from experiments.train_trace import parse_args as parse_trace_args
 from models import (
     JointMemoryTapeTransformer,
     MemoryAddTransformer,
@@ -30,7 +31,7 @@ from models import (
     MultiPassConfig,
 )
 from tasks.bbh import pointer_chasing
-from tasks.trace import othello
+from tasks.trace import othello, shortest_path
 from tasks.trace.registry import TRACE_TASKS
 
 
@@ -275,6 +276,22 @@ def test_cli_has_only_two_inference_modes_and_no_cache_source():
     assert not hasattr(args, "memory_tape_gate")
 
 
+def test_shortest_path_cli_exposes_only_smoke_and_main_distributions():
+    main = parse_trace_args(["--preset", "shortest_path_main"])
+    smoke = parse_trace_args(["--preset", "shortest_path_smoke"])
+    assert main.shortest_path_distribution == "main"
+    assert smoke.shortest_path_distribution == "smoke"
+    with pytest.raises(SystemExit):
+        parse_trace_args(
+            [
+                "--preset",
+                "shortest_path_main",
+                "--distractor-edges",
+                "5",
+            ]
+        )
+
+
 def test_main_presets_use_declared_experiment_scales():
     from experiments.presets import BBH_PRESETS, TRACE_PRESETS
 
@@ -297,10 +314,17 @@ def test_main_presets_use_declared_experiment_scales():
     assert othello_main["eval_interval"] == 5_000
 
     path = TRACE_PRESETS["shortest_path_main"].values
-    assert path["num_nodes"] == 24
-    assert path["shortest_path_length"] == 6
-    assert path["branching_factor"] == 3
-    assert path["distractor_edges"] == 40
+    assert path["shortest_path_distribution"] == "main"
+    assert not any(
+        key in path
+        for key in (
+            "num_nodes",
+            "shortest_path_length",
+            "branching_factor",
+            "distractor_edges",
+        )
+    )
+    assert shortest_path.required_distribution_block_size("main") == 69
 
 
 def test_othello_prefix_examples_and_legal_set_metrics_are_deterministic():
@@ -494,10 +518,7 @@ def test_main_trace_preset_contract_is_frozen():
             "lr": 3e-4,
             "eval_interval": 1_000,
             "eval_batches": 4,
-            "num_nodes": 24,
-            "shortest_path_length": 6,
-            "branching_factor": 3,
-            "distractor_edges": 40,
+            "shortest_path_distribution": "main",
         },
     }
     for name, contract in contracts.items():

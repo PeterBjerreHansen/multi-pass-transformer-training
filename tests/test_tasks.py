@@ -323,14 +323,109 @@ def test_shortest_path_generation_is_unique_deterministic_and_parseable():
     )[1] is False
 
 
-def test_shortest_path_fixed_example_can_be_overfit_and_generated():
+def test_shortest_path_distributions_are_varied_permuted_and_solver_verified():
+    for distribution_name in ("smoke", "main"):
+        distribution = shortest_path.get_shortest_path_distribution(distribution_name)
+        _vocab, stoi, _itos = shortest_path.build_distribution_shortest_path_vocab(
+            distribution_name
+        )
+        first_rng = random.Random(714)
+        second_rng = random.Random(714)
+        observed_shapes = set()
+        observed_edge_counts = set()
+        observed_starts = set()
+        multi_route_examples = 0
+        for _ in range(500):
+            first = shortest_path.sample_distribution_shortest_path_example(
+                distribution_name,
+                stoi,
+                first_rng,
+            )
+            second = shortest_path.sample_distribution_shortest_path_example(
+                distribution_name,
+                stoi,
+                second_rng,
+            )
+            assert first == second
+            prompt, answer, edges, start, goal, target_path = first
+            parsed_edges, parsed_start, parsed_goal = (
+                shortest_path.parse_prompt_metadata(prompt)
+            )
+            num_nodes = prompt.index(stoi[shortest_path.EDGES_TOKEN]) - 1
+            solved_path, path_count = shortest_path.solve_shortest_path(
+                num_nodes,
+                edges,
+                start,
+                goal,
+            )
+            structure = shortest_path.graph_structure_metrics(
+                num_nodes,
+                edges,
+                start,
+                goal,
+                target_path,
+            )
+
+            assert set(parsed_edges) == set(edges)
+            assert (parsed_start, parsed_goal) == (start, goal)
+            assert path_count == 1
+            assert solved_path == target_path
+            assert answer == [
+                stoi[shortest_path.node_token(node)]
+                for node in target_path
+            ]
+            assert distribution.min_nodes <= num_nodes <= distribution.max_nodes
+            assert (
+                distribution.min_path_length
+                <= len(target_path) - 1
+                <= distribution.max_path_length
+            )
+            assert max(
+                sum(source == node for source, _target in edges)
+                for node in range(num_nodes)
+            ) <= distribution.max_out_degree
+            assert structure["decision_points"] >= 1.0
+            multi_route_examples += int(structure["multi_route"])
+            observed_shapes.add((num_nodes, len(target_path) - 1))
+            observed_edge_counts.add(len(edges))
+            observed_starts.add(start)
+
+        assert len(observed_edge_counts) > 1
+        assert len(observed_starts) == distribution.max_nodes
+        assert multi_route_examples >= 375
+        if distribution_name == "main":
+            assert len(observed_shapes) > 1
+
+
+def test_shortest_path_label_permutation_preserves_the_solution():
+    edges = [(0, 1), (1, 3), (0, 2), (2, 1)]
+    path = [0, 1, 3]
+    permutation = [2, 0, 3, 1]
+    mapped_edges, mapped_path = shortest_path.permute_graph_labels(
+        edges,
+        path,
+        permutation,
+    )
+    solved_path, path_count = shortest_path.solve_shortest_path(
+        4,
+        mapped_edges,
+        mapped_path[0],
+        mapped_path[-1],
+    )
+    assert mapped_path == [2, 0, 1]
+    assert path_count == 1
+    assert solved_path == mapped_path
+
+
+def test_shortest_path_smoke_example_can_be_overfit_and_generated():
     torch.manual_seed(123)
-    config = (8, 3, 2, 5)
-    vocab, stoi, _itos = shortest_path.build_shortest_path_vocab(*config)
-    batch = shortest_path.build_shortest_path_batch(
-        1,
-        *config,
-        stoi,
+    vocab, stoi, _itos = shortest_path.build_distribution_shortest_path_vocab(
+        "smoke"
+    )
+    batch = shortest_path.build_distribution_shortest_path_batch(
+        batch_size=1,
+        distribution_name="smoke",
+        stoi=stoi,
         device="cpu",
         rng=random.Random(17),
     )

@@ -126,13 +126,10 @@ shortest_path_main = _trace_defaults(
     token_selection="argmax",
 )
 shortest_path_main.update(
-    num_nodes=shortest_path.DEFAULT_NUM_NODES,
-    shortest_path_length=shortest_path.DEFAULT_PATH_LENGTH,
-    branching_factor=shortest_path.DEFAULT_BRANCHING_FACTOR,
-    distractor_edges=shortest_path.DEFAULT_DISTRACTOR_EDGES,
+    shortest_path_distribution="main",
 )
 TRACE_PRESETS["shortest_path_main"] = ExperimentPreset(
-    "Main unique shortest-path trace setup.",
+    "Main varied, solver-verified shortest-path distribution.",
     shortest_path_main,
 )
 
@@ -142,13 +139,10 @@ shortest_path_smoke = _trace_defaults(
     token_selection="argmax",
 )
 shortest_path_smoke.update(
-    num_nodes=8,
-    shortest_path_length=3,
-    branching_factor=2,
-    distractor_edges=5,
+    shortest_path_distribution="smoke",
 )
 TRACE_PRESETS["shortest_path_smoke"] = ExperimentPreset(
-    "Tiny unique shortest-path smoke setup.",
+    "Tiny varied shortest-path smoke distribution.",
     shortest_path_smoke,
 )
 
@@ -159,10 +153,7 @@ shortest_path_gate_init_control.update(
     train_steps=5_000,
     eval_interval=500,
     eval_batches=2,
-    num_nodes=8,
-    shortest_path_length=3,
-    branching_factor=2,
-    distractor_edges=5,
+    shortest_path_distribution="smoke",
     memory_gate_init=0.1,
 )
 TRACE_PRESETS["shortest_path_gate_init_control"] = ExperimentPreset(

@@ -275,7 +275,7 @@ The current experiment tasks are:
 - `tracking`: shuffled-object tracking with swap, rotate, and reverse operations.
 - `permutation`: permutation composition by repeated swaps.
 - `othello`: legal Othello move-trace generation from the fixed opening prefix, evaluated both by exact suffix match and legality of the generated continuation.
-- `shortest_path`: shuffled, node-permuted directed acyclic graphs with exactly one shortest route from the declared start to goal; the model generates the complete optimal node path.
+- `shortest_path`: shuffled, node-permuted directed acyclic graphs with exactly one shortest route from the declared start to goal; the model generates the complete optimal node path. Its only benchmark distributions are `smoke` and `main`, and each varies graph size, route length, edge density, and detour shape from example to example.
 
 The live experiment API is family-specific and preset-driven. `python3 -m experiments.train_bbh` runs the BBH-inspired tasks with final-answer-only supervision and curriculum promotions. `python3 -m experiments.train_trace` runs the trace tasks from named presets with fixed trace targets.
 
@@ -306,11 +306,23 @@ python3 -m experiments.train_trace \
   --run-dir results/trace/shortest_path/memory_tape/example_run
 ```
 
-Shortest-path evaluation reports valid-edge rate, goal-reaching rate, optimal
-path accuracy, exact path-plus-EOS accuracy, and per-position legality under
-both `recompute` and `append_recurrent`. Graph edges are shuffled and node
-labels are independently permuted per example; the generator verifies that
-each serialized graph has exactly one shortest path.
+Shortest-path training and held-out evaluation always draw from the same named
+distribution. Evaluation reports valid-edge rate, sequence-legality rate,
+goal-reaching rate, optimal-path accuracy, exact path-plus-EOS accuracy, and
+per-position legality under both `recompute` and `append_recurrent`. It also
+records realized graph connectivity, decision-point, relevant-edge, and
+random-legal-policy baselines. Graph edges are shuffled and node labels are
+independently permuted per example; the generator verifies that every
+serialized graph has exactly one shortest path.
+
+| Distribution | Nodes | Shortest-path edges | Maximum out-degree | Longer alternatives |
+| --- | ---: | ---: | ---: | ---: |
+| `smoke` | 7 | 2–3 | 2 | 1 |
+| `main` | 8–12 | 3–4 | 2 | 1–2 |
+
+The number of serialized edges is deliberately not fixed. Background DAG
+edges are sampled at a randomized density and retained only when the planted
+answer remains the unique shortest path.
 
 Othello continuation evaluation:
 
@@ -370,11 +382,11 @@ bash scripts/local/10_main_matrix_pilot.sh
 SEEDS="1337 2027" \
   bash scripts/local/20_trace_task_calibration.sh
 
-# Compare easier and harder versions before selecting benchmark difficulty.
+# Compare the smoke and main distributions on a small selected matrix.
 bash scripts/local/30_trace_difficulty_sweep.sh
 
-# Overnight adaptive shortest-path calibration with automatic recommendation.
-bash scripts/local/40_shortest_path_overnight_calibration.sh
+# Require all architectures to master smoke before launching main.
+bash scripts/local/40_shortest_path_mastery.sh
 ```
 
 The broad pilot defaults to the transformer and MemoryTape, 250 steps, one
@@ -385,25 +397,21 @@ post-training qualification uses 16 batches of 16 examples (256 examples) per
 inference mode. Override these independently with `TRAIN_EVAL_BATCHES`,
 `QUAL_EVAL_BATCHES`, and `DIAGNOSTIC_EVAL_BATCHES`.
 
-The difficulty sweep defaults to 5,000 steps and shortest-path settings
-`8/3/2/5`, `16/4/3/20`, and `24/6/3/40`
-(`nodes/path length/branching/distractors`). It skips the architecture
-diagnostics by default because its purpose is task calibration; set
-`RUN_DIAGNOSTICS=1` to include them. `scripts/summarize_learning_runs.py`
-writes `learning_summary.json`, including the larger per-inference-mode
-qualification metrics. Calibration mode requires at least a five-percent
-evaluation-loss reduction. Inspect the task metrics and extend `TRAIN_STEPS`
-until shortest-path optimal accuracy has clearly stabilized across seeds.
+The difficulty sweep defaults to 5,000 steps on the same `smoke` and `main`
+distributions used by the named presets. It skips architecture diagnostics by
+default because its purpose is task calibration; set `RUN_DIAGNOSTICS=1` to
+include them. `scripts/summarize_learning_runs.py` writes
+`learning_summary.json`, including the larger per-inference-mode qualification
+metrics.
 
-`scripts/local/40_shortest_path_overnight_calibration.sh` is the decisive
-follow-up. Stage one trains a nine-point Transformer grid for 10,000 steps and
-selects distinct configurations nearest 15% and 45% exact-path accuracy.
-Stage two extends those configurations to 25,000 steps for Transformer and
-MemoryTape over seeds `1337`, `2027`, and `4099`, evaluates 1,024 held-out
-examples in every supported inference mode, and runs memory interventions and
-schedule-gap diagnostics. It writes CSV, JSON, and Markdown reports with an
-automatic benchmark recommendation. Runs resume from existing checkpoints,
-and macOS execution is wrapped in `caffeinate` to prevent overnight sleep.
+`scripts/local/40_shortest_path_mastery.sh` is the decisive follow-up. It
+trains all seven architectures on `smoke`, evaluates 4,096 deterministic
+held-out examples in every supported inference mode, and stops unless every
+architecture achieves 100% exact-path, sequence-legality, and goal-reaching
+rates. Only then does it launch the equivalent `main` qualification. This
+keeps task calibration separate from architecture comparison and prevents a
+harder distribution from hiding a basic implementation or optimization
+failure.
 
 MemoryTape's direct scalar reader gate uses `0.5` in the main presets. The
 reported gate-initialization experiment has two named presets which are tested

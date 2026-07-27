@@ -57,10 +57,11 @@ def parse_args(argv: list[str] | None = None):
     _add_override(parser, "--memory-update-gate", choices=["on", "off"])
     _add_override(parser, "--memory-gate-bias", type=float)
     _add_override(parser, "--memory-gate-init", type=float)
-    _add_override(parser, "--num-nodes", type=int)
-    _add_override(parser, "--shortest-path-length", type=int)
-    _add_override(parser, "--branching-factor", type=int)
-    _add_override(parser, "--distractor-edges", type=int)
+    _add_override(
+        parser,
+        "--shortest-path-distribution",
+        choices=["smoke", "main"],
+    )
     _add_override(parser, "--othello-data-dir")
     _add_override(parser, "--othello-train-games", type=int)
     _add_override(parser, "--othello-val-games", type=int)
@@ -131,6 +132,11 @@ def _apply_resume_args(args, checkpoint: dict) -> None:
         "train_steps": args.train_steps,
         "device": args.device,
     }
+    if (
+        saved.get("task") == "shortest_path"
+        and "shortest_path_distribution" not in saved
+    ):
+        args.shortest_path_distribution = "legacy"
     for key, value in saved.items():
         setattr(args, key, value)
     for key, value in preserve.items():
