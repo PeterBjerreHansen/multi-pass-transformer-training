@@ -270,7 +270,7 @@ def test_othello_generation_is_partition_invariant():
 
 
 def test_shortest_path_distributions_are_varied_permuted_and_solver_verified():
-    for distribution_name in ("smoke", "main"):
+    for distribution_name in ("easy", "main"):
         distribution = shortest_path.get_shortest_path_distribution(distribution_name)
         _vocab, stoi, _itos = shortest_path.build_shortest_path_vocab(
             distribution_name
@@ -363,14 +363,14 @@ def test_shortest_path_label_permutation_preserves_the_solution():
     assert solved_path == mapped_path
 
 
-def test_shortest_path_smoke_example_can_be_overfit_and_generated():
+def test_shortest_path_easy_example_can_be_overfit_and_generated():
     torch.manual_seed(123)
     vocab, stoi, _itos = shortest_path.build_shortest_path_vocab(
-        "smoke"
+        "easy"
     )
     batch = shortest_path.build_shortest_path_batch(
         batch_size=1,
-        distribution_name="smoke",
+        distribution_name="easy",
         stoi=stoi,
         device="cpu",
         rng=random.Random(17),

@@ -10,6 +10,9 @@ def test_all_project_workflows_live_under_scripts():
     assert not (ROOT / "runs").exists()
     assert (ROOT / "scripts" / "bbh" / "10_bbh_curriculum.sh").is_file()
     assert (ROOT / "scripts" / "trace" / "10_shortest_path_trace.sh").is_file()
+    assert (
+        ROOT / "scripts" / "trace" / "20_shortest_path_main_50k.sh"
+    ).is_file()
     assert (ROOT / "scripts" / "local" / "10_main_matrix_pilot.sh").is_file()
     assert not (ROOT / "scripts" / "local" / "40_shortest_path_mastery.sh").exists()
     assert not (ROOT / "scripts" / "check_shortest_path_mastery.py").exists()
@@ -69,16 +72,83 @@ def test_local_workflows_are_explicitly_parameterized():
     assert "results/local_pilots" in local
 
 
-def test_shortest_path_workflows_use_only_smoke_and_main_distributions():
+def test_shortest_path_workflows_use_only_easy_and_main_distributions():
     difficulty = (
         ROOT / "scripts" / "local" / "30_trace_difficulty_sweep.sh"
     ).read_text(encoding="utf-8")
-    assert 'SHORTEST_PATH_DISTRIBUTIONS="${SHORTEST_PATH_DISTRIBUTIONS:-smoke}"' in difficulty
+    assert 'SHORTEST_PATH_DISTRIBUTIONS="${SHORTEST_PATH_DISTRIBUTIONS:-easy}"' in difficulty
     assert 'ARCHITECTURES="${ARCHITECTURES:-transformer}"' in difficulty
     assert 'TRAIN_STEPS="${TRAIN_STEPS:-10000}"' in difficulty
     assert 'MIN_QUAL_EXAMPLES="${MIN_QUAL_EXAMPLES:-4096}"' in difficulty
     assert "--shortest-path-distribution" in difficulty
     assert "SHORTEST_PATH_VARIANTS" not in difficulty
+
+
+def test_shortest_path_main_50k_contract_is_fixed_and_resumable():
+    launcher = (
+        ROOT / "scripts" / "trace" / "20_shortest_path_main_50k.sh"
+    ).read_text(encoding="utf-8")
+    assert "TARGET_STEPS=50000" in launcher
+    assert "--preset shortest_path_main" in launcher
+    assert "QUALIFICATION_EVAL_BATCHES=64" in launcher
+    assert "--resume-from" in launcher
+    architectures = ("transformer", "memory_tape", "memory_add")
+    positions = [
+        launcher.index(f"  {architecture}\n")
+        for architecture in architectures
+    ]
+    assert positions == sorted(positions)
+    assert "joint_memory_tape" not in launcher
+    assert "memory_concat" not in launcher
+    assert "memory_state" not in launcher
+    assert "memory_update" not in launcher
+
+
+def test_shortest_path_main_50k_launcher_runs_requested_model_sequence(tmp_path):
+    bin_dir, log_path = _fake_python(tmp_path)
+    env = os.environ.copy()
+    env.update(
+        {
+            "PATH": f"{bin_dir}:{env['PATH']}",
+            "DEVICE": "cpu",
+            "MPT_CAFFEINATED": "1",
+            "RESULT_ROOT": str(tmp_path / "results"),
+        }
+    )
+    subprocess.run(
+        [
+            "bash",
+            str(ROOT / "scripts" / "trace" / "20_shortest_path_main_50k.sh"),
+        ],
+        cwd=ROOT,
+        env=env,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    calls = log_path.read_text(encoding="utf-8").splitlines()
+    training_calls = [
+        call for call in calls if "-m experiments.train_trace" in call
+    ]
+    assert len(training_calls) == 3
+    assert "--architecture transformer" in training_calls[0]
+    assert "--architecture memory_tape" in training_calls[1]
+    assert "--architecture memory_add" in training_calls[2]
+    assert all("--preset shortest_path_main" in call for call in training_calls)
+    assert all("--train-steps 50000" in call for call in training_calls)
+
+    drift_calls = [
+        call for call in calls if "-m experiments.eval_trace_drift" in call
+    ]
+    assert len(drift_calls) == 5
+    assert sum("--inference-mode recompute" in call for call in drift_calls) == 3
+    assert sum(
+        "--inference-mode append_recurrent" in call for call in drift_calls
+    ) == 2
+    diagnostic_calls = [
+        call for call in calls if "-m experiments.eval_diagnostics" in call
+    ]
+    assert len(diagnostic_calls) == 2
 
 
 def _fake_python(tmp_path):

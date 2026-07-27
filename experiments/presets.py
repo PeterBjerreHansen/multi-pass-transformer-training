@@ -139,10 +139,10 @@ shortest_path_smoke = _trace_defaults(
     token_selection="argmax",
 )
 shortest_path_smoke.update(
-    shortest_path_distribution="smoke",
+    shortest_path_distribution="easy",
 )
 TRACE_PRESETS["shortest_path_smoke"] = ExperimentPreset(
-    "Tiny varied shortest-path smoke distribution.",
+    "One-step software check using the easy shortest-path distribution.",
     shortest_path_smoke,
 )
 
@@ -153,7 +153,7 @@ shortest_path_gate_init_control.update(
     train_steps=5_000,
     eval_interval=500,
     eval_batches=2,
-    shortest_path_distribution="smoke",
+    shortest_path_distribution="easy",
     memory_gate_init=0.1,
 )
 TRACE_PRESETS["shortest_path_gate_init_control"] = ExperimentPreset(

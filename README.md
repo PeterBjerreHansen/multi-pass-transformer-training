@@ -275,7 +275,7 @@ The current experiment tasks are:
 - `tracking`: shuffled-object tracking with swap, rotate, and reverse operations.
 - `permutation`: permutation composition by repeated swaps.
 - `othello`: legal Othello move-trace generation from the fixed opening prefix, evaluated both by exact suffix match and legality of the generated continuation.
-- `shortest_path`: shuffled, node-permuted directed acyclic graphs with exactly one shortest route from the declared start to goal; the model generates the complete optimal node path. Its only benchmark distributions are `smoke` and `main`, and each varies graph size, route length, edge density, and detour shape from example to example.
+- `shortest_path`: shuffled, node-permuted directed acyclic graphs with exactly one shortest route from the declared start to goal; the model generates the complete optimal node path. Its benchmark distributions are `easy` and `main`, and each varies graph size, route length, edge density, and detour shape from example to example.
 
 The live experiment API is family-specific and preset-driven. `python3 -m experiments.train_bbh` runs the BBH-inspired tasks with final-answer-only supervision and curriculum promotions. `python3 -m experiments.train_trace` runs the trace tasks from named presets with fixed trace targets.
 
@@ -317,7 +317,7 @@ serialized graph has exactly one shortest path.
 
 | Distribution | Nodes | Shortest-path edges | Maximum out-degree | Longer alternatives |
 | --- | ---: | ---: | ---: | ---: |
-| `smoke` | 7 | 2–3 | 2 | 1 |
+| `easy` | 7 | 2–3 | 2 | 1 |
 | `main` | 8–12 | 3–4 | 2 | 1–2 |
 
 The number of serialized edges is deliberately not fixed. Background DAG
@@ -359,6 +359,18 @@ bash scripts/trace/10_othello_trace.sh
 bash scripts/trace/10_shortest_path_trace.sh
 ```
 
+The first fixed 50,000-step shortest-path comparison runs the Transformer,
+MemoryTape, and MemoryAdd sequentially on `main`:
+
+```bash
+DEVICE=mps bash scripts/trace/20_shortest_path_main_50k.sh
+```
+
+It evaluates 4,096 held-out examples after each model, uses both inference
+modes where applicable, and runs memory diagnostics for MemoryTape and
+MemoryAdd. Existing checkpoints resume only for the number of steps remaining
+to the fixed 50,000-step target.
+
 `scripts/` is the sole root for executable project workflows. Canonical
 launchers take all scientific settings from their named presets. They permit
 only matrix selection (`TASKS`, `ARCHITECTURES`, and `SEEDS`) and operational
@@ -382,7 +394,7 @@ bash scripts/local/10_main_matrix_pilot.sh
 SEEDS="1337 2027" \
   bash scripts/local/20_trace_task_calibration.sh
 
-# Establish Transformer learnability on smoke before scaling the task.
+# Establish Transformer learnability on easy before scaling the task.
 bash scripts/local/30_trace_difficulty_sweep.sh
 ```
 
@@ -394,7 +406,7 @@ post-training qualification uses 16 batches of 16 examples (256 examples) per
 inference mode. Override these independently with `TRAIN_EVAL_BATCHES`,
 `QUAL_EVAL_BATCHES`, and `DIAGNOSTIC_EVAL_BATCHES`.
 
-The difficulty workflow initially trains only the Transformer on `smoke` for
+The difficulty workflow initially trains only the Transformer on `easy` for
 10,000 steps, followed by deterministic evaluation on 4,096 held-out
 examples. It skips architecture diagnostics because its first purpose is
 simply to establish learnability. Once that succeeds, explicitly set

@@ -50,8 +50,8 @@ class ShortestPathDistribution:
 
 
 SHORTEST_PATH_DISTRIBUTIONS = {
-    "smoke": ShortestPathDistribution(
-        name="smoke",
+    "easy": ShortestPathDistribution(
+        name="easy",
         min_nodes=7,
         max_nodes=7,
         min_path_length=2,

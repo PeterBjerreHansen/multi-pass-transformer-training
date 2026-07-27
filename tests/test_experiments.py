@@ -276,11 +276,11 @@ def test_cli_has_only_two_inference_modes_and_no_cache_source():
     assert not hasattr(args, "memory_tape_gate")
 
 
-def test_shortest_path_cli_exposes_only_smoke_and_main_distributions():
+def test_shortest_path_cli_exposes_only_easy_and_main_distributions():
     main = parse_trace_args(["--preset", "shortest_path_main"])
     smoke = parse_trace_args(["--preset", "shortest_path_smoke"])
     assert main.shortest_path_distribution == "main"
-    assert smoke.shortest_path_distribution == "smoke"
+    assert smoke.shortest_path_distribution == "easy"
     with pytest.raises(SystemExit):
         parse_trace_args(
             [

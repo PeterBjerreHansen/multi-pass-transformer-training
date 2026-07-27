@@ -16,7 +16,7 @@ QUAL_EVAL_BATCHES="${QUAL_EVAL_BATCHES:-64}"
 DIAGNOSTIC_EVAL_BATCHES="${DIAGNOSTIC_EVAL_BATCHES:-${TRAIN_EVAL_BATCHES}}"
 MIN_QUAL_EXAMPLES="${MIN_QUAL_EXAMPLES:-4096}"
 ARCHITECTURES="${ARCHITECTURES:-transformer}"
-SHORTEST_PATH_DISTRIBUTIONS="${SHORTEST_PATH_DISTRIBUTIONS:-smoke}"
+SHORTEST_PATH_DISTRIBUTIONS="${SHORTEST_PATH_DISTRIBUTIONS:-easy}"
 RUN_DIAGNOSTICS="${RUN_DIAGNOSTICS:-0}"
 RUN_ID="${RUN_ID:-$(date +%Y%m%d_%H%M%S)}"
 RESULT_ROOT="${RESULT_ROOT:-results/local_pilots/shortest_path_learning/${RUN_ID}}"
@@ -51,7 +51,7 @@ run_variant() {
 }
 
 for distribution in ${SHORTEST_PATH_DISTRIBUTIONS}; do
-  if [[ "${distribution}" != "smoke" && "${distribution}" != "main" ]]; then
+  if [[ "${distribution}" != "easy" && "${distribution}" != "main" ]]; then
     printf 'invalid shortest-path distribution: %s\n' "${distribution}" >&2
     exit 2
   fi

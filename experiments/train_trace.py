@@ -60,7 +60,7 @@ def parse_args(argv: list[str] | None = None):
     _add_override(
         parser,
         "--shortest-path-distribution",
-        choices=["smoke", "main"],
+        choices=["easy", "main"],
     )
     _add_override(parser, "--othello-data-dir")
     _add_override(parser, "--othello-train-games", type=int)
