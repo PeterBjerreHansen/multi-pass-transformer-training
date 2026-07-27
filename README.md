@@ -324,24 +324,21 @@ The number of serialized edges is deliberately not fixed. Background DAG
 edges are sampled at a randomized density and retained only when the planted
 answer remains the unique shortest path.
 
-Othello continuation evaluation:
+Post-training trace evaluation:
 
 ```bash
-python3 -m experiments.eval_othello \
-  --input-run-dir results/trace/othello/memory_tape/example_run \
-  --evaluation-mode all \
-  --inference-modes recompute append_recurrent \
-  --token-selection argmax
+RUN_DIR=results/trace/shortest_path/memory_tape/seed_1337 \
+DEVICE=mps \
+bash scripts/trace/eval.sh
 ```
 
-This evaluator preserves the training serialization and starts generation
-after deterministic full-game, random-prefix, and fixed-fraction prefix cuts.
-It reports free-generation legality and exact suffix match, plus
-teacher-forced gold-move NLL, legal-set NLL, probability mass on legal moves,
-top-1 legality, and legal-set size. Results are stratified by protocol, prompt
-length, and remaining suffix length. Transformer checkpoints evaluate only in
-`recompute`; multi-pass checkpoints can be compared under both inference
-schedules.
+The launcher reads the saved task and architecture from `config.json`.
+Shortest-path runs receive deterministic free-generation evaluation under
+each supported inference schedule. Othello runs receive full-game,
+random-prefix, and fixed-fraction continuation evaluation, including
+teacher-forced gold-move NLL, legal-set NLL, legal probability mass, top-1
+legality, and legal-set size. Transformer checkpoints evaluate only in
+`recompute`; multi-pass checkpoints are compared under both schedules.
 
 The available architectures are `transformer`, `memory_tape`, `joint_memory_tape`, `memory_concat`, `memory_add`, `memory_state`, and `memory_update`.
 
@@ -385,33 +382,8 @@ The BBH launcher supports all four tasks and all seven architectures. Use
 any scientific preset. `SEEDS="1337 2027 4099"` expands independent
 repetitions without changing the preset.
 
-The explicitly parameterized shortest-path difficulty comparison remains
-available beside the trace launcher:
-
-```bash
-bash scripts/trace/compare_shortest_path_difficulty.sh
-```
-
-It initially trains only the Transformer on `easy` for 10,000 steps, followed
-by deterministic evaluation on 4,096 held-out examples. Once that succeeds,
-set `SHORTEST_PATH_DISTRIBUTIONS=main` to measure the larger distribution, and
-then add multi-pass architectures with `ARCHITECTURES`.
-
-MemoryTape's direct scalar reader gate uses `0.5` in the main presets. The
-reported gate-initialization experiment has two named presets which are tested
-to differ only in that value (`0.1` versus `1.0`).
-Run the fixed three-seed control/treatment experiment with:
-
-```bash
-DEVICE=mps bash scripts/trace/ablate_shortest_path_gate_init.sh
-```
-
-Its training, qualification, and diagnostic settings are fixed by the presets
-and script.
-
-Use `scripts/test_smoke.sh` for quick end-to-end checks, or
-`scripts/trace/test_shortest_path.sh` for the complete shortest-path workflow
-check.
+Use `tests/test_smoke.sh` for quick end-to-end checks, or
+`tests/test_shortest_path.sh` for the complete shortest-path workflow check.
 
 Drift evaluation:
 

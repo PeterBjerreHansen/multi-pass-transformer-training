@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "${ROOT}"
 
 RESULT_ROOT="${RESULT_ROOT:-$(mktemp -d /tmp/mpt-shortest-path.XXXXXX)}"
@@ -29,7 +29,7 @@ for inference_mode in recompute append_recurrent; do
     --token-selection argmax \
     --device cpu \
     --eval-batches 1 \
-    --run-dir "${CPU_RUN}/drift/${inference_mode}"
+    --run-dir "${CPU_RUN}/eval/${inference_mode}"
 done
 
 python -m experiments.eval_diagnostics \

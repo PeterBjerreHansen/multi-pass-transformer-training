@@ -1,6 +1,8 @@
+import json
 import os
 from pathlib import Path
 import subprocess
+import sys
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -10,15 +12,9 @@ def test_all_project_workflows_live_under_scripts():
     assert not (ROOT / "runs").exists()
     assert (ROOT / "scripts" / "bbh" / "run.sh").is_file()
     assert (ROOT / "scripts" / "trace" / "run.sh").is_file()
-    assert (ROOT / "scripts" / "trace" / "eval_othello.sh").is_file()
-    assert (
-        ROOT / "scripts" / "trace" / "compare_shortest_path_difficulty.sh"
-    ).is_file()
-    assert (ROOT / "scripts" / "trace" / "test_shortest_path.sh").is_file()
-    assert (
-        ROOT / "scripts" / "trace" / "ablate_shortest_path_gate_init.sh"
-    ).is_file()
-    assert (ROOT / "scripts" / "test_smoke.sh").is_file()
+    assert (ROOT / "scripts" / "trace" / "eval.sh").is_file()
+    assert (ROOT / "tests" / "test_shortest_path.sh").is_file()
+    assert (ROOT / "tests" / "test_smoke.sh").is_file()
     assert not (ROOT / "scripts" / "local").exists()
     assert not (ROOT / "scripts" / "drift").exists()
     assert not (ROOT / "scripts" / "ablations").exists()
@@ -65,18 +61,6 @@ def test_canonical_training_launchers_do_not_accept_scientific_overrides():
             assert variable not in text, f"{launcher} accepts scientific override {variable}"
 
 
-def test_shortest_path_workflows_use_only_easy_and_main_distributions():
-    difficulty = (
-        ROOT / "scripts" / "trace" / "compare_shortest_path_difficulty.sh"
-    ).read_text(encoding="utf-8")
-    assert 'SHORTEST_PATH_DISTRIBUTIONS="${SHORTEST_PATH_DISTRIBUTIONS:-easy}"' in difficulty
-    assert 'ARCHITECTURES="${ARCHITECTURES:-transformer}"' in difficulty
-    assert 'TRAIN_STEPS="${TRAIN_STEPS:-10000}"' in difficulty
-    assert 'MIN_QUAL_EXAMPLES="${MIN_QUAL_EXAMPLES:-4096}"' in difficulty
-    assert "--shortest-path-distribution" in difficulty
-    assert "SHORTEST_PATH_VARIANTS" not in difficulty
-
-
 def test_trace_launcher_runs_task_matrix_into_task_first_results(tmp_path):
     bin_dir, log_path = _fake_python(tmp_path)
     env = os.environ.copy()
@@ -110,6 +94,63 @@ def test_trace_launcher_runs_task_matrix_into_task_first_results(tmp_path):
     assert f"--run-dir {tmp_path}/results/othello/memory_add/seed_1337" in training_calls[1]
 
 
+def test_trace_eval_routes_to_task_specific_evaluator(tmp_path):
+    bin_dir, log_path = _fake_python(tmp_path)
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    output_dir = tmp_path / "evaluation"
+    env = os.environ.copy()
+    env.update(
+        {
+            "PATH": f"{bin_dir}:{env['PATH']}",
+            "REAL_PYTHON": sys.executable,
+            "RUN_DIR": str(run_dir),
+            "OUTPUT_DIR": str(output_dir),
+            "DEVICE": "cpu",
+        }
+    )
+
+    (run_dir / "config.json").write_text(
+        json.dumps(
+            {"args": {"task": "shortest_path", "architecture": "transformer"}}
+        ),
+        encoding="utf-8",
+    )
+    subprocess.run(
+        ["bash", str(ROOT / "scripts" / "trace" / "eval.sh")],
+        cwd=ROOT,
+        env=env,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    calls = log_path.read_text(encoding="utf-8").splitlines()
+    assert len(calls) == 1
+    assert "-m experiments.eval_trace_drift" in calls[0]
+    assert "--inference-mode recompute" in calls[0]
+    assert "--inference-mode append_recurrent" not in calls[0]
+
+    log_path.unlink()
+    (run_dir / "config.json").write_text(
+        json.dumps(
+            {"args": {"task": "othello", "architecture": "memory_tape"}}
+        ),
+        encoding="utf-8",
+    )
+    subprocess.run(
+        ["bash", str(ROOT / "scripts" / "trace" / "eval.sh")],
+        cwd=ROOT,
+        env=env,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    calls = log_path.read_text(encoding="utf-8").splitlines()
+    assert len(calls) == 1
+    assert "-m experiments.eval_othello" in calls[0]
+    assert "--inference-modes recompute append_recurrent" in calls[0]
+
+
 def _fake_python(tmp_path):
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
@@ -117,6 +158,9 @@ def _fake_python(tmp_path):
     executable = bin_dir / "python"
     executable.write_text(
         "#!/usr/bin/env bash\n"
+        'if [[ "${1:-}" == "-c" ]]; then\n'
+        '  exec "${REAL_PYTHON:?}" "$@"\n'
+        "fi\n"
         f"printf '%s\\n' \"$*\" >> {log_path!s}\n",
         encoding="utf-8",
     )
