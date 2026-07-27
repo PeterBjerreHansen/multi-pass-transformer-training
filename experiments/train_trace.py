@@ -132,11 +132,6 @@ def _apply_resume_args(args, checkpoint: dict) -> None:
         "train_steps": args.train_steps,
         "device": args.device,
     }
-    if (
-        saved.get("task") == "shortest_path"
-        and "shortest_path_distribution" not in saved
-    ):
-        args.shortest_path_distribution = "legacy"
     for key, value in saved.items():
         setattr(args, key, value)
     for key, value in preserve.items():

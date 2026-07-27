@@ -269,64 +269,10 @@ def test_othello_generation_is_partition_invariant():
     assert othello.np.array_equal(whole[1], partitioned_lengths)
 
 
-def test_shortest_path_generation_is_unique_deterministic_and_parseable():
-    config = (8, 3, 2, 5)
-    for seed in range(250):
-        first = shortest_path.sample_unique_shortest_path_graph(*config, random.Random(seed))
-        second = shortest_path.sample_unique_shortest_path_graph(*config, random.Random(seed))
-        assert first == second
-        edges, start, goal, target_path = first
-        solved_path, path_count = shortest_path.solve_shortest_path(
-            config[0],
-            edges,
-            start,
-            goal,
-        )
-        assert path_count == 1
-        assert solved_path == target_path
-        assert len(target_path) == config[1] + 1
-        assert len(edges) == config[1] + config[3]
-        assert max(
-            sum(source == node for source, _target in edges)
-            for node in range(config[0])
-        ) <= config[2]
-
-    _vocab, stoi, _itos = shortest_path.build_shortest_path_vocab(*config)
-    prompt, answer, edges, start, goal, target_path = shortest_path.sample_shortest_path_example(
-        *config,
-        stoi,
-        random.Random(8128),
-    )
-    parsed_edges, parsed_start, parsed_goal = shortest_path.parse_prompt_metadata(
-        prompt,
-        num_nodes=config[0],
-        edge_count=config[1] + config[3],
-    )
-    assert set(parsed_edges) == set(edges)
-    assert parsed_start == start
-    assert parsed_goal == goal
-    assert answer == [stoi[shortest_path.node_token(node)] for node in target_path]
-    assert shortest_path.legal_prefix_length(
-        prompt,
-        answer,
-        num_nodes=config[0],
-        edge_count=config[1] + config[3],
-    ) == (len(answer), True)
-
-    corrupted = list(answer)
-    corrupted[0] = stoi[shortest_path.node_token((start + 1) % config[0])]
-    assert shortest_path.legal_prefix_length(
-        prompt,
-        corrupted,
-        num_nodes=config[0],
-        edge_count=config[1] + config[3],
-    )[1] is False
-
-
 def test_shortest_path_distributions_are_varied_permuted_and_solver_verified():
     for distribution_name in ("smoke", "main"):
         distribution = shortest_path.get_shortest_path_distribution(distribution_name)
-        _vocab, stoi, _itos = shortest_path.build_distribution_shortest_path_vocab(
+        _vocab, stoi, _itos = shortest_path.build_shortest_path_vocab(
             distribution_name
         )
         first_rng = random.Random(714)
@@ -336,12 +282,12 @@ def test_shortest_path_distributions_are_varied_permuted_and_solver_verified():
         observed_starts = set()
         multi_route_examples = 0
         for _ in range(500):
-            first = shortest_path.sample_distribution_shortest_path_example(
+            first = shortest_path.sample_shortest_path_example(
                 distribution_name,
                 stoi,
                 first_rng,
             )
-            second = shortest_path.sample_distribution_shortest_path_example(
+            second = shortest_path.sample_shortest_path_example(
                 distribution_name,
                 stoi,
                 second_rng,
@@ -419,10 +365,10 @@ def test_shortest_path_label_permutation_preserves_the_solution():
 
 def test_shortest_path_smoke_example_can_be_overfit_and_generated():
     torch.manual_seed(123)
-    vocab, stoi, _itos = shortest_path.build_distribution_shortest_path_vocab(
+    vocab, stoi, _itos = shortest_path.build_shortest_path_vocab(
         "smoke"
     )
-    batch = shortest_path.build_distribution_shortest_path_batch(
+    batch = shortest_path.build_shortest_path_batch(
         batch_size=1,
         distribution_name="smoke",
         stoi=stoi,

@@ -95,45 +95,21 @@ def _othello_legality(_args, _prompt_tokens, generated_tokens):
 
 
 def _shortest_path_vocab(args):
-    distribution = getattr(args, "shortest_path_distribution", "legacy")
-    if distribution != "legacy":
-        return shortest_path.build_distribution_shortest_path_vocab(distribution)
     return shortest_path.build_shortest_path_vocab(
-        args.num_nodes,
-        args.shortest_path_length,
-        args.branching_factor,
-        args.distractor_edges,
+        args.shortest_path_distribution
     )
 
 
 def _shortest_path_block_size(args) -> int:
-    distribution = getattr(args, "shortest_path_distribution", "legacy")
-    if distribution != "legacy":
-        return shortest_path.required_distribution_block_size(distribution)
     return shortest_path.required_block_size(
-        args.num_nodes,
-        args.shortest_path_length,
-        args.branching_factor,
-        args.distractor_edges,
+        args.shortest_path_distribution
     )
 
 
 def _shortest_path_batch(args, stoi, rng: random.Random, _split: str):
-    distribution = getattr(args, "shortest_path_distribution", "legacy")
-    if distribution != "legacy":
-        return shortest_path.build_distribution_shortest_path_batch(
-            batch_size=args.batch_size,
-            distribution_name=distribution,
-            stoi=stoi,
-            device=args.device,
-            rng=rng,
-        )
     return shortest_path.build_shortest_path_batch(
         batch_size=args.batch_size,
-        num_nodes=args.num_nodes,
-        path_length=args.shortest_path_length,
-        branching_factor=args.branching_factor,
-        distractor_edges=args.distractor_edges,
+        distribution_name=args.shortest_path_distribution,
         stoi=stoi,
         device=args.device,
         rng=rng,
@@ -141,37 +117,18 @@ def _shortest_path_batch(args, stoi, rng: random.Random, _split: str):
 
 
 def _shortest_path_metrics(model, batch, args, inference_mode: str | None):
-    distribution = getattr(args, "shortest_path_distribution", "legacy")
-    if distribution != "legacy":
-        return shortest_path.shortest_path_generation_metrics(
-            model,
-            batch,
-            args,
-            inference_mode=inference_mode,
-        )
     return shortest_path.shortest_path_generation_metrics(
         model,
         batch,
         args,
         inference_mode=inference_mode,
-        num_nodes=args.num_nodes,
-        edge_count=args.shortest_path_length + args.distractor_edges,
-        legacy_metric_semantics=True,
     )
 
 
-def _shortest_path_legality(args, prompt_tokens, generated_tokens):
-    distribution = getattr(args, "shortest_path_distribution", "legacy")
-    if distribution != "legacy":
-        return shortest_path.legal_prefix_length(
-            prompt_tokens,
-            generated_tokens,
-        )
+def _shortest_path_legality(_args, prompt_tokens, generated_tokens):
     return shortest_path.legal_prefix_length(
         prompt_tokens,
         generated_tokens,
-        num_nodes=args.num_nodes,
-        edge_count=args.shortest_path_length + args.distractor_edges,
     )
 
 

@@ -382,11 +382,8 @@ bash scripts/local/10_main_matrix_pilot.sh
 SEEDS="1337 2027" \
   bash scripts/local/20_trace_task_calibration.sh
 
-# Compare the smoke and main distributions on a small selected matrix.
+# Establish Transformer learnability on smoke before scaling the task.
 bash scripts/local/30_trace_difficulty_sweep.sh
-
-# Require all architectures to master smoke before launching main.
-bash scripts/local/40_shortest_path_mastery.sh
 ```
 
 The broad pilot defaults to the transformer and MemoryTape, 250 steps, one
@@ -397,21 +394,13 @@ post-training qualification uses 16 batches of 16 examples (256 examples) per
 inference mode. Override these independently with `TRAIN_EVAL_BATCHES`,
 `QUAL_EVAL_BATCHES`, and `DIAGNOSTIC_EVAL_BATCHES`.
 
-The difficulty sweep defaults to 5,000 steps on the same `smoke` and `main`
-distributions used by the named presets. It skips architecture diagnostics by
-default because its purpose is task calibration; set `RUN_DIAGNOSTICS=1` to
-include them. `scripts/summarize_learning_runs.py` writes
-`learning_summary.json`, including the larger per-inference-mode qualification
-metrics.
-
-`scripts/local/40_shortest_path_mastery.sh` is the decisive follow-up. It
-trains all seven architectures on `smoke`, evaluates 4,096 deterministic
-held-out examples in every supported inference mode, and stops unless every
-architecture achieves 100% exact-path, sequence-legality, and goal-reaching
-rates. Only then does it launch the equivalent `main` qualification. This
-keeps task calibration separate from architecture comparison and prevents a
-harder distribution from hiding a basic implementation or optimization
-failure.
+The difficulty workflow initially trains only the Transformer on `smoke` for
+10,000 steps, followed by deterministic evaluation on 4,096 held-out
+examples. It skips architecture diagnostics because its first purpose is
+simply to establish learnability. Once that succeeds, explicitly set
+`SHORTEST_PATH_DISTRIBUTIONS=main` to measure how standard Transformer
+performance changes with larger graphs, and only then add multi-pass
+architectures with `ARCHITECTURES`.
 
 MemoryTape's direct scalar reader gate uses `0.5` in the main presets. The
 reported gate-initialization experiment has two named presets which are tested

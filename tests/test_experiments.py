@@ -324,7 +324,7 @@ def test_main_presets_use_declared_experiment_scales():
             "distractor_edges",
         )
     )
-    assert shortest_path.required_distribution_block_size("main") == 69
+    assert shortest_path.required_block_size("main") == 69
 
 
 def test_othello_prefix_examples_and_legal_set_metrics_are_deterministic():

@@ -110,30 +110,6 @@ def test_symbolic_task_batches_follow_shared_contract(tmp_path):
             ),
             state_machine.required_block_size(num_states=4, alphabet_size=2, num_steps=5),
         ),
-        (
-            shortest_path.build_shortest_path_vocab(
-                num_nodes=8,
-                path_length=3,
-                branching_factor=2,
-                distractor_edges=5,
-            ),
-            shortest_path.build_shortest_path_batch(
-                batch_size=3,
-                num_nodes=8,
-                path_length=3,
-                branching_factor=2,
-                distractor_edges=5,
-                stoi=shortest_path.build_shortest_path_vocab(8, 3, 2, 5)[1],
-                device="cpu",
-                rng=random.Random(2006),
-            ),
-            shortest_path.required_block_size(
-                num_nodes=8,
-                path_length=3,
-                branching_factor=2,
-                distractor_edges=5,
-            ),
-        ),
     ]
 
     for vocab_triplet, batch, block_size in cases:
@@ -148,10 +124,10 @@ def test_symbolic_task_batches_follow_shared_contract(tmp_path):
             required_block_size=block_size,
         )
 
-    distribution_vocab = shortest_path.build_distribution_shortest_path_vocab(
+    distribution_vocab = shortest_path.build_shortest_path_vocab(
         "main"
     )
-    distribution_batch = shortest_path.build_distribution_shortest_path_batch(
+    distribution_batch = shortest_path.build_shortest_path_batch(
         batch_size=3,
         distribution_name="main",
         stoi=distribution_vocab[1],
@@ -162,7 +138,7 @@ def test_symbolic_task_batches_follow_shared_contract(tmp_path):
         distribution_batch,
         stoi=distribution_vocab[1],
         vocab_size=len(distribution_vocab[0]),
-        required_block_size=shortest_path.required_distribution_block_size("main"),
+        required_block_size=shortest_path.required_block_size("main"),
     )
 
     kwargs = {
