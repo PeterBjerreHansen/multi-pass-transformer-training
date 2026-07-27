@@ -3,12 +3,11 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "${ROOT}"
-source scripts/lib/local_pilot.sh
 
-DEVICE="$(local_pilot_device)"
+DEVICE="${DEVICE:-$(python -c 'from experiments.common import auto_device; print(auto_device())')}"
 SEEDS="${SEEDS:-1337 2027 4099}"
 RUN_ID="${RUN_ID:-$(date +%Y%m%d_%H%M%S)}"
-RESULT_ROOT="${RESULT_ROOT:-results/ablations/memory_gate_init/${RUN_ID}}"
+RESULT_ROOT="${RESULT_ROOT:-results/trace/shortest_path_gate_init/${RUN_ID}}"
 
 # These are fixed parts of the experiment contract, not environment overrides.
 QUALIFICATION_EVAL_BATCHES=16

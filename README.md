@@ -354,65 +354,48 @@ Each training run writes:
 Run the main experiment matrices with:
 
 ```bash
-bash scripts/bbh/10_bbh_curriculum.sh
-bash scripts/trace/10_othello_trace.sh
-bash scripts/trace/10_shortest_path_trace.sh
+bash scripts/bbh/run.sh
+bash scripts/trace/run.sh
 ```
 
-The first fixed 50,000-step shortest-path comparison runs the Transformer,
-MemoryTape, and MemoryAdd sequentially on `main`:
+The folders under `scripts/` follow the two task classes used by the training
+code: `bbh/` for curriculum tasks and `trace/` for autoregressive trace tasks.
+The BBH launcher defaults to all four BBH tasks; the trace launcher defaults to
+shortest path and Othello. Select a canonical matrix with `TASKS`,
+`ARCHITECTURES`, and `SEEDS`:
 
 ```bash
-DEVICE=mps bash scripts/trace/20_shortest_path_main_50k.sh
+DEVICE=mps \
+TASKS=shortest_path \
+ARCHITECTURES="transformer memory_tape memory_add" \
+SEEDS="1337 2027 4099" \
+RESULT_ROOT=results/trace \
+bash scripts/trace/run.sh
 ```
 
-It evaluates 4,096 held-out examples after each model, uses both inference
-modes where applicable, and runs memory diagnostics for MemoryTape and
-MemoryAdd. Existing checkpoints resume only for the number of steps remaining
-to the fixed 50,000-step target.
-
-`scripts/` is the sole root for executable project workflows. Canonical
-launchers take all scientific settings from their named presets. They permit
-only matrix selection (`TASKS`, `ARCHITECTURES`, and `SEEDS`) and operational
-placement (`DEVICE` and `RESULT_ROOT`); they do not accept training,
-evaluation, task-difficulty, or model-hyperparameter overrides.
+This writes the three runs to
+`results/trace/shortest_path/<architecture>/seed_<seed>`. Canonical launchers
+take all scientific settings from their named presets. They permit only matrix
+selection and operational placement (`DEVICE` and `RESULT_ROOT`); they do not
+accept training, evaluation, task-difficulty, or model-hyperparameter
+overrides.
 
 The BBH launcher supports all four tasks and all seven architectures. Use
 `TASKS`, `ARCHITECTURES`, and `SEEDS` to select the matrix without changing
-any scientific preset; the backwards-compatible `TASK=tracking` form selects
-one task. `SEEDS="1337 2027 4099"` expands independent repetitions without
-changing the preset.
+any scientific preset. `SEEDS="1337 2027 4099"` expands independent
+repetitions without changing the preset.
 
-Parameterized exploratory workflows live explicitly under `scripts/local/`
-and write under `results/local_pilots/`:
+The explicitly parameterized shortest-path difficulty comparison remains
+available beside the trace launcher:
 
 ```bash
-# Broad, short pass over the four BBH tasks and two trace tasks.
-bash scripts/local/10_main_matrix_pilot.sh
-
-# Longer learning-curve calibration for shortest path.
-SEEDS="1337 2027" \
-  bash scripts/local/20_trace_task_calibration.sh
-
-# Establish Transformer learnability on easy before scaling the task.
-bash scripts/local/30_trace_difficulty_sweep.sh
+bash scripts/trace/compare_shortest_path_difficulty.sh
 ```
 
-The broad pilot defaults to the transformer and MemoryTape, 250 steps, one
-seed, and a reduced local Othello dataset. The calibration defaults to 50,000
-steps and records both inference schedules plus diagnostics for multi-pass
-models. Repeated training evaluations use two batches by default, while the
-post-training qualification uses 16 batches of 16 examples (256 examples) per
-inference mode. Override these independently with `TRAIN_EVAL_BATCHES`,
-`QUAL_EVAL_BATCHES`, and `DIAGNOSTIC_EVAL_BATCHES`.
-
-The difficulty workflow initially trains only the Transformer on `easy` for
-10,000 steps, followed by deterministic evaluation on 4,096 held-out
-examples. It skips architecture diagnostics because its first purpose is
-simply to establish learnability. Once that succeeds, explicitly set
-`SHORTEST_PATH_DISTRIBUTIONS=main` to measure how standard Transformer
-performance changes with larger graphs, and only then add multi-pass
-architectures with `ARCHITECTURES`.
+It initially trains only the Transformer on `easy` for 10,000 steps, followed
+by deterministic evaluation on 4,096 held-out examples. Once that succeeds,
+set `SHORTEST_PATH_DISTRIBUTIONS=main` to measure the larger distribution, and
+then add multi-pass architectures with `ARCHITECTURES`.
 
 MemoryTape's direct scalar reader gate uses `0.5` in the main presets. The
 reported gate-initialization experiment has two named presets which are tested
@@ -420,14 +403,15 @@ to differ only in that value (`0.1` versus `1.0`).
 Run the fixed three-seed control/treatment experiment with:
 
 ```bash
-DEVICE=mps bash scripts/ablations/10_memory_gate_init.sh
+DEVICE=mps bash scripts/trace/ablate_shortest_path_gate_init.sh
 ```
 
 Its training, qualification, and diagnostic settings are fixed by the presets
-and script. For informal exploration of other gate values, the parameterized
-task sweep remains available under `scripts/local/`.
+and script.
 
-Use `scripts/train_smoke.sh` for quick end-to-end checks.
+Use `scripts/test_smoke.sh` for quick end-to-end checks, or
+`scripts/trace/test_shortest_path.sh` for the complete shortest-path workflow
+check.
 
 Drift evaluation:
 

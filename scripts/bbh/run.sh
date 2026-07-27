@@ -5,24 +5,28 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "${ROOT}"
 source "${ROOT}/scripts/lib/model_matrix.sh"
 
+TASKS="${TASKS:-permutation tracking pointer_chasing state_machine}"
 SEEDS="${SEEDS:-${SEED:-1337}}"
 ARCHITECTURES="${ARCHITECTURES:-transformer memory_tape joint_memory_tape memory_concat memory_add memory_state memory_update}"
-RESULT_ROOT="${RESULT_ROOT:-results/trace/othello}"
+RESULT_ROOT="${RESULT_ROOT:-results/bbh}"
 
 runtime_args=()
 [[ -n "${DEVICE:-}" ]] && runtime_args+=(--device "${DEVICE}")
 
+read -r -a task_matrix <<< "${TASKS}"
 read -r -a architecture_matrix <<< "${ARCHITECTURES}"
 read -r -a seed_matrix <<< "${SEEDS}"
 validate_architecture_matrix "${architecture_matrix[@]}"
 
-for ARCH in "${architecture_matrix[@]}"; do
-  for seed in "${seed_matrix[@]}"; do
-    python -m experiments.train_trace \
-      --preset othello_main \
-      --architecture "${ARCH}" \
-      --seed "${seed}" \
-      --run-dir "${RESULT_ROOT}/${ARCH}/seed_${seed}" \
-      "${runtime_args[@]+"${runtime_args[@]}"}"
+for task in "${task_matrix[@]}"; do
+  for ARCH in "${architecture_matrix[@]}"; do
+    for seed in "${seed_matrix[@]}"; do
+      python -m experiments.train_bbh \
+        --preset "${task}_main" \
+        --architecture "${ARCH}" \
+        --seed "${seed}" \
+        --run-dir "${RESULT_ROOT}/${task}/${ARCH}/seed_${seed}" \
+        "${runtime_args[@]+"${runtime_args[@]}"}"
+    done
   done
 done
