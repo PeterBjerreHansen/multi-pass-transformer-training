@@ -66,16 +66,16 @@ SHORTEST_PATH_DISTRIBUTIONS = {
     ),
     "main": ShortestPathDistribution(
         name="main",
-        min_nodes=8,
-        max_nodes=18,
-        min_path_length=3,
-        max_path_length=8,
+        min_nodes=16,
+        max_nodes=26,
+        min_path_length=5,
+        max_path_length=10,
         max_out_degree=2,
-        min_detours=2,
-        max_detours=3,
-        max_detour_penalty=4,
+        min_detours=4,
+        max_detours=6,
+        max_detour_penalty=2,
         min_edge_probability=0.05,
-        max_edge_probability=0.25,
+        max_edge_probability=0.20,
     ),
 }
 
@@ -90,9 +90,9 @@ def get_shortest_path_distribution(name: str) -> ShortestPathDistribution:
 def path_length_bucket(path_length: int) -> str:
     if path_length < 1:
         raise ValueError("path length must be positive")
-    if path_length <= 4:
-        return "short"
     if path_length <= 6:
+        return "short"
+    if path_length <= 8:
         return "medium"
     return "long"
 
@@ -220,7 +220,7 @@ def sample_shortest_path_graph(
 ) -> tuple[list[tuple[int, int]], int, int, list[int], int]:
     """Sample a varied DAG with a solver-verified unique shortest path.
 
-    A short route and one or two longer, randomly shaped alternatives establish
+    A short route and several longer, randomly shaped alternatives establish
     the task signal. Additional topologically valid edges are sampled with a
     random density, following the distributional spirit of CLRS graph samplers.
     Labels are independently permuted only after graph construction.
@@ -590,6 +590,17 @@ def shortest_path_generation_metrics(
     }
     bucket_counts = {bucket: 0 for bucket in PATH_LENGTH_BUCKETS}
     bucket_optimal = {bucket: 0.0 for bucket in PATH_LENGTH_BUCKETS}
+    step_counts = {
+        step: 0
+        for step in range(
+            1,
+            get_shortest_path_distribution(
+                args.shortest_path_distribution
+            ).max_path_length
+            + 1,
+        )
+    }
+    step_correct = {step: 0.0 for step in step_counts}
 
     for row in range(batch.idx.shape[0]):
         prompt_len = int(batch.prompt_lengths[row].item())
@@ -686,6 +697,12 @@ def shortest_path_generation_metrics(
         ]
         bucket_counts[bucket] += 1
         bucket_optimal[bucket] += float(exact_path)
+        for step in range(1, len(target_path_ids)):
+            step_counts[step] += 1
+            step_correct[step] += float(
+                step < len(generated_path_ids)
+                and generated_path_ids[step] == target_path_ids[step]
+            )
 
     count = int(batch.idx.shape[0])
     result = {key: value / count for key, value in totals.items()}
@@ -695,7 +712,14 @@ def shortest_path_generation_metrics(
             result[f"optimal_path_{bucket}"] = (
                 bucket_optimal[bucket] / bucket_count
             )
-            result[f"examples_{bucket}"] = float(bucket_count)
+            result[f"optimal_path_{bucket}__weight"] = float(bucket_count)
+            result[f"examples_{bucket}__sum"] = float(bucket_count)
+    for step, step_count in step_counts.items():
+        if step_count:
+            metric = f"path_step_{step}_accuracy"
+            result[metric] = step_correct[step] / step_count
+            result[f"{metric}__weight"] = float(step_count)
+            result[f"path_step_{step}_examples__sum"] = float(step_count)
     return result
 
 
@@ -710,6 +734,17 @@ def format_shortest_path_eval_metrics(metrics: dict[str, float]) -> str:
         for bucket in PATH_LENGTH_BUCKETS
         if f"optimal_path_{bucket}" in metrics
     )
+    step_numbers = sorted(
+        int(key.removeprefix("path_step_").removesuffix("_accuracy"))
+        for key in metrics
+        if key.startswith("path_step_") and key.endswith("_accuracy")
+    )
+    step_fields = [
+        f"{step}:{metrics[f'path_step_{step}_accuracy']:.3f}"
+        for step in step_numbers
+    ]
+    if step_fields:
+        fields.append(f"step_acc [{', '.join(step_fields)}]")
     return " | ".join(fields)
 
 

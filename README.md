@@ -312,23 +312,27 @@ goal-reaching rate, optimal-path accuracy, exact path-plus-EOS accuracy, and
 per-position legality under both `recompute` and `append_recurrent`. It also
 records realized graph connectivity, decision-point, relevant-edge, and
 random-legal-policy baselines. Main-distribution accuracy is also stratified
-into short (3–4 edges), medium (5–6), and long (7–8) paths. Graph edges are
-shuffled and node labels are independently permuted per example; the generator
-verifies that every serialized graph has exactly one shortest path.
+into short (5–6 edges), medium (7–8), and long (9–10) paths. Free-generation
+accuracy is reported separately for every transition step; step 1 is the first
+move after the explicitly supplied start node. Graph edges are shuffled and
+node labels are independently permuted per example; the generator verifies
+that every serialized graph has exactly one shortest path.
 
 | Distribution | Nodes | Shortest-path edges | Maximum out-degree | Longer alternatives |
 | --- | ---: | ---: | ---: | ---: |
 | `easy` | 8–12 | 3–4 | 2 | 1–2 |
-| `main` | 8–18 | 3–8, sampled uniformly | 2 | 2–3 |
+| `main` | 16–26 | 5–10, sampled uniformly | 2 | 4–6 |
 
 For `main`, path length is sampled before graph size. The minimum graph size is
-then constrained to fit that path and two detours, so every path length is
+then constrained to fit that path and four detours, so every path length is
 equally represented without impossible long-path/small-graph combinations.
-The number of serialized edges is deliberately not fixed. Background DAG edges
-are sampled at a randomized density and retained only when the planted answer
-remains the unique shortest path. Use `shortest_path_easy` for a full 50,000
-step run on the easier distribution; the one-step `shortest_path_smoke` preset
-uses the same distribution with tiny software-test settings.
+Every example therefore contains at least four genuine routing decisions, and
+the planted alternatives are only one or two edges longer. The number of
+serialized edges is deliberately not fixed. Background DAG edges are sampled
+at a randomized density and retained only when the planted answer remains the
+unique shortest path. Use `shortest_path_easy` for a full 50,000 step run on
+the easier distribution; the one-step `shortest_path_smoke` preset uses the
+same distribution with tiny software-test settings.
 
 Post-training trace evaluation:
 

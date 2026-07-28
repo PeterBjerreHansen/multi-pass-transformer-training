@@ -51,9 +51,13 @@ METRIC_LABELS = {
     "sequence_legality": "Fully legal sequence rate",
     "mean_legal_len": "Mean legal-prefix length",
     "optimal_path": "Optimal-path rate",
-    "optimal_path_short": "Optimal-path rate (3–4 edges)",
-    "optimal_path_medium": "Optimal-path rate (5–6 edges)",
-    "optimal_path_long": "Optimal-path rate (7–8 edges)",
+    "optimal_path_short": "Optimal-path rate (short bucket)",
+    "optimal_path_medium": "Optimal-path rate (medium bucket)",
+    "optimal_path_long": "Optimal-path rate (long bucket)",
+    **{
+        f"path_step_{step}_accuracy": f"Path step {step} accuracy"
+        for step in range(1, 11)
+    },
     "goal_reached": "Goal-reached rate",
     "valid_edge_rate": "Valid-edge rate",
     "exact_path": "Exact-path rate",

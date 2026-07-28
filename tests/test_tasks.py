@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import random
+from types import SimpleNamespace
 
 import pytest
 import torch
@@ -345,20 +346,29 @@ def test_shortest_path_distributions_are_varied_permuted_and_solver_verified():
 def test_shortest_path_main_uniformly_mixes_feasible_path_lengths():
     _vocab, stoi, _itos = shortest_path.build_shortest_path_vocab("main")
     rng = random.Random(1337)
-    path_length_counts = {path_length: 0 for path_length in range(3, 9)}
+    path_length_counts = {path_length: 0 for path_length in range(5, 11)}
     for _ in range(6_000):
-        prompt, _answer, _edges, _start, _goal, path = (
+        prompt, _answer, edges, start, goal, path = (
             shortest_path.sample_shortest_path_example("main", stoi, rng)
         )
         path_length = len(path) - 1
         num_nodes = prompt.index(stoi[shortest_path.EDGES_TOKEN]) - 1
         path_length_counts[path_length] += 1
-        assert num_nodes >= path_length + 5
+        structure = shortest_path.graph_structure_metrics(
+            num_nodes,
+            edges,
+            start,
+            goal,
+            path,
+        )
+        assert num_nodes >= path_length + 9
+        assert structure["decision_points"] >= 4
+        assert structure["random_legal_path_probability"] <= 1 / 16
 
     assert all(count >= 850 for count in path_length_counts.values())
-    assert shortest_path.path_length_bucket(3) == "short"
-    assert shortest_path.path_length_bucket(5) == "medium"
-    assert shortest_path.path_length_bucket(8) == "long"
+    assert shortest_path.path_length_bucket(5) == "short"
+    assert shortest_path.path_length_bucket(7) == "medium"
+    assert shortest_path.path_length_bucket(10) == "long"
 
 
 def test_shortest_path_label_permutation_preserves_the_solution():
@@ -379,6 +389,43 @@ def test_shortest_path_label_permutation_preserves_the_solution():
     assert mapped_path == [2, 0, 1]
     assert path_count == 1
     assert solved_path == mapped_path
+
+
+def test_shortest_path_step_accuracy_excludes_the_supplied_start_node():
+    _vocab, stoi, _itos = shortest_path.build_shortest_path_vocab("main")
+    batch = shortest_path.build_shortest_path_batch(
+        batch_size=1,
+        distribution_name="main",
+        stoi=stoi,
+        device="cpu",
+        rng=random.Random(19),
+    )
+    prompt_len = int(batch.prompt_lengths[0])
+    output_len = int(batch.output_lengths[0])
+    generated_suffix = batch.targets[
+        0,
+        prompt_len - 1 : prompt_len - 1 + output_len,
+    ].clone()
+    generated_suffix[1] = generated_suffix[0]
+
+    class FixedGeneration:
+        def generate(self, prompt, **_kwargs):
+            return torch.cat((prompt, generated_suffix[None, :]), dim=1)
+
+    metrics = shortest_path.shortest_path_generation_metrics(
+        FixedGeneration(),
+        batch,
+        SimpleNamespace(
+            architecture="transformer",
+            inference_mode="recompute",
+            token_selection="argmax",
+            shortest_path_distribution="main",
+        ),
+    )
+    assert "path_step_0_accuracy" not in metrics
+    assert metrics["path_step_1_accuracy"] == 0.0
+    assert metrics["path_step_2_accuracy"] == 1.0
+    assert metrics["path_step_1_examples__sum"] == 1.0
 
 
 def test_shortest_path_easy_example_can_be_overfit_and_generated():

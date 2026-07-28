@@ -79,6 +79,47 @@ def test_evaluation_sampling_is_repeatable_and_does_not_change_global_rng():
     assert torch.equal(before, after)
 
 
+def test_evaluation_aggregates_conditional_metrics_by_example_count():
+    args = _args()
+    model = MemoryTapeTransformer(MemoryTapeConfig(24, 12, 1, 1, 8, 3))
+    _vocab, stoi, _ = pointer_chasing.build_pointer_chasing_vocab(5)
+    batch = pointer_chasing.build_pointer_chasing_batch(
+        2,
+        5,
+        2,
+        stoi,
+        device="cpu",
+        rng=random.Random(2),
+    )
+    batch_metrics = iter(
+        (
+            {
+                "conditional_accuracy": 1.0,
+                "conditional_accuracy__weight": 1.0,
+                "conditional_examples__sum": 1.0,
+            },
+            {
+                "conditional_accuracy": 0.25,
+                "conditional_accuracy__weight": 3.0,
+                "conditional_examples__sum": 3.0,
+            },
+        )
+    )
+
+    def generation_metrics(*_args, **_kwargs):
+        return next(batch_metrics)
+
+    result = evaluate_prebuilt_batches(
+        model,
+        args,
+        [batch, batch],
+        generation_metrics_fn=generation_metrics,
+    )
+    assert result["conditional_accuracy"] == pytest.approx(0.4375)
+    assert result["conditional_examples"] == 4.0
+    assert not any(key.endswith(("__weight", "__sum")) for key in result)
+
+
 def test_memory_interventions_pass_dynamics_and_schedule_gap_return_finite_values():
     model = MemoryTapeTransformer(MemoryTapeConfig(24, 12, 1, 1, 8, 3))
     _vocab, stoi, _ = pointer_chasing.build_pointer_chasing_vocab(5)
@@ -328,7 +369,7 @@ def test_main_presets_use_declared_experiment_scales():
         )
     )
     assert shortest_path.required_block_size("easy") == 69
-    assert shortest_path.required_block_size("main") == 103
+    assert shortest_path.required_block_size("main") == 145
 
 
 def test_othello_prefix_examples_and_legal_set_metrics_are_deterministic():

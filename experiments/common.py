@@ -368,7 +368,8 @@ def evaluate_prebuilt_batches(
     start = time.perf_counter()
     total_loss = 0.0
     totals: dict[str, float] = {}
-    counts: dict[str, int] = {}
+    weights: dict[str, float] = {}
+    summed_metrics: dict[str, float] = {}
     sequence_count = 0
     input_token_count = 0
     output_token_count = 0
@@ -388,16 +389,29 @@ def evaluate_prebuilt_batches(
                     inference_mode=inference_mode,
                 )
                 total_loss += float(loss.item())
+                # Conditional task metrics can attach ``<name>__weight`` so
+                # batches are combined by eligible-example count. Metrics
+                # named ``<name>__sum`` are exposed as ``<name>`` after summing.
                 for key, value in metrics.items():
-                    totals[key] = totals.get(key, 0.0) + float(value)
-                    counts[key] = counts.get(key, 0) + 1
+                    if key.endswith("__weight"):
+                        continue
+                    if key.endswith("__sum"):
+                        public_key = key.removesuffix("__sum")
+                        summed_metrics[public_key] = (
+                            summed_metrics.get(public_key, 0.0) + float(value)
+                        )
+                        continue
+                    weight = float(metrics.get(f"{key}__weight", 1.0))
+                    totals[key] = totals.get(key, 0.0) + float(value) * weight
+                    weights[key] = weights.get(key, 0.0) + weight
     finally:
         model.train(was_training)
 
     synchronize_device(getattr(args, "device", None))
     elapsed = time.perf_counter() - start
     result = {"loss": total_loss / len(batches)}
-    result.update({key: total / counts[key] for key, total in totals.items()})
+    result.update({key: total / weights[key] for key, total in totals.items()})
+    result.update(summed_metrics)
     if elapsed > 0:
         result.update(
             {

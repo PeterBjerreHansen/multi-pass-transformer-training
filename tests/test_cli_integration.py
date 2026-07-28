@@ -173,6 +173,8 @@ def test_shortest_path_training_resume_drift_and_diagnostics_cli(tmp_path):
         "exact_path",
         "optimal_path_short",
         "examples_short",
+        "path_step_1_accuracy",
+        "path_step_1_examples",
     ):
         assert metric in evaluation["metrics"]
 

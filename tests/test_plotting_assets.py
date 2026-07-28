@@ -93,6 +93,8 @@ def test_plotting_notebooks_are_valid_output_free_python():
     assert 'RESULT_ROOT = REPO_ROOT / "results" / "trace"' in trace_source
     assert 'SHORTEST_PATH_DISTRIBUTION = "main"' in trace_source
     assert "shortest_path_distribution=SHORTEST_PATH_DISTRIBUTION" in trace_source
+    assert 'f"path_step_{step}_accuracy"' in trace_source
+    assert "Final checkpoint: accuracy by path step" in trace_source
     assert "row.get(\"level\") is None" in trace_source
 
 
