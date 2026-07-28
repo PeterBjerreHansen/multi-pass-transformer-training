@@ -368,8 +368,8 @@ bash scripts/trace/run.sh
 The folders under `scripts/` follow the two task classes used by the training
 code: `bbh/` for curriculum tasks and `trace/` for autoregressive trace tasks.
 The BBH launcher defaults to all four BBH tasks; the trace launcher defaults to
-shortest path and Othello. Select a canonical matrix with `TASKS`,
-`ARCHITECTURES`, and `SEEDS`:
+the 100,000-step shortest-path main preset and Othello. Select a canonical
+matrix with `TASKS`, `ARCHITECTURES`, and `SEEDS`:
 
 ```bash
 DEVICE=mps \

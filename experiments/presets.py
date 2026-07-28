@@ -127,6 +127,7 @@ shortest_path_main = _trace_defaults(
 )
 shortest_path_main.update(
     shortest_path_distribution="main",
+    train_steps=100_000,
 )
 TRACE_PRESETS["shortest_path_main"] = ExperimentPreset(
     "Main mixed-difficulty, solver-verified shortest-path distribution.",

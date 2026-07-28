@@ -323,7 +323,8 @@ def test_shortest_path_cli_exposes_only_easy_and_main_distributions():
     smoke = parse_trace_args(["--preset", "shortest_path_smoke"])
     assert main.shortest_path_distribution == "main"
     assert easy.shortest_path_distribution == "easy"
-    assert easy.train_steps == main.train_steps == 50_000
+    assert easy.train_steps == 50_000
+    assert main.train_steps == 100_000
     assert smoke.shortest_path_distribution == "easy"
     with pytest.raises(SystemExit):
         parse_trace_args(
@@ -547,7 +548,7 @@ def test_main_trace_preset_contract_is_frozen():
         "shortest_path_main": {
             "task": "shortest_path",
             "batch_size": 64,
-            "train_steps": 50_000,
+            "train_steps": 100_000,
             "lr": 3e-4,
             "eval_interval": 1_000,
             "eval_batches": 4,
