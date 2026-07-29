@@ -23,28 +23,28 @@ python -m experiments.train_trace \
   --device cpu \
   --run-dir "${CPU_RUN}"
 
-python -m experiments.eval_diagnostics \
+python -m experiments.diagnose_memory \
   --input-run-dir "${CPU_RUN}" \
   --device cpu \
   --batch-size 2 \
   --eval-batches 1 \
   --extra-passes 2
 
-python -m experiments.eval_trace_drift \
+python -m experiments.eval_trace \
   --input-run-dir "${CPU_RUN}" \
   --inference-mode recompute \
   --token-selection argmax \
   --device cpu \
   --eval-batches 1 \
-  --run-dir "${CPU_RUN}/drift/recompute"
+  --output-dir "${CPU_RUN}/drift/recompute"
 
-python -m experiments.eval_trace_drift \
+python -m experiments.eval_trace \
   --input-run-dir "${CPU_RUN}" \
   --inference-mode append_recurrent \
   --token-selection argmax \
   --device cpu \
   --eval-batches 1 \
-  --run-dir "${CPU_RUN}/drift/append_recurrent"
+  --output-dir "${CPU_RUN}/drift/append_recurrent"
 
 if python -c 'import torch; raise SystemExit(0 if torch.backends.mps.is_available() else 1)'; then
   python -m experiments.train_trace \
