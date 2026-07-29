@@ -37,6 +37,7 @@ def build_model(args, vocab_size: int, block_size: int, device: str):
             MemoryTapeConfig(
                 **common,
                 n_pass=args.n_pass,
+                use_conditional_memory_gate=args.conditional_memory_gate == "on",
             )
         )
     elif args.architecture == "memory_add":

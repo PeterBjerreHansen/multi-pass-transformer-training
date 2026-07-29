@@ -145,6 +145,45 @@ def test_trace_training_evaluation_and_diagnostics_cli(tmp_path):
     assert "path_step_1_accuracy" in summary["metrics"]
 
 
+def test_conditional_gate_cli_persists_config_gradients_and_diagnostics(tmp_path):
+    run_dir = tmp_path / "conditional_gate"
+    _run(
+        "-m", "experiments.train_trace",
+        "--preset", "shortest_path_smoke",
+        "--architecture", "memory_tape",
+        "--conditional-memory-gate", "on",
+        "--device", "cpu",
+        "--run-dir", str(run_dir),
+    )
+    config = json.loads((run_dir / "config.json").read_text(encoding="utf-8"))
+    assert config["args"]["conditional_memory_gate"] == "on"
+    assert config["model_config"]["use_conditional_memory_gate"] is True
+    events = [
+        json.loads(line)
+        for line in (run_dir / "metrics.jsonl").read_text(encoding="utf-8").splitlines()
+    ]
+    evaluation = next(event for event in events if event["event"] == "eval")
+    assert evaluation["gradient_norms"]["memory_gate"]["max"] > 0
+
+    output = run_dir / "diagnostics.json"
+    _run(
+        "-m", "experiments.diagnose_memory",
+        "--input-run-dir", str(run_dir),
+        "--device", "cpu",
+        "--batch-size", "2",
+        "--eval-batches", "1",
+        "--output", str(output),
+    )
+    diagnostics = json.loads(output.read_text(encoding="utf-8"))
+    gates = diagnostics["conditional_memory_gates"]
+    assert gates["enabled"] == 1.0
+    assert set(gates["loss_deltas"]) == {
+        "forced_open",
+        "forced_half",
+        "cross_example",
+    }
+
+
 def test_othello_random_prefix_evaluation_cli(tmp_path):
     run_dir = tmp_path / "othello"
     data_dir = tmp_path / "othello_data"

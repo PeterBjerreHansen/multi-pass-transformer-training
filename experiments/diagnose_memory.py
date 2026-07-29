@@ -34,6 +34,7 @@ from experiments.train_trace import (
     validate_task_args as validate_trace_task_args,
 )
 from model_factory import is_multi_pass_architecture
+from models import ConditionalResidualGate
 
 
 def parse_args(argv: list[str] | None = None):
@@ -102,6 +103,88 @@ def _build_model_and_batches(args, *, bbh_level: int | None = None):
 
 def _nll(model, logits: torch.Tensor, targets: torch.Tensor) -> float:
     return float(model.calc_loss(logits, targets).item())
+
+
+def _gate_value_stats(values: list[torch.Tensor]) -> dict[str, float]:
+    flat = torch.cat([value.detach().float().reshape(-1).cpu() for value in values])
+    return {
+        "mean": float(flat.mean().item()),
+        "std": float(flat.std(unbiased=False).item()),
+        "min": float(flat.min().item()),
+        "max": float(flat.max().item()),
+        "mean_abs_deviation_from_half": float((flat - 0.5).abs().mean().item()),
+        "fraction_below_0_05": float((flat < 0.05).float().mean().item()),
+        "fraction_above_0_95": float((flat > 0.95).float().mean().item()),
+    }
+
+
+@torch.no_grad()
+def conditional_gate_diagnostics(model, batch) -> dict:
+    """Measure gate variation and counterfactual dependence on conditioning."""
+    gates = [
+        (name, module)
+        for name, module in model.named_modules()
+        if isinstance(module, ConditionalResidualGate)
+    ]
+    if not gates:
+        return {"enabled": 0.0, "parameter_count": 0.0}
+
+    def run(mode: str) -> tuple[float, dict[str, list[torch.Tensor]]]:
+        captured: dict[str, list[torch.Tensor]] = {name: [] for name, _module in gates}
+        handles = []
+
+        for name, module in gates:
+            def hook(_module, _inputs, output, *, gate_name=name):
+                captured[gate_name].append(output.detach())
+                if mode == "learned":
+                    return None
+                if mode == "forced_open":
+                    return torch.ones_like(output)
+                if mode == "forced_half":
+                    return torch.full_like(output, 0.5)
+                if mode == "cross_example":
+                    return output.roll(1, dims=0)
+                raise ValueError(f"unsupported conditional gate diagnostic mode: {mode}")
+
+            handles.append(module.register_forward_hook(hook))
+        try:
+            output = model(batch.idx)
+            loss = _nll(model, output.logits, batch.targets)
+        finally:
+            for handle in handles:
+                handle.remove()
+        return loss, captured
+
+    learned_loss, captured = run("learned")
+    forced_open_loss, _ = run("forced_open")
+    forced_half_loss, _ = run("forced_half")
+    cross_example_loss, _ = run("cross_example")
+    all_values = [value for values in captured.values() for value in values]
+    parameter_count = sum(
+        parameter.numel()
+        for _name, module in gates
+        for parameter in module.parameters()
+    )
+    return {
+        "enabled": 1.0,
+        "parameter_count": float(parameter_count),
+        "aggregate": _gate_value_stats(all_values),
+        "per_gate": {
+            name: _gate_value_stats(values)
+            for name, values in captured.items()
+        },
+        "losses": {
+            "learned": learned_loss,
+            "forced_open": forced_open_loss,
+            "forced_half": forced_half_loss,
+            "cross_example": cross_example_loss,
+        },
+        "loss_deltas": {
+            "forced_open": forced_open_loss - learned_loss,
+            "forced_half": forced_half_loss - learned_loss,
+            "cross_example": cross_example_loss - learned_loss,
+        },
+    }
 
 
 def _memory_stats(memory: torch.Tensor) -> dict[str, float]:
@@ -508,6 +591,7 @@ def diagnose_memory(cli_args) -> Path:
         intervention_results = []
         dynamics_results = []
         schedule_gap_results = []
+        conditional_gate_results = []
         for batch_index, batch in enumerate(batches):
             intervention_results.append(
                 memory_interventions(
@@ -520,6 +604,7 @@ def diagnose_memory(cli_args) -> Path:
             schedule_gap_results.append(
                 teacher_forced_schedule_gap(model, batch, horizon=cli_args.schedule_gap_horizon)
             )
+            conditional_gate_results.append(conditional_gate_diagnostics(model, batch))
     finally:
         model.train(was_training)
 
@@ -536,6 +621,7 @@ def diagnose_memory(cli_args) -> Path:
         "memory_interventions": _mean_numbers(intervention_results),
         "pass_dynamics": _mean_numbers(dynamics_results),
         "teacher_forced_schedule_gap": _aggregate_teacher_forced_schedule_gaps(schedule_gap_results),
+        "conditional_memory_gates": _mean_numbers(conditional_gate_results),
     }
     if bbh_level is not None:
         payload["evaluated_level"] = bbh_level

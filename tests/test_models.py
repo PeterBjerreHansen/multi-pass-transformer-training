@@ -9,6 +9,7 @@ from model_factory import build_model
 from models import (
     CausalCrossAttention,
     CausalTransformer,
+    ConditionalResidualGate,
     LayerNorm,
     MemoryAddTransformer,
     MemoryBlock,
@@ -309,6 +310,7 @@ def test_model_factory_constructs_supported_architectures():
         n_head=1,
         n_embd=8,
         n_pass=3,
+        conditional_memory_gate="off",
         pass_loss_weights=[0, 0, 1],
     )
     expected = {
@@ -329,6 +331,90 @@ def test_canonical_memory_models_have_no_gate_parameters(architecture):
         n_head=1,
         n_embd=8,
         n_pass=3,
+        conditional_memory_gate="off",
     )
     model = build_model(args, 17, 8, "cpu")
     assert not any("gate" in name for name, _parameter in model.named_parameters())
+
+
+def test_conditional_gate_initialization_matches_gateless_function():
+    common = dict(
+        block_size=8,
+        vocab_size=17,
+        n_layer=2,
+        n_head=1,
+        n_embd=8,
+        n_pass=3,
+    )
+    torch.manual_seed(71)
+    control = MemoryTapeTransformer(MemoryTapeConfig(**common))
+    torch.manual_seed(71)
+    treatment = MemoryTapeTransformer(
+        MemoryTapeConfig(**common, use_conditional_memory_gate=True)
+    )
+
+    treatment_state = treatment.state_dict()
+    for name, value in control.state_dict().items():
+        if name.endswith("cross_attn.c_proj.weight"):
+            assert torch.equal(treatment_state[name], value * 2)
+        else:
+            assert torch.equal(treatment_state[name], value), name
+
+    expected_extra = common["n_layer"] * (4 * common["n_embd"] + 1)
+    assert treatment.get_num_params() - control.get_num_params() == expected_extra
+    tokens = torch.randint(0, common["vocab_size"], (2, 7))
+    control_output = control(tokens)
+    treatment_output = treatment(tokens)
+    for left, right in zip(
+        control_output.logits_per_pass,
+        treatment_output.logits_per_pass,
+    ):
+        assert torch.allclose(left, right, atol=1e-7, rtol=1e-6)
+
+
+def test_conditional_residual_gate_is_token_wise_and_input_dependent():
+    gate = ConditionalResidualGate(8)
+    state = torch.randn(2, 5, 8)
+    delta = torch.randn(2, 5, 8)
+    initial = gate(state, delta)
+    assert torch.equal(initial, torch.full_like(initial, 0.5))
+    with torch.no_grad():
+        gate.weight.copy_(torch.linspace(-0.5, 0.5, 16)[None, :])
+    values = gate(state, delta)
+    assert values.shape == (2, 5, 1)
+    assert ((0 < values) & (values < 1)).all()
+    assert values.std().item() > 0
+    with pytest.raises(ValueError, match="share shape"):
+        gate(state, delta[:, :-1])
+
+
+def test_conditional_gate_is_causal_and_receives_gradients():
+    config = MemoryTapeConfig(
+        10,
+        17,
+        2,
+        1,
+        8,
+        3,
+        use_conditional_memory_gate=True,
+    )
+    model = MemoryTapeTransformer(config)
+    tokens = torch.randint(0, 17, (2, 8))
+    changed = tokens.clone()
+    changed[:, 5:] = torch.randint(0, 17, changed[:, 5:].shape)
+    model.eval()
+    assert torch.allclose(
+        model(tokens).logits[:, :5],
+        model(changed).logits[:, :5],
+        atol=1e-6,
+        rtol=0,
+    )
+
+    model.train()
+    targets = torch.randint(0, 17, tokens.shape)
+    model.calc_total_loss(model(tokens), targets, [0, 0, 1]).loss.backward()
+    for block in model.transformer.h:
+        assert block.conditional_gate is not None
+        gradient = block.conditional_gate.weight.grad
+        assert gradient is not None
+        assert gradient.abs().sum().item() > 0

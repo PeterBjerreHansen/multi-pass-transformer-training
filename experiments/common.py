@@ -67,6 +67,15 @@ def apply_model_size_preset(args) -> None:
 
 def validate_model_args(args) -> None:
     apply_model_size_preset(args)
+    if args.conditional_memory_gate not in {"off", "on"}:
+        raise ValueError("--conditional-memory-gate must be 'off' or 'on'")
+    if (
+        args.conditional_memory_gate == "on"
+        and args.architecture != "memory_tape"
+    ):
+        raise ValueError(
+            "--conditional-memory-gate is supported only by memory_tape"
+        )
     if args.n_layer < 1 or args.n_head < 1 or args.n_embd < 1:
         raise ValueError("model dimensions must be positive")
     if args.n_embd % args.n_head != 0:
@@ -308,7 +317,9 @@ def gradient_norms(model) -> dict[str, float]:
             continue
         squared_norm = parameter.grad.detach().float().square().sum()
 
-        if "cross_attn" in name or "ln_mem_kv" in name:
+        if "conditional_gate" in name:
+            group = "memory_gate"
+        elif "cross_attn" in name or "ln_mem_kv" in name:
             group = "memory_attention"
         elif name.startswith(("memory_projection", "mem_in_ln")):
             group = "memory_fusion"

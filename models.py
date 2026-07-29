@@ -101,7 +101,7 @@ class MultiPassConfig(TransformerConfig):
 
 @dataclass
 class MemoryTapeConfig(MultiPassConfig):
-    """Configuration seam for MemoryTape-specific ablations."""
+    use_conditional_memory_gate: bool = False
 
 
 # -----------------------------------------------------------------------------
@@ -118,6 +118,29 @@ class LayerNorm(nn.Module):
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         return F.layer_norm(x, self.weight.shape, self.weight, None, 1e-5)
+
+
+class ConditionalResidualGate(nn.Module):
+    """A cheap token-wise gate conditioned on state and proposed residual.
+
+    The raw projection parameters are created directly rather than through an
+    ``nn.Linear`` constructor. This avoids consuming random numbers, so gated
+    and gateless models initialized with the same seed share every common
+    parameter exactly.
+    """
+
+    def __init__(self, n_embd: int):
+        super().__init__()
+        self.state_norm = LayerNorm(n_embd)
+        self.delta_norm = LayerNorm(n_embd)
+        self.weight = nn.Parameter(torch.zeros(1, 2 * n_embd))
+        self.bias = nn.Parameter(torch.zeros(1))
+
+    def forward(self, state: torch.Tensor, delta: torch.Tensor) -> torch.Tensor:
+        if state.shape != delta.shape:
+            raise ValueError("conditional gate state and delta must share shape")
+        features = torch.cat((self.state_norm(state), self.delta_norm(delta)), dim=-1)
+        return torch.sigmoid(F.linear(features, self.weight, self.bias))
 
 
 class MLP(nn.Module):
@@ -629,12 +652,19 @@ class MemoryBlock(nn.Module):
         self.ln_mem_q = LayerNorm(config.n_embd)
         self.ln_mem_kv = LayerNorm(config.n_embd)
         self.cross_attn = CausalCrossAttention(config)
+        self.conditional_gate = (
+            ConditionalResidualGate(config.n_embd)
+            if config.use_conditional_memory_gate
+            else None
+        )
         self.ln_mlp = LayerNorm(config.n_embd)
         self.mlp = MLP(config)
 
     def forward(self, x: torch.Tensor, memory_states: torch.Tensor) -> torch.Tensor:
         x = x + self.attn(self.ln_self(x))
         memory_delta = self.cross_attn(self.ln_mem_q(x), self.ln_mem_kv(memory_states))
+        if self.conditional_gate is not None:
+            memory_delta = self.conditional_gate(x, memory_delta) * memory_delta
         x = x + memory_delta
         x = x + self.mlp(self.ln_mlp(x))
         return x
@@ -651,7 +681,8 @@ class MemoryTapeTransformer(MultiPassTransformer):
         # initial function without a scale-nonidentifiable learned parameter.
         with torch.no_grad():
             for block in self.transformer.h:
-                block.cross_attn.c_proj.weight.mul_(0.5)
+                if block.conditional_gate is None:
+                    block.cross_attn.c_proj.weight.mul_(0.5)
 
     def _run_full_pass(self, token_stream: torch.Tensor, memory_tape: torch.Tensor) -> torch.Tensor:
         hidden = token_stream

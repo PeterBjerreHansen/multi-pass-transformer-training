@@ -28,7 +28,7 @@ def parse_args(argv: list[str] | None = None):
     parser.add_argument("--output-dir", default=None)
     parser.add_argument(
         "--recommendation-mode",
-        choices=["pareto", "quality-only"],
+        choices=["pareto", "quality-only", "conditional-gate"],
         default="pareto",
     )
     parser.add_argument(
@@ -199,7 +199,34 @@ def recommend(
         or (tape_ratio is not None and tape_ratio <= 1.0 - SIZE_WIN)
     )
 
-    eligible = quality_win if mode == "quality-only" else quality_win or (noninferior and efficiency_win)
+    eligible = (
+        quality_win
+        if mode in {"quality-only", "conditional-gate"}
+        else quality_win or (noninferior and efficiency_win)
+    )
+    diagnostic_ok = None
+    if mode == "conditional-gate":
+        gate_variation = [
+            _number(
+                run.get(
+                    "diagnostics.conditional_memory_gates.aggregate.std"
+                )
+            )
+            for run in treatment.values()
+        ]
+        conditioning_deltas = [
+            _number(
+                run.get(
+                    "diagnostics.conditional_memory_gates.loss_deltas.cross_example"
+                )
+            )
+            for run in treatment.values()
+        ]
+        diagnostic_ok = (
+            sum(value is not None and value >= 0.01 for value in gate_variation) >= 2
+            and sum(value is not None and value > 0 for value in conditioning_deltas) >= 2
+        )
+        eligible = eligible and diagnostic_ok
 
     return {
         "recommend_merge": eligible,
@@ -213,6 +240,7 @@ def recommend(
         "median_append_eval_throughput_ratio": eval_ratio,
         "median_parameter_ratio": parameter_ratio,
         "median_tape_bytes_ratio": tape_ratio,
+        "diagnostic_precondition": diagnostic_ok,
     }
 
 

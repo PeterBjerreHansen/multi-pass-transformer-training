@@ -19,12 +19,14 @@ from experiments.common import (
     runtime_resource_stats,
     resolve_evaluation_checkpoint,
     save_latest_checkpoint,
+    validate_model_args,
 )
 from experiments.summarize_ablation import infer_quality_metric, recommend
 from experiments.diagnose_memory import (
     _effective_rank,
     _memory_stats,
     _relative_linf_residual,
+    conditional_gate_diagnostics,
     memory_interventions,
     pass_dynamics,
     teacher_forced_schedule_gap,
@@ -219,6 +221,68 @@ def test_effective_rank_distinguishes_collapsed_and_full_rank_memory():
         "rms_norm",
         "effective_rank",
     }
+
+
+def test_conditional_gate_diagnostics_measure_variation_and_interventions():
+    model = MemoryTapeTransformer(
+        MemoryTapeConfig(
+            24, 12, 1, 1, 8, 3, use_conditional_memory_gate=True
+        )
+    )
+    gate = model.transformer.h[0].conditional_gate
+    assert gate is not None
+    with torch.no_grad():
+        gate.weight.copy_(torch.linspace(-0.25, 0.25, 16)[None, :])
+    _vocab, stoi, _ = pointer_chasing.build_pointer_chasing_vocab(5)
+    batch = pointer_chasing.build_pointer_chasing_batch(
+        2,
+        5,
+        2,
+        stoi,
+        device="cpu",
+        rng=random.Random(2),
+    )
+    result = conditional_gate_diagnostics(model, batch)
+    assert result["enabled"] == 1.0
+    assert result["parameter_count"] == 33.0
+    assert result["aggregate"]["std"] > 0
+    assert set(result["losses"]) == {
+        "learned",
+        "forced_open",
+        "forced_half",
+        "cross_example",
+    }
+    assert all(
+        torch.isfinite(torch.tensor(value))
+        for value in result["losses"].values()
+    )
+
+
+def test_conditional_gate_is_restricted_to_supported_architectures():
+    invalid = parse_trace_args(
+        [
+            "--preset",
+            "shortest_path_smoke",
+            "--architecture",
+            "transformer",
+            "--conditional-memory-gate",
+            "on",
+        ]
+    )
+    with pytest.raises(ValueError, match="only by memory_tape"):
+        validate_model_args(invalid)
+
+    valid = parse_trace_args(
+        [
+            "--preset",
+            "shortest_path_smoke",
+            "--architecture",
+            "memory_tape",
+            "--conditional-memory-gate",
+            "on",
+        ]
+    )
+    validate_model_args(valid)
 
 
 def test_memory_add_diagnostics_return_finite_values():
@@ -706,3 +770,34 @@ def test_evaluation_checkpoint_selection_is_explicit(tmp_path):
     assert resolve_evaluation_checkpoint(tmp_path, "latest") == latest
     with pytest.raises(ValueError, match="checkpoint must be one of"):
         resolve_evaluation_checkpoint(tmp_path, "other")
+
+
+def test_conditional_gate_recommendation_requires_useful_conditioning():
+    metric = "drift.append_recurrent.optimal_path"
+    control = {
+        str(seed): {metric: 0.80}
+        for seed in range(3)
+    }
+    treatment = {
+        str(seed): {
+            metric: 0.82,
+            "diagnostics.conditional_memory_gates.aggregate.std": 0.02,
+            "diagnostics.conditional_memory_gates.loss_deltas.cross_example": 0.01,
+        }
+        for seed in range(3)
+    }
+    result = recommend(
+        control, treatment, mode="conditional-gate", quality_metric=metric
+    )
+    assert result["quality_win"]
+    assert result["diagnostic_precondition"]
+    assert result["recommend_merge"]
+
+    treatment["0"]["diagnostics.conditional_memory_gates.aggregate.std"] = 0.0
+    treatment["1"]["diagnostics.conditional_memory_gates.aggregate.std"] = 0.0
+    result = recommend(
+        control, treatment, mode="conditional-gate", quality_metric=metric
+    )
+    assert result["quality_win"]
+    assert not result["diagnostic_precondition"]
+    assert not result["recommend_merge"]
