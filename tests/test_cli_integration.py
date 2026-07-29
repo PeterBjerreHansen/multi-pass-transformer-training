@@ -7,6 +7,7 @@ import subprocess
 import sys
 
 import pytest
+import torch
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -37,6 +38,7 @@ def test_bbh_training_cli_writes_restorable_checkpoint(tmp_path):
     )
     assert "architecture: joint_memory_tape" in result.stdout
     assert (run_dir / "latest.pt").exists()
+    assert (run_dir / "best.pt").exists()
     assert (run_dir / "config.json").exists()
     assert (run_dir / "metrics.jsonl").exists()
     events = [json.loads(line) for line in (run_dir / "metrics.jsonl").read_text(encoding="utf-8").splitlines()]
@@ -161,6 +163,7 @@ def test_shortest_path_training_resume_drift_and_diagnostics_cli(tmp_path):
         "--run-dir", str(run_dir),
     )
     assert "task: shortest_path" in result.stdout
+    assert (run_dir / "best.pt").exists()
     events = [
         json.loads(line)
         for line in (run_dir / "metrics.jsonl").read_text(encoding="utf-8").splitlines()
@@ -183,6 +186,7 @@ def test_shortest_path_training_resume_drift_and_diagnostics_cli(tmp_path):
         "--preset", "shortest_path_smoke",
         "--resume-from", str(run_dir),
         "--train-steps", "1",
+        "--lr", "0.00005",
         "--device", "cpu",
         "--run-dir", str(run_dir),
     )
@@ -191,6 +195,16 @@ def test_shortest_path_training_resume_drift_and_diagnostics_cli(tmp_path):
         for line in (run_dir / "metrics.jsonl").read_text(encoding="utf-8").splitlines()
     ]
     assert any(event.get("event") == "eval" and event.get("step") == 2 for event in resumed_events)
+    resumed_checkpoint = torch.load(
+        run_dir / "latest.pt",
+        map_location="cpu",
+        weights_only=False,
+    )
+    assert resumed_checkpoint["args"]["lr"] == pytest.approx(0.00005)
+    assert all(
+        group["lr"] == pytest.approx(0.00005)
+        for group in resumed_checkpoint["optimizer_state_dict"]["param_groups"]
+    )
 
     for inference_mode in ("recompute", "append_recurrent"):
         drift_dir = tmp_path / f"drift_{inference_mode}"

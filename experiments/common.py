@@ -36,6 +36,10 @@ class RunArtifacts:
     metrics_path: Path
     checkpoint_path: Path
 
+    @property
+    def best_checkpoint_path(self) -> Path:
+        return self.run_dir / "best.pt"
+
 
 def add_shared_model_args(parser, *, default_inference_mode: str) -> None:
     parser.add_argument("--architecture", choices=ARCHITECTURES, default="transformer")
@@ -471,6 +475,27 @@ def load_json_if_exists(path: Path) -> dict | None:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
+def find_jsonl_event(
+    path: Path,
+    *,
+    event: str,
+    step: int | None = None,
+) -> dict | None:
+    """Return the most recent matching event from a JSONL metrics file."""
+    if not path.exists():
+        return None
+    for line in reversed(path.read_text(encoding="utf-8").splitlines()):
+        if not line.strip():
+            continue
+        payload = json.loads(line)
+        if payload.get("event") != event:
+            continue
+        if step is not None and int(payload.get("step", -1)) != step:
+            continue
+        return payload
+    return None
+
+
 def resolve_resume_artifacts(resume_from: str | Path) -> RunArtifacts:
     path = Path(resume_from).resolve()
     run_dir = path if path.is_dir() else path.parent
@@ -510,9 +535,10 @@ def restore_checkpoint_state(checkpoint: dict, *, model, optimizer=None, device:
     return checkpoint
 
 
-def save_latest_checkpoint(
+def _save_checkpoint(
     artifacts: RunArtifacts | None,
     *,
+    checkpoint_path: Path,
     model,
     optimizer,
     args,
@@ -533,10 +559,54 @@ def save_latest_checkpoint(
     }
     if torch.cuda.is_available():
         payload["cuda_rng_state_all"] = torch.cuda.get_rng_state_all()
-    temp = artifacts.checkpoint_path.with_suffix(".pt.tmp")
+    temp = checkpoint_path.with_suffix(".pt.tmp")
     torch.save(payload, temp)
-    temp.replace(artifacts.checkpoint_path)
-    return artifacts.checkpoint_path
+    temp.replace(checkpoint_path)
+    return checkpoint_path
+
+
+def save_latest_checkpoint(
+    artifacts: RunArtifacts | None,
+    *,
+    model,
+    optimizer,
+    args,
+    step: int,
+    extra_state: dict | None = None,
+) -> Path | None:
+    if artifacts is None:
+        return None
+    return _save_checkpoint(
+        artifacts,
+        checkpoint_path=artifacts.checkpoint_path,
+        model=model,
+        optimizer=optimizer,
+        args=args,
+        step=step,
+        extra_state=extra_state,
+    )
+
+
+def save_best_checkpoint(
+    artifacts: RunArtifacts | None,
+    *,
+    model,
+    optimizer,
+    args,
+    step: int,
+    extra_state: dict | None = None,
+) -> Path | None:
+    if artifacts is None:
+        return None
+    return _save_checkpoint(
+        artifacts,
+        checkpoint_path=artifacts.best_checkpoint_path,
+        model=model,
+        optimizer=optimizer,
+        args=args,
+        step=step,
+        extra_state=extra_state,
+    )
 
 
 def prepare_run_artifacts(

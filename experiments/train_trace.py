@@ -10,6 +10,7 @@ from experiments.common import (
     build_model_and_optimizer,
     effective_inference_mode,
     evaluate_prebuilt_batches,
+    find_jsonl_event,
     format_checkpoint_line,
     format_gradient_norms,
     format_memory_gate_stats,
@@ -24,6 +25,7 @@ from experiments.common import (
     resolve_resume_artifacts,
     restore_checkpoint_state,
     runtime_resource_stats,
+    save_best_checkpoint,
     save_latest_checkpoint,
     set_seed,
     stable_seed,
@@ -78,12 +80,16 @@ def parse_args(argv: list[str] | None = None):
     _add_override(parser, "--block-size", type=int)
     _add_override(parser, "--run-dir")
     _add_override(parser, "--resume-from")
-    return resolve_preset_args(
-        parser.parse_args(argv),
+    raw_args = parser.parse_args(argv)
+    lr_was_explicit = hasattr(raw_args, "lr")
+    args = resolve_preset_args(
+        raw_args,
         TRACE_PRESETS,
         default_preset="shortest_path_main",
         parser=parser,
     )
+    args._lr_was_explicit = lr_was_explicit
+    return args
 
 
 def validate_task_args(args) -> None:
@@ -142,11 +148,20 @@ def _apply_resume_args(args, checkpoint: dict) -> None:
 def run_trace_training(args) -> None:
     checkpoint = None
     resume_step = 0
+    resume_lr_override = (
+        float(args.lr)
+        if getattr(args, "_lr_was_explicit", False)
+        else None
+    )
+    if hasattr(args, "_lr_was_explicit"):
+        delattr(args, "_lr_was_explicit")
     if args.resume_from:
         resume_artifacts = resolve_resume_artifacts(args.resume_from)
         checkpoint = load_checkpoint_payload(resume_artifacts.checkpoint_path, device="cpu")
         resume_step = int(checkpoint.get("step", 0))
         _apply_resume_args(args, checkpoint)
+        if resume_lr_override is not None:
+            args.lr = resume_lr_override
 
     resolve_device_arg(args)
     set_seed(args.seed)
@@ -162,11 +177,48 @@ def run_trace_training(args) -> None:
     )
 
     train_rng = random.Random(stable_seed(args.seed, "trace", args.task, "train"))
+    best_eval_loss = float("inf")
+    best_eval_step: int | None = None
+    bootstrap_best_checkpoint = False
     if checkpoint is not None:
         restore_checkpoint_state(checkpoint, model=model, optimizer=optimizer, device=args.device)
         extra = checkpoint.get("extra_state", {})
+        best_eval_loss = float(extra.get("best_eval_loss", best_eval_loss))
+        saved_best_step = extra.get("best_eval_step")
+        best_eval_step = None if saved_best_step is None else int(saved_best_step)
         if "train_rng_state" in extra:
             train_rng.setstate(extra["train_rng_state"])
+        if resume_lr_override is not None:
+            for parameter_group in optimizer.param_groups:
+                parameter_group["lr"] = resume_lr_override
+        if best_eval_loss == float("inf"):
+            previous_eval = find_jsonl_event(
+                artifacts.metrics_path,
+                event="eval",
+                step=resume_step,
+            )
+            if previous_eval is not None:
+                best_eval_loss = float(previous_eval["metrics"]["loss"])
+                best_eval_step = resume_step
+                bootstrap_best_checkpoint = True
+
+    if bootstrap_best_checkpoint:
+        save_best_checkpoint(
+            artifacts,
+            model=model,
+            optimizer=optimizer,
+            args=args,
+            step=resume_step,
+            extra_state={
+                "train_rng_state": train_rng.getstate(),
+                "best_eval_loss": best_eval_loss,
+                "best_eval_step": best_eval_step,
+            },
+        )
+        print(
+            f"best_checkpoint -> bootstrapped step {resume_step} | "
+            f"eval_loss {best_eval_loss:.4f}"
+        )
 
     print(f"device: {args.device}")
     print(f"task: {args.task}")
@@ -239,6 +291,11 @@ def run_trace_training(args) -> None:
                 [f"loss {metrics['loss']:.4f}", format_trace_metrics(args, metrics)],
             )
         )
+        eval_loss = float(metrics["loss"])
+        is_best_checkpoint = eval_loss < best_eval_loss
+        if is_best_checkpoint:
+            best_eval_loss = eval_loss
+            best_eval_step = step
         append_jsonl(
             artifacts.metrics_path,
             {
@@ -251,16 +308,34 @@ def run_trace_training(args) -> None:
                 "memory_gate_stats": memory_gate_stats(model),
                 "train_tok_per_s": tok_per_s,
                 "resource_stats": runtime_resource_stats(args.device),
+                "is_best_checkpoint": is_best_checkpoint,
+                "best_eval_loss": best_eval_loss,
+                "best_eval_step": best_eval_step,
             },
         )
+        checkpoint_extra = {
+            "train_rng_state": train_rng.getstate(),
+            "best_eval_loss": best_eval_loss,
+            "best_eval_step": best_eval_step,
+        }
         save_latest_checkpoint(
             artifacts,
             model=model,
             optimizer=optimizer,
             args=args,
             step=step,
-            extra_state={"train_rng_state": train_rng.getstate()},
+            extra_state=checkpoint_extra,
         )
+        if is_best_checkpoint:
+            save_best_checkpoint(
+                artifacts,
+                model=model,
+                optimizer=optimizer,
+                args=args,
+                step=step,
+                extra_state=checkpoint_extra,
+            )
+            print(f"best_checkpoint -> step {step} | eval_loss {best_eval_loss:.4f}")
         synchronize_device(args.device)
         window_start = time.perf_counter()
         window_tokens = 0

@@ -12,6 +12,7 @@ from experiments.common import (
     build_model_and_optimizer,
     effective_inference_mode,
     evaluate_prebuilt_batches,
+    find_jsonl_event,
     format_checkpoint_line,
     format_default_eval_metrics,
     format_gradient_norms,
@@ -27,6 +28,7 @@ from experiments.common import (
     resolve_resume_artifacts,
     restore_checkpoint_state,
     runtime_resource_stats,
+    save_best_checkpoint,
     save_latest_checkpoint,
     set_seed,
     stable_seed,
@@ -159,12 +161,15 @@ def parse_args(argv: list[str] | None = None):
     _add_override(parser, "--run-dir")
     _add_override(parser, "--resume-from")
     raw = parser.parse_args(argv)
-    return resolve_preset_args(
+    lr_was_explicit = hasattr(raw, "lr")
+    args = resolve_preset_args(
         raw,
         BBH_PRESETS,
         default_preset="pointer_chasing_main",
         parser=parser,
     )
+    args._lr_was_explicit = lr_was_explicit
+    return args
 
 
 def validate_task_args(args) -> None:
@@ -229,11 +234,20 @@ def _apply_resume_args(args, checkpoint: dict) -> None:
 def run_answer_curriculum(args) -> None:
     checkpoint = None
     resume_step = 0
+    resume_lr_override = (
+        float(args.lr)
+        if getattr(args, "_lr_was_explicit", False)
+        else None
+    )
+    if hasattr(args, "_lr_was_explicit"):
+        delattr(args, "_lr_was_explicit")
     if args.resume_from:
         artifacts = resolve_resume_artifacts(args.resume_from)
         checkpoint = load_checkpoint_payload(artifacts.checkpoint_path, device="cpu")
         resume_step = int(checkpoint.get("step", 0))
         _apply_resume_args(args, checkpoint)
+        if resume_lr_override is not None:
+            args.lr = resume_lr_override
 
     resolve_device_arg(args)
     set_seed(args.seed)
@@ -251,6 +265,9 @@ def run_answer_curriculum(args) -> None:
     train_rng = random.Random(stable_seed(args.seed, "bbh", args.task, "train"))
     current_level = args.curriculum_start_level
     promotion_history: list[tuple[int, int, float]] = []
+    best_eval_score: tuple[int, float, float] | None = None
+    best_eval_step: int | None = None
+    bootstrap_best_checkpoint = False
     if checkpoint is not None:
         restore_checkpoint_state(checkpoint, model=model, optimizer=optimizer, device=args.device)
         extra = checkpoint.get("extra_state", {})
@@ -258,6 +275,49 @@ def run_answer_curriculum(args) -> None:
         promotion_history = [tuple(item) for item in extra.get("promotion_history", [])]
         if "train_rng_state" in extra:
             train_rng.setstate(extra["train_rng_state"])
+        saved_best_score = extra.get("best_eval_score")
+        if saved_best_score is not None:
+            best_eval_score = tuple(saved_best_score)
+        saved_best_step = extra.get("best_eval_step")
+        best_eval_step = None if saved_best_step is None else int(saved_best_step)
+        if resume_lr_override is not None:
+            for parameter_group in optimizer.param_groups:
+                parameter_group["lr"] = resume_lr_override
+        if best_eval_score is None:
+            previous_eval = find_jsonl_event(
+                artifacts.metrics_path,
+                event="eval",
+                step=resume_step,
+            )
+            if previous_eval is not None:
+                metrics = previous_eval["metrics"]
+                best_eval_score = (
+                    int(previous_eval["level"]),
+                    float(metrics["exact_match"]),
+                    -float(metrics["loss"]),
+                )
+                best_eval_step = resume_step
+                bootstrap_best_checkpoint = True
+
+    if bootstrap_best_checkpoint:
+        save_best_checkpoint(
+            artifacts,
+            model=model,
+            optimizer=optimizer,
+            args=args,
+            step=resume_step,
+            extra_state={
+                "current_level": current_level,
+                "promotion_history": promotion_history,
+                "train_rng_state": train_rng.getstate(),
+                "best_eval_score": best_eval_score,
+                "best_eval_step": best_eval_step,
+            },
+        )
+        print(
+            f"best_checkpoint -> bootstrapped step {resume_step} | "
+            f"level {best_eval_score[0]} | exact_match {best_eval_score[1]:.4f}"
+        )
 
     print(f"device: {args.device}")
     print(f"task: {args.task}")
@@ -338,6 +398,14 @@ def run_answer_curriculum(args) -> None:
                 [f"loss {metrics['loss']:.4f}", f"level {current_level}", format_default_eval_metrics(metrics)],
             )
         )
+        exact_match = float(metrics["exact_match"])
+        eval_score = (current_level, exact_match, -float(metrics["loss"]))
+        is_best_checkpoint = (
+            best_eval_score is None or eval_score > best_eval_score
+        )
+        if is_best_checkpoint:
+            best_eval_score = eval_score
+            best_eval_step = step
         append_jsonl(
             artifacts.metrics_path,
             {
@@ -352,27 +420,45 @@ def run_answer_curriculum(args) -> None:
                 "memory_gate_stats": memory_gate_stats(model),
                 "train_tok_per_s": tok_per_s,
                 "resource_stats": runtime_resource_stats(args.device),
+                "is_best_checkpoint": is_best_checkpoint,
+                "best_eval_score": best_eval_score,
+                "best_eval_step": best_eval_step,
             },
         )
 
-        exact_match = float(metrics["exact_match"])
         if exact_match >= args.curriculum_threshold and current_level < args.max_level:
             promotion_history.append((current_level, step, exact_match))
             current_level += 1
             print(f"curriculum_promote -> level {current_level}")
 
+        checkpoint_extra = {
+            "current_level": current_level,
+            "promotion_history": promotion_history,
+            "train_rng_state": train_rng.getstate(),
+            "best_eval_score": best_eval_score,
+            "best_eval_step": best_eval_step,
+        }
         save_latest_checkpoint(
             artifacts,
             model=model,
             optimizer=optimizer,
             args=args,
             step=step,
-            extra_state={
-                "current_level": current_level,
-                "promotion_history": promotion_history,
-                "train_rng_state": train_rng.getstate(),
-            },
+            extra_state=checkpoint_extra,
         )
+        if is_best_checkpoint:
+            save_best_checkpoint(
+                artifacts,
+                model=model,
+                optimizer=optimizer,
+                args=args,
+                step=step,
+                extra_state=checkpoint_extra,
+            )
+            print(
+                f"best_checkpoint -> step {step} | level {eval_score[0]} | "
+                f"exact_match {eval_score[1]:.4f}"
+            )
         synchronize_device(args.device)
         window_start = time.perf_counter()
         window_steps = 0
