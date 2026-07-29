@@ -245,20 +245,6 @@ MemoryUpdate tests a different inductive bias. Instead of transforming a token s
 
 The token-derived evidence is an ordinary ungated residual update. The token-to-memory projection starts as an identity map, so pass one has a useful token signal even though $R=0$. This is **state-biased**, not a strict compact-state cell: token attention can still read the full causal token prefix, and state self-attention can read earlier positions of $S$. Its purpose is to test whether MPTT benefits when memory is the primary working representation, rather than an auxiliary tape read by a token decoder.
 
-## Future Work
-
-### 1. Scaling
-
-It would be interesting to see how the models scale more precisely. It is hard to gauge quality of the idea with such small parameter counts and dataset sizes.
-
-### 2. Stability Exploration
-
-It is an interesting empirical finding that recurrent-style generation seems to work unreasonably well! But it should be explored more in depth to see if the positive preliminary results generalize to longer-range settings and to the current `append_recurrent` schedule.
-
-### 3. Best Memory Format
-
-The best way to pass memory forward should be explored more systematically: causal cross-attention, aligned embeddings, a small encoder, or another mechanism. The current implementations are initial design points rather than presumed optima. The more general multi-pass training method could work with a variety of memory implementations.
-
 ## Tasks
 
 The current experiments focus on algorithmic tasks featuring state-tracking where exactness is easy to measure and computational "depth" is required.
