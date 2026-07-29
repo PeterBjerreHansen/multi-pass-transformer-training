@@ -6,17 +6,17 @@ cd "${ROOT}"
 
 DEVICE="${DEVICE:-mps}"
 SEEDS="${SEEDS:-1337 2027 4099}"
-RESULT_ROOT="${RESULT_ROOT:-results/ablations/07_memory_width}"
-TRAIN_STEPS=50000
+RESULT_ROOT="${RESULT_ROOT:-results/ablations/memory_width}"
+TRAIN_STEPS="${TRAIN_STEPS:-50000}"
 
 run_eval() {
   local run_dir="$1" seed="$2"
   for mode in recompute append_recurrent; do
-    python -m experiments.eval_trace_drift --input-run-dir "${run_dir}" \
-      --run-dir "${run_dir}/drift/${mode}" --inference-mode "${mode}" \
+    python -m experiments.eval_trace --input-run-dir "${run_dir}" \
+      --output-dir "${run_dir}/drift/${mode}" --inference-mode "${mode}" \
       --token-selection argmax --device "${DEVICE}" --seed "${seed}"
   done
-  python -m experiments.eval_diagnostics --input-run-dir "${run_dir}" \
+  python -m experiments.diagnose_memory --input-run-dir "${run_dir}" \
     --output "${run_dir}/diagnostics.json" --device "${DEVICE}" --seed "${seed}"
 }
 

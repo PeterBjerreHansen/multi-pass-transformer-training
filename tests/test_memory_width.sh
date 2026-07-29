@@ -9,7 +9,7 @@ cd "${ROOT}"
 pytest -q
 python -m experiments.train_trace --preset shortest_path_smoke --architecture memory_tape \
   --n-memory-embd 8 --device cpu --run-dir "${TMP_DIR}/cpu"
-python -m experiments.eval_diagnostics --input-run-dir "${TMP_DIR}/cpu" \
+python -m experiments.diagnose_memory --input-run-dir "${TMP_DIR}/cpu" \
   --output "${TMP_DIR}/cpu/diagnostics.json" --device cpu --batch-size 2
 
 if python -c 'import torch,sys; sys.exit(0 if torch.backends.mps.is_available() else 1)'; then
