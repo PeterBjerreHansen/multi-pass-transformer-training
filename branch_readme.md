@@ -6,7 +6,7 @@ This branch trains multi-pass models with a different pass depth on each optimiz
 
 The hypothesis is that supervising the same recurrent computation at several depths encourages useful iterative refinement rather than specialization to one fixed pass count. The supplied benchmark compares fixed `K=4` with uniform `K in [2, 6]`; the latter also has an expected depth of four, making the compute comparison reasonably matched.
 
-For a short local control/treatment run with both inference modes and diagnostics, use `bash scripts/pilot_01_variable_depth.sh`. It defaults to one seed and 250 steps; `DEVICE`, `TRAIN_STEPS`, `BATCH_SIZE`, and `RESULT_ROOT` are overrideable.
+For a short local control/treatment run with both inference modes and diagnostics, use `bash scripts/trace/pilot_variable_depth.sh`. It defaults to one seed and 250 steps; `DEVICE`, `TRAIN_STEPS`, `BATCH_SIZE`, and `RESULT_ROOT` are overrideable. The full ablation is `scripts/trace/ablate_variable_depth.sh`, and branch validation is `tests/test_variable_depth.sh`.
 
 ## Branch-specific code review
 

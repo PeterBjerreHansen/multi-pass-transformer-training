@@ -12,11 +12,11 @@ TRAIN_STEPS=50000
 run_eval() {
   local run_dir="$1" seed="$2"
   for mode in recompute append_recurrent; do
-    python -m experiments.eval_trace_drift --input-run-dir "${run_dir}" \
-      --run-dir "${run_dir}/drift/${mode}" --inference-mode "${mode}" \
+    python -m experiments.eval_trace --input-run-dir "${run_dir}" \
+      --output-dir "${run_dir}/drift/${mode}" --inference-mode "${mode}" \
       --token-selection argmax --device "${DEVICE}" --seed "${seed}"
   done
-  python -m experiments.eval_diagnostics --input-run-dir "${run_dir}" \
+  python -m experiments.diagnose_memory --input-run-dir "${run_dir}" \
     --output "${run_dir}/diagnostics.json" --extra-passes 6 --device "${DEVICE}" --seed "${seed}"
 }
 
