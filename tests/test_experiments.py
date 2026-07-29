@@ -365,6 +365,15 @@ def test_shortest_path_cli_exposes_only_easy_and_main_distributions():
         )
 
 
+def test_trace_presets_use_shared_learning_rate_default():
+    from experiments.presets import TRACE_PRESETS
+
+    assert {
+        name: preset.values["lr"]
+        for name, preset in TRACE_PRESETS.items()
+    } == {name: 3e-5 for name in TRACE_PRESETS}
+
+
 def test_main_presets_use_declared_experiment_scales():
     from experiments.presets import BBH_PRESETS, TRACE_PRESETS
 
@@ -551,7 +560,7 @@ def test_main_trace_preset_contract_is_frozen():
             "task": "othello",
             "batch_size": 128,
             "train_steps": 500_000,
-            "lr": 3e-4,
+            "lr": 3e-5,
             "eval_interval": 5_000,
             "eval_batches": 1,
             "othello_train_games": 5_000_000,
@@ -561,7 +570,7 @@ def test_main_trace_preset_contract_is_frozen():
             "task": "shortest_path",
             "batch_size": 64,
             "train_steps": 100_000,
-            "lr": 3e-4,
+            "lr": 3e-5,
             "eval_interval": 1_000,
             "eval_batches": 4,
             "shortest_path_distribution": "main",

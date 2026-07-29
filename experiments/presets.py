@@ -80,7 +80,7 @@ def _trace_defaults(
         token_selection=token_selection,
     )
     values.update(
-        lr=1e-4 if smoke else 3e-4,
+        lr=3e-5,
         eval_interval=1 if smoke else 1_000,
     )
     return values
