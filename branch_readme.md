@@ -6,7 +6,7 @@ This branch adds a mixed teacher-forced objective that follows the deployment-ti
 
 The aligned rollout starts after at least one generated token. Earlier answer tokens are teacher-forced without gradients, the recurrent state is detached, and a short window is unrolled with gradients. The hypothesis is that directly training on frozen historical memories plus online memory appends will reduce the teacher-forced schedule gap and improve append-recurrent legality without sacrificing recompute quality.
 
-For a short local `P=0` versus generation-aligned `P=0.25` run with both inference modes and diagnostics, use `bash scripts/pilot_generation_aligned_training.sh`. It defaults to one seed, 250 steps, and shortened 50-step warm-up/ramp periods; the device, step count, probability, microbatch, horizon, schedule, batch size, and result root are overrideable through their corresponding uppercase environment variables.
+For a short local `P=0` versus generation-aligned `P=0.25` run with both inference modes and diagnostics, use `bash scripts/trace/pilot_generation_aligned_training.sh`. It defaults to one seed, 250 steps, and shortened 50-step warm-up/ramp periods; the device, step count, probability, microbatch, horizon, schedule, batch size, and result root are overrideable through their corresponding uppercase environment variables.
 
 ## Computational design
 

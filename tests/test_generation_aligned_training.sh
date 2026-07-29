@@ -27,7 +27,7 @@ python -m experiments.train_trace \
   --device cpu \
   --run-dir "${CPU_RUN}"
 
-python -m experiments.eval_diagnostics \
+python -m experiments.diagnose_memory \
   --input-run-dir "${CPU_RUN}" \
   --device cpu \
   --batch-size 2 \
@@ -35,13 +35,13 @@ python -m experiments.eval_diagnostics \
   --extra-passes 2
 
 for inference_mode in recompute append_recurrent; do
-  python -m experiments.eval_trace_drift \
+  python -m experiments.eval_trace \
     --input-run-dir "${CPU_RUN}" \
     --inference-mode "${inference_mode}" \
     --token-selection argmax \
     --device cpu \
     --eval-batches 1 \
-    --run-dir "${CPU_RUN}/drift/${inference_mode}"
+    --output-dir "${CPU_RUN}/drift/${inference_mode}"
 done
 
 if python -c 'import torch; raise SystemExit(0 if torch.backends.mps.is_available() else 1)'; then

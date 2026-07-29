@@ -7,13 +7,13 @@ cd "${ROOT}"
 DEVICE="${DEVICE:-mps}"
 SEEDS="${SEEDS:-1337 2027 4099}"
 RESULT_ROOT="${RESULT_ROOT:-results/ablations/generation_aligned_training}"
-TRAIN_STEPS=50000
-EVAL_BATCHES=4
-APPEND_MICROBATCH_SIZE=8
-APPEND_HORIZON=4
-APPEND_LOSS_WEIGHT=1.0
-APPEND_WARMUP_STEPS=5000
-APPEND_RAMP_STEPS=5000
+TRAIN_STEPS="${TRAIN_STEPS:-50000}"
+EVAL_BATCHES="${EVAL_BATCHES:-4}"
+APPEND_MICROBATCH_SIZE="${APPEND_MICROBATCH_SIZE:-8}"
+APPEND_HORIZON="${APPEND_HORIZON:-4}"
+APPEND_LOSS_WEIGHT="${APPEND_LOSS_WEIGHT:-1.0}"
+APPEND_WARMUP_STEPS="${APPEND_WARMUP_STEPS:-5000}"
+APPEND_RAMP_STEPS="${APPEND_RAMP_STEPS:-5000}"
 
 VARIANTS=(
   "p0:0.0"
@@ -45,17 +45,17 @@ for specification in "${VARIANTS[@]}"; do
       --run-dir "${run_dir}"
 
     for inference_mode in recompute append_recurrent; do
-      python -m experiments.eval_trace_drift \
+      python -m experiments.eval_trace \
         --input-run-dir "${run_dir}" \
         --inference-mode "${inference_mode}" \
         --token-selection argmax \
         --device "${DEVICE}" \
         --eval-batches "${EVAL_BATCHES}" \
         --seed "${seed}" \
-        --run-dir "${run_dir}/drift/${inference_mode}"
+        --output-dir "${run_dir}/drift/${inference_mode}"
     done
 
-    python -m experiments.eval_diagnostics \
+    python -m experiments.diagnose_memory \
       --input-run-dir "${run_dir}" \
       --device "${DEVICE}" \
       --eval-batches "${EVAL_BATCHES}" \
