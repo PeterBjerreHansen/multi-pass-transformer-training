@@ -17,12 +17,12 @@ run_eval() {
       if [[ "${offset}" == 0 ]]; then
         output_dir="${run_dir}/drift/${mode}"
       fi
-      python -m experiments.eval_trace_drift --input-run-dir "${run_dir}" \
-        --run-dir "${output_dir}" --inference-mode "${mode}" --eval-position-offset "${offset}" \
+      python -m experiments.eval_trace --input-run-dir "${run_dir}" \
+        --output-dir "${output_dir}" --inference-mode "${mode}" --eval-position-offset "${offset}" \
         --token-selection argmax --device "${DEVICE}" --seed "${seed}"
     done
   done
-  python -m experiments.eval_diagnostics --input-run-dir "${run_dir}" \
+  python -m experiments.diagnose_memory --input-run-dir "${run_dir}" \
     --output "${run_dir}/diagnostics.json" --device "${DEVICE}" --seed "${seed}"
 }
 
@@ -34,7 +34,7 @@ for seed in ${SEEDS}; do
       extra_args+=(--train-position-offset-max 64)
     fi
     python -m experiments.train_trace --preset shortest_path_main --architecture memory_tape \
-      --max-position-embeddings 195 --token-selection argmax --train-steps "${TRAIN_STEPS}" \
+      --max-position-embeddings 209 --token-selection argmax --train-steps "${TRAIN_STEPS}" \
       --device "${DEVICE}" --seed "${seed}" --run-dir "${run_dir}" "${extra_args[@]}"
     run_eval "${run_dir}" "${seed}"
   done

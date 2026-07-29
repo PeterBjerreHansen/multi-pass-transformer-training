@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "${ROOT}"
 source scripts/lib/local_pilot.sh
 
@@ -17,9 +17,9 @@ export PILOT_PRESET=shortest_path_main
 export PILOT_ARCHITECTURE=memory_tape
 
 run_trace_pilot_variant offset_zero \
-  --max-position-embeddings 195
+  --max-position-embeddings 209
 run_trace_pilot_variant offset_uniform_0_64 \
-  --max-position-embeddings 195 \
+  --max-position-embeddings 209 \
   --train-position-offset-max 64
 
 python scripts/summarize_learning_runs.py --root "${RESULT_ROOT}"

@@ -6,7 +6,7 @@ This branch separates sequence capacity (`block_size`) from the learned position
 
 The hypothesis is that training across absolute offsets prevents the model from overfitting task roles to the first positions in the table and improves robustness when generation or memory reuse begins later in a larger coordinate system. The benchmark parameter-matches control and treatment with 195 position embeddings, trains at offset zero versus offsets 0–64, and evaluates offsets 0, 16, 32, and 64 in both inference modes.
 
-For a short local control/treatment run with both inference modes and diagnostics, use `bash scripts/pilot_06_position_offsets.sh`. It defaults to one seed and 250 steps; `DEVICE`, `TRAIN_STEPS`, `BATCH_SIZE`, and `RESULT_ROOT` are overrideable.
+For a short local control/treatment run with both inference modes and diagnostics, use `bash scripts/trace/pilot_position_offsets.sh`. It defaults to one seed and 250 steps; `DEVICE`, `TRAIN_STEPS`, `BATCH_SIZE`, and `RESULT_ROOT` are overrideable. The full ablation is `scripts/trace/ablate_position_offsets.sh`, and branch validation is `tests/test_position_offsets.sh`.
 
 ## Branch-specific code review
 

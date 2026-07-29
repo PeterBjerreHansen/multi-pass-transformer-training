@@ -94,7 +94,7 @@ def test_position_offset_training_logs_sampled_offset(tmp_path):
         "-m", "experiments.train_trace",
         "--preset", "shortest_path_smoke",
         "--architecture", "memory_tape",
-        "--max-position-embeddings", "105",
+        "--max-position-embeddings", "133",
         "--train-position-offset-max", "64",
         "--device", "cpu",
         "--run-dir", str(run_dir),
