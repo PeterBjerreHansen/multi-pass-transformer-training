@@ -54,8 +54,6 @@ def add_shared_model_args(parser, *, default_inference_mode: str) -> None:
     parser.add_argument("--n-head", type=int, default=None)
     parser.add_argument("--n-embd", type=int, default=None)
     parser.add_argument("--n-pass", type=int, default=4)
-    parser.add_argument("--memory-update-gate", choices=["on", "off"], default="off")
-    parser.add_argument("--memory-gate-bias", type=float, default=-1.0)
     parser.add_argument("--pass-loss-weights", type=float, nargs="*", default=None)
     parser.add_argument("--device", default=None)
     parser.add_argument("--block-size", type=int, default=None)
@@ -260,9 +258,7 @@ def gradient_norms(model) -> dict[str, float]:
             continue
         squared_norm = parameter.grad.detach().float().square().sum()
 
-        if "memory_gate" in name or "token_gate" in name:
-            group = "memory_gate"
-        elif "joint_attn.c_mem_kv" in name or "ln_mem_kv" in name:
+        if "joint_attn.c_mem_kv" in name or "ln_mem_kv" in name:
             # These parameters exclusively transform the memory K/V source;
             # the other joint-attention projections form the token backbone.
             group = "memory_attention"
@@ -442,22 +438,6 @@ def format_pass_losses(pass_losses: Sequence[torch.Tensor]) -> str:
     return "[" + ", ".join(f"{loss.item():.4f}" for loss in pass_losses) + "]"
 
 
-def memory_gate_stats(model) -> dict | None:
-    method = getattr(model, "memory_gate_stats", None)
-    return None if method is None else method()
-
-
-def format_memory_gate_stats(stats: dict) -> str:
-    values = stats.get("effective")
-    if not isinstance(values, list):
-        raise TypeError("memory gate stats must contain an effective list")
-    text = "[" + ", ".join(f"{float(value):.4f}" for value in values) + "]"
-    return (
-        f"effective {text} | mean_abs {float(stats['mean_abs_effective']):.4f} | "
-        f"max_abs {float(stats['max_abs_effective']):.4f}"
-    )
-
-
 def append_jsonl(path: Path, event: dict) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("a", encoding="utf-8") as handle:
@@ -519,7 +499,36 @@ def load_checkpoint_payload(path: str | Path, *, device: str | None = None) -> d
 
 
 def restore_checkpoint_state(checkpoint: dict, *, model, optimizer=None, device: str | None = None) -> dict:
-    model.load_state_dict(checkpoint["model_state_dict"])
+    model_state = checkpoint["model_state_dict"]
+    model_parameter_names = set(model.state_dict())
+    legacy_gate_names = [
+        name
+        for name in model_state
+        if name.endswith(".memory_gate") and name not in model_parameter_names
+    ]
+    if legacy_gate_names:
+        # MemoryTape previously multiplied each cross-attention residual by a
+        # learned scalar. Its projection is bias-free, so folding that scalar
+        # into c_proj is exactly function-preserving for old checkpoints.
+        model_state = model_state.copy()
+        for gate_name in legacy_gate_names:
+            projection_name = (
+                gate_name.removesuffix("memory_gate")
+                + "cross_attn.c_proj.weight"
+            )
+            if projection_name not in model_state:
+                raise KeyError(
+                    f"cannot migrate legacy gate without {projection_name}"
+                )
+            gate = model_state.pop(gate_name)
+            if gate.numel() != 1:
+                raise ValueError(
+                    f"legacy memory gate {gate_name} must be scalar"
+                )
+            model_state[projection_name] = (
+                model_state[projection_name] * gate.reshape(())
+            )
+    model.load_state_dict(model_state)
     if optimizer is not None:
         optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
         if device is not None:

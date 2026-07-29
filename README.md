@@ -130,10 +130,10 @@ MemoryTape retains an ordinary causal token decoder. Its decoder is:
 > $`H = X`$<br>
 > $`\textbf{for each decoder block:}`$<br>
 > &nbsp;&nbsp; $`H = H + \mathrm{CausalSelfAttention}(\mathrm{LN}_{\mathrm{self}}(H))`$<br>
-> &nbsp;&nbsp; $`H = H + \gamma\,\mathrm{CausalCrossAttention}\left(Q=\mathrm{LN}_{q}(H),\ KV=\mathrm{LN}_{kv}(R)\right)`$<br>
+> &nbsp;&nbsp; $`H = H + \mathrm{CausalCrossAttention}\left(Q=\mathrm{LN}_{q}(H),\ KV=\mathrm{LN}_{kv}(R)\right)`$<br>
 > &nbsp;&nbsp; $`H = H + \mathrm{MLP}(\mathrm{LN}_{\mathrm{mlp}}(H))`$<br>
 
-Causal cross-attention is applied over $R$ as a separately addressable key/value source; the tape is not concatenated with the token stream. Its inclusive causal mask permits query position $t$ to read tape slots $s\leq t$. Because $R_s=M_{s-1}$, this is strict causality with respect to the unshifted tape: only memories from original positions before $t$ are readable. Each layer has a learned scalar $\gamma$, initialized to `0.1`. On pass one, $R=0$, so the cross-attention contribution is exactly zero and the model begins as a causal token decoder.
+Causal cross-attention is applied over $R$ as a separately addressable key/value source; the tape is not concatenated with the token stream. Its inclusive causal mask permits query position $t$ to read tape slots $s\leq t$. Because $R_s=M_{s-1}$, this is strict causality with respect to the unshifted tape: only memories from original positions before $t$ are readable. The reader is an ordinary residual branch with no learned gate. Its output projection is initialized at half the standard residual scale, preserving the former initial memory-read amplitude without introducing a scale-nonidentifiable scalar parameter. On pass one, $R=0$, so the cross-attention contribution is exactly zero and the model begins as a causal token decoder.
 
 ### Causal Attention over Token and Memory Sources: The JointMemoryTape Architecture
 
@@ -179,7 +179,7 @@ D = \mathrm{concat}_{\mathrm{head}}(D_1,\ldots,D_m)\,W^O.
 > &nbsp;&nbsp; $`H = H + D \qquad \text{using the causal two-source attention defined above}`$<br>
 > &nbsp;&nbsp; $`H = H + \mathrm{MLP}(\mathrm{LN}_{\mathrm{mlp}}(H))`$<br>
 
-The token and shifted-memory banks have separate key/value projections but compete within the same softmax. The tape has the same sequence length as the token stream, with $R_t=M_{t-1}$, and no additional positional embedding is applied to it. Unlike MemoryTape, there is no memory gate. When $R=0$ on pass one, the bias-free memory projections produce zero keys and values, but the null memory slots still occupy probability mass in the shared softmax. This deliberate first-pass dilution means JointMemoryTape is an architecture variant, not a one-variable ablation of MemoryTape: it also changes the residual structure, parameter count, and initialization-time token-attention behavior.
+The token and shifted-memory banks have separate key/value projections but compete within the same softmax. The tape has the same sequence length as the token stream, with $R_t=M_{t-1}$, and no additional positional embedding is applied to it. When $R=0$ on pass one, the bias-free memory projections produce zero keys and values, but the null memory slots still occupy probability mass in the shared softmax. This deliberate first-pass dilution means JointMemoryTape is an architecture variant, not a one-variable ablation of MemoryTape: it also changes the residual structure, parameter count, and initialization-time token-attention behavior.
 
 ### Memory Through Embedding Concatenation: The MemoryConcat Architecture
 
@@ -239,12 +239,11 @@ MemoryUpdate tests a different inductive bias. Instead of transforming a token s
 > $`S = \mathrm{LN}_{\mathrm{mem\_in}}(R) + W_{\mathrm{token\to mem}}\mathrm{LN}_{\mathrm{token\_in}}(X)`$<br>
 > $`\textbf{for each memory-update block:}`$<br>
 > &nbsp;&nbsp; $`D = \mathrm{CausalCrossAttention}\left(Q=\mathrm{LN}_{q}(S),\ KV=\mathrm{LN}_{kv}(X)\right)`$<br>
-> &nbsp;&nbsp; $`S = S + D \qquad \text{if the gate is disabled}`$<br>
-> &nbsp;&nbsp; $`S = S + \sigma\left(W_{\mathrm{gate}}[S; X; D]\right) \odot D \qquad \text{otherwise}`$<br>
+> &nbsp;&nbsp; $`S = S + D`$<br>
 > &nbsp;&nbsp; $`S = S + \mathrm{CausalSelfAttention}(\mathrm{LN}_{\mathrm{self}}(S))`$<br>
 > &nbsp;&nbsp; $`S = S + \mathrm{MLP}(\mathrm{LN}_{\mathrm{mlp}}(S))`$<br>
 
-The default branch adds token-derived evidence; the optional gate controls only that evidence, not the prior tape or later state updates. The token-to-memory projection starts as an identity map, so pass one has a useful token signal even though $R=0$. When enabled, the gate bias starts slightly negative, making early token-evidence updates conservative while still learnable. This is **state-biased**, not a strict compact-state cell: token attention can still read the full causal token prefix, and state self-attention can read earlier positions of $S$. Its purpose is to test whether MPTT benefits when memory is the primary working representation, rather than an auxiliary tape read by a token decoder.
+The token-derived evidence is an ordinary ungated residual update. The token-to-memory projection starts as an identity map, so pass one has a useful token signal even though $R=0$. This is **state-biased**, not a strict compact-state cell: token attention can still read the full causal token prefix, and state self-attention can read earlier positions of $S$. Its purpose is to test whether MPTT benefits when memory is the primary working representation, rather than an auxiliary tape read by a token decoder.
 
 ## Future Work
 
@@ -428,8 +427,8 @@ leaves null slots in the shared softmax, whereas a masked source removes those
 slots from the attention distribution.
 
 Training `eval` events in `metrics.jsonl` also include rolling mean and maximum
-gradient norms for the global model, backbone, memory writer, memory-specific
-attention parameters, and any memory gate. For JointMemoryTape, only the memory
+gradient norms for the global model, backbone, memory writer, and
+memory-specific attention parameters. For JointMemoryTape, only the memory
 key/value projection and its input normalization enter the memory-attention
 group; the shared query, token key/value, and output projections are part of the
 backbone group.

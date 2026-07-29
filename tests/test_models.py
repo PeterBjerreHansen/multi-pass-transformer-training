@@ -505,8 +505,6 @@ def test_model_factory_constructs_all_variants():
         n_embd=8,
         n_pass=3,
         pass_loss_weights=[0, 0, 1],
-        memory_update_gate="off",
-        memory_gate_bias=-1.0,
     )
     expected = {
         "transformer": CausalTransformer,
@@ -522,15 +520,14 @@ def test_model_factory_constructs_all_variants():
         assert isinstance(model, cls)
 
 
-def test_model_factory_applies_memory_gate_init():
+@pytest.mark.parametrize("architecture", ["memory_tape", "memory_update"])
+def test_canonical_memory_models_have_no_gate_parameters(architecture):
     args = SimpleNamespace(
-        architecture="memory_tape",
+        architecture=architecture,
         n_layer=2,
         n_head=1,
         n_embd=8,
         n_pass=3,
-        memory_gate_init=1.0,
     )
     model = build_model(args, 17, 8, "cpu")
-    assert model.config.memory_gate_init == 1.0
-    assert model.memory_gate_stats()["effective"] == [1.0, 1.0]
+    assert not any("gate" in name for name, _parameter in model.named_parameters())

@@ -145,7 +145,6 @@ def test_plotting_loaders_follow_current_artifact_schemas(tmp_path):
                 "train_tok_per_s": 100.0,
                 "metrics": {"loss": 1.4, "optimal_path": 0.5},
                 "gradient_norms": {"memory_writer": {"mean": 0.2, "max": 0.3}},
-                "memory_gate_stats": {"mean_abs_effective": 0.4, "max_abs_effective": 0.5},
             }
         )
         + "\n",
@@ -249,7 +248,6 @@ def test_plotting_loaders_follow_current_artifact_schemas(tmp_path):
     assert training[0]["shortest_path_distribution"] == "main"
     assert training[0]["pass_4_loss"] == 1.4
     assert training[0]["gradient_memory_writer_mean"] == 0.2
-    assert training[0]["memory_gate_mean_abs_effective"] == 0.4
     figure, axis = plt.subplots()
     plot_seed_and_median_curves(axis, training, metric="optimal_path")
     assert len(axis.lines) == 2

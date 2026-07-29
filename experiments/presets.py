@@ -35,9 +35,6 @@ def _base_defaults(
         "pass_loss_weights": [0.0] * (n_pass - 1) + [1.0]
         if smoke
         else [0.0, 0.0, 1.0, 1.0],
-        "memory_update_gate": "off",
-        "memory_gate_bias": -1.0,
-        "memory_gate_init": 0.5,
         "inference_mode": inference_mode,
         "token_selection": token_selection,
         "batch_size": 1 if smoke else 64,

@@ -263,7 +263,6 @@ def pass_dynamics(model, batch, *, extra_passes: int) -> dict:
     return {
         "trained_passes": per_pass,
         "extra_passes": continuation,
-        "memory_gate_stats": model.memory_gate_stats(),
     }
 
 

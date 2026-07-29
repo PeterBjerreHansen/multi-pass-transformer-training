@@ -16,12 +16,10 @@ from experiments.common import (
     format_checkpoint_line,
     format_default_eval_metrics,
     format_gradient_norms,
-    format_memory_gate_stats,
     format_pass_losses,
     forward_and_loss,
     gradient_norms,
     load_checkpoint_payload,
-    memory_gate_stats,
     model_benchmark_stats,
     prepare_run_artifacts,
     resolve_device_arg,
@@ -133,9 +131,6 @@ def parse_args(argv: list[str] | None = None):
     _add_override(parser, "--n-embd", type=int)
     _add_override(parser, "--n-pass", type=int)
     _add_override(parser, "--pass-loss-weights", type=float, nargs="*")
-    _add_override(parser, "--memory-update-gate", choices=["on", "off"])
-    _add_override(parser, "--memory-gate-bias", type=float)
-    _add_override(parser, "--memory-gate-init", type=float)
     _add_override(
         parser,
         "--num-nodes",
@@ -329,10 +324,6 @@ def run_answer_curriculum(args) -> None:
         normalized = [weight / sum(args.pass_loss_weights) for weight in args.pass_loss_weights]
         print(f"n_pass: {args.n_pass}")
         print(f"pass_loss_weights_normalized: {normalized}")
-    gates = memory_gate_stats(model)
-    if gates is not None:
-        print(f"memory_gates: {format_memory_gate_stats(gates)}")
-
     append_jsonl(
         artifacts.metrics_path,
         {
@@ -417,7 +408,6 @@ def run_answer_curriculum(args) -> None:
                 "pass_losses": [float(item.item()) for item in pass_losses],
                 "metrics": metrics,
                 "gradient_norms": gradient_summary,
-                "memory_gate_stats": memory_gate_stats(model),
                 "train_tok_per_s": tok_per_s,
                 "resource_stats": runtime_resource_stats(args.device),
                 "is_best_checkpoint": is_best_checkpoint,

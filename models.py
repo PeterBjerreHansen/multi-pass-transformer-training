@@ -117,31 +117,12 @@ class MultiPassConfig(TransformerConfig):
 
 @dataclass
 class MemoryTapeConfig(MultiPassConfig):
-    memory_gate_init: float = 0.1
-
-    def __post_init__(self) -> None:
-        super().__post_init__()
-        if not math.isfinite(self.memory_gate_init):
-            raise ValueError("memory_gate_init must be finite")
+    """Configuration seam for MemoryTape-specific ablations."""
 
 
 @dataclass
 class MemoryUpdateConfig(MultiPassConfig):
-    memory_gate_bias: float = -1.0
-    use_memory_gate: bool = False
-
-    @classmethod
-    def from_dict(cls, values: dict) -> "MemoryUpdateConfig":
-        return cls(
-            block_size=values["block_size"],
-            vocab_size=values["vocab_size"],
-            n_layer=values["n_layer"],
-            n_head=values["n_head"],
-            n_embd=values["n_embd"],
-            n_pass=values["n_pass"],
-            memory_gate_bias=values.get("memory_gate_bias", -1.0),
-            use_memory_gate=values.get("use_memory_gate", False),
-        )
+    """Configuration seam for MemoryUpdate-specific ablations."""
 
 
 # -----------------------------------------------------------------------------
@@ -709,9 +690,6 @@ class MultiPassTransformer(nn.Module):
         finally:
             self.train(was_training)
 
-    def memory_gate_stats(self) -> dict[str, float | str | list[float]] | None:
-        return None
-
     def _run_full_pass(self, token_stream: torch.Tensor, memory_tape: torch.Tensor) -> torch.Tensor:
         raise NotImplementedError
 
@@ -821,20 +799,15 @@ class MemoryBlock(nn.Module):
         self.ln_mem_q = LayerNorm(config.n_embd)
         self.ln_mem_kv = LayerNorm(config.n_embd)
         self.cross_attn = CausalCrossAttention(config)
-        self.memory_gate = nn.Parameter(torch.tensor(float(config.memory_gate_init)))
         self.ln_mlp = LayerNorm(config.n_embd)
         self.mlp = MLP(config)
 
     def forward(self, x: torch.Tensor, memory_states: torch.Tensor) -> torch.Tensor:
         x = x + self.attn(self.ln_self(x))
         memory_delta = self.cross_attn(self.ln_mem_q(x), self.ln_mem_kv(memory_states))
-        x = x + self.memory_gate * memory_delta
+        x = x + memory_delta
         x = x + self.mlp(self.ln_mlp(x))
         return x
-
-    def memory_gate_stats(self) -> dict[str, float]:
-        value = float(self.memory_gate.detach().cpu().item())
-        return {"raw": value, "effective": value}
 
 
 class MemoryTapeTransformer(MultiPassTransformer):
@@ -843,24 +816,18 @@ class MemoryTapeTransformer(MultiPassTransformer):
     def __init__(self, config: MemoryTapeConfig):
         super().__init__(config)
         self.finish_initialization()
+        # The former scalar gate initialized every reader at 0.5. Folding that
+        # fixed scale into the residual output projection preserves the same
+        # initial function without a scale-nonidentifiable learned parameter.
+        with torch.no_grad():
+            for block in self.transformer.h:
+                block.cross_attn.c_proj.weight.mul_(0.5)
 
     def _run_full_pass(self, token_stream: torch.Tensor, memory_tape: torch.Tensor) -> torch.Tensor:
         hidden = token_stream
         for block in self.transformer.h:
             hidden = block(hidden, memory_tape)
         return hidden
-
-    def memory_gate_stats(self) -> dict[str, float | str | list[float]]:
-        values = [float(block.memory_gate.detach().cpu().item()) for block in self.transformer.h]
-        tensor = torch.tensor(values)
-        return {
-            "mode": "scalar",
-            "raw": values,
-            "effective": values,
-            "mean_abs_effective": float(tensor.abs().mean().item()),
-            "max_abs_effective": float(tensor.abs().max().item()),
-        }
-
 
 class JointMemoryBlock(nn.Module):
     def __init__(self, config: MultiPassConfig):
@@ -942,28 +909,14 @@ class MemoryUpdateBlock(nn.Module):
         self.ln_mem_q = LayerNorm(config.n_embd)
         self.ln_tok_kv = LayerNorm(config.n_embd)
         self.token_attn = CausalCrossAttention(config)
-        self.use_memory_gate = config.use_memory_gate
-        self.token_gate = (
-            nn.Linear(3 * config.n_embd, config.n_embd, bias=True)
-            if self.use_memory_gate
-            else None
-        )
         self.ln_1 = LayerNorm(config.n_embd)
         self.attn = CausalSelfAttention(config)
         self.ln_2 = LayerNorm(config.n_embd)
         self.mlp = MLP(config)
 
-    def set_gate_bias(self, bias: float) -> None:
-        if self.token_gate is not None:
-            nn.init.constant_(self.token_gate.bias, bias)
-
     def forward(self, memory_states: torch.Tensor, token_stream: torch.Tensor) -> torch.Tensor:
         token_delta = self.token_attn(self.ln_mem_q(memory_states), self.ln_tok_kv(token_stream))
-        if self.token_gate is None:
-            memory_states = memory_states + token_delta
-        else:
-            gate_input = torch.cat((memory_states, token_stream, token_delta), dim=-1)
-            memory_states = memory_states + torch.sigmoid(self.token_gate(gate_input)) * token_delta
+        memory_states = memory_states + token_delta
         memory_states = memory_states + self.attn(self.ln_1(memory_states))
         return memory_states + self.mlp(self.ln_2(memory_states))
 
@@ -981,8 +934,6 @@ class MemoryUpdateTransformer(MultiPassTransformer):
             self.token_to_memory.weight.copy_(
                 torch.eye(config.n_embd, device=self.token_to_memory.weight.device, dtype=self.token_to_memory.weight.dtype)
             )
-        for block in self.transformer.h:
-            block.set_gate_bias(config.memory_gate_bias)
 
     def _run_full_pass(self, token_stream: torch.Tensor, memory_tape: torch.Tensor) -> torch.Tensor:
         memory_states = _fuse_memory_state_inputs(

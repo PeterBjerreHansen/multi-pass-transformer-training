@@ -154,11 +154,6 @@ def load_training_records(root: str | Path) -> list[dict]:
                 number = _finite_number(value)
                 if number is not None:
                     record[f"pass_{index}_loss"] = number
-            gate_stats = event.get("memory_gate_stats") or {}
-            for key in ("mean_abs_effective", "max_abs_effective"):
-                number = _finite_number(gate_stats.get(key))
-                if number is not None:
-                    record[f"memory_gate_{key}"] = number
             for group, summary in (event.get("gradient_norms") or {}).items():
                 for statistic in ("mean", "max"):
                     number = _finite_number(summary.get(statistic))

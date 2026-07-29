@@ -198,7 +198,8 @@ def test_gradient_norms_cover_memory_subsystems_after_backward():
     loss = model.calc_total_loss(output, batch.targets, [0, 0, 1]).loss
     loss.backward()
     norms = gradient_norms(model)
-    assert {"global", "backbone", "memory_writer", "memory_attention", "memory_gate"} <= set(norms)
+    assert {"global", "backbone", "memory_writer", "memory_attention"} <= set(norms)
+    assert "memory_gate" not in norms
     assert all(torch.isfinite(torch.tensor(value)) and value > 0 for value in norms.values())
 
 
@@ -304,6 +305,33 @@ def test_checkpoint_resume_reproduces_next_optimizer_step(tmp_path):
     _one_step(restored_model, restored_optimizer, batch2, target2)
     for name, value in restored_model.state_dict().items():
         assert torch.equal(value, expected[name]), name
+
+
+def test_restore_folds_legacy_memory_tape_gates_into_output_projections():
+    torch.manual_seed(17)
+    config = MemoryTapeConfig(8, 13, 2, 1, 8, 3)
+    expected_model = MemoryTapeTransformer(config)
+    expected_state = {
+        name: value.detach().clone()
+        for name, value in expected_model.state_dict().items()
+    }
+    legacy_state = {
+        name: value.detach().clone()
+        for name, value in expected_state.items()
+    }
+    for layer, gate in enumerate((0.25, -0.5)):
+        prefix = f"transformer.h.{layer}."
+        projection = prefix + "cross_attn.c_proj.weight"
+        legacy_state[projection].div_(gate)
+        legacy_state[prefix + "memory_gate"] = torch.tensor(gate)
+
+    restored_model = MemoryTapeTransformer(config)
+    restore_checkpoint_state(
+        {"model_state_dict": legacy_state},
+        model=restored_model,
+    )
+    for name, value in restored_model.state_dict().items():
+        assert torch.equal(value, expected_state[name]), name
 
 
 def test_cli_has_only_two_inference_modes_and_no_cache_source():
@@ -456,20 +484,6 @@ def test_trace_registry_preserves_seeded_task_behavior(tmp_path):
     assert torch.equal(registered_othello_batch.targets, direct_othello_batch.targets)
 
 
-def test_memory_update_direct_default_matches_experiment_default():
-    from models import MemoryUpdateConfig
-
-    config = MemoryUpdateConfig(
-        block_size=8,
-        vocab_size=13,
-        n_layer=1,
-        n_head=1,
-        n_embd=8,
-        n_pass=3,
-    )
-    assert config.use_memory_gate is False
-
-
 def test_runtime_resource_stats_reports_peak_rss():
     stats = runtime_resource_stats("cpu")
     assert stats["process_peak_rss_bytes"] > 0
@@ -492,7 +506,6 @@ def test_main_bbh_preset_contract_is_frozen():
         "review_easier_every": 2,
         "token_selection": "argmax",
         "inference_mode": "recompute",
-        "memory_gate_init": 0.5,
     }
     task_contracts = {
         "pointer_chasing_main": {
@@ -532,7 +545,6 @@ def test_main_trace_preset_contract_is_frozen():
         "weight_decay": 0.0,
         "seed": 1337,
         "inference_mode": "append_recurrent",
-        "memory_gate_init": 0.5,
     }
     contracts = {
         "othello_main": {
