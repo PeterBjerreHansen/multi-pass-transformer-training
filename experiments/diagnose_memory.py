@@ -536,6 +536,11 @@ def diagnose_memory(cli_args) -> Path:
         "memory_interventions": _mean_numbers(intervention_results),
         "pass_dynamics": _mean_numbers(dynamics_results),
         "teacher_forced_schedule_gap": _aggregate_teacher_forced_schedule_gaps(schedule_gap_results),
+        **(
+            {"memory_read_stats": model.memory_read_stats()}
+            if hasattr(model, "memory_read_stats")
+            else {}
+        ),
     }
     if bbh_level is not None:
         payload["evaluated_level"] = bbh_level

@@ -122,7 +122,7 @@ def test_all_layer_mask_is_numerically_equivalent_and_parameter_matched():
     tokens = torch.randint(0, 19, (2, 8))
     assert default.get_num_params() == explicit.get_num_params()
     assert torch.equal(default(tokens).logits, explicit(tokens).logits)
-    assert explicit.memory_gate_stats()["read_enabled"] == [True, True, True, True]
+    assert explicit.memory_read_stats()["read_enabled"] == [True, True, True, True]
 
 
 def test_inactive_memory_readers_retain_parameters_without_gradients():
@@ -133,11 +133,9 @@ def test_inactive_memory_readers_retain_parameters_without_gradients():
     targets = torch.randint(0, 19, (2, 8))
     model.calc_total_loss(model(tokens), targets, [0, 0, 1]).loss.backward()
     assert model.transformer.h[0].cross_attn.c_kv.weight.grad is not None
-    assert model.transformer.h[0].memory_gate.grad is not None
     for block in model.transformer.h[1:]:
         assert block.cross_attn.c_kv.weight.grad is None
-        assert block.memory_gate.grad is None
-    assert model.memory_gate_stats()["read_enabled"] == [True, False, False, False]
+    assert model.memory_read_stats()["read_enabled"] == [True, False, False, False]
 
 
 def test_memory_read_layer_config_rejects_duplicates_and_bad_indices():

@@ -102,7 +102,7 @@ def test_memory_read_pattern_is_saved_and_reported(tmp_path):
     assert config["model_config"]["memory_read_layers"] == [0]
     events = [json.loads(line) for line in (run_dir / "metrics.jsonl").read_text(encoding="utf-8").splitlines()]
     evaluation = next(event for event in events if event["event"] == "eval")
-    assert evaluation["memory_gate_stats"]["read_enabled"] == [True]
+    assert evaluation["memory_read_stats"]["read_enabled"] == [True]
 
 
 def test_trace_training_evaluation_and_diagnostics_cli(tmp_path):

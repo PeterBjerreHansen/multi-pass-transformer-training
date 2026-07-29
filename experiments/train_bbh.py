@@ -380,6 +380,11 @@ def run_answer_curriculum(args) -> None:
                 "is_best_checkpoint": is_best_checkpoint,
                 "best_eval_score": best_eval_score,
                 "best_eval_step": best_eval_step,
+                **(
+                    {"memory_read_stats": model.memory_read_stats()}
+                    if hasattr(model, "memory_read_stats")
+                    else {}
+                ),
             },
         )
 

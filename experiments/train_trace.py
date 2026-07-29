@@ -318,6 +318,11 @@ def run_trace_training(args) -> None:
                 "is_best_checkpoint": is_best_checkpoint,
                 "best_eval_loss": best_eval_loss,
                 "best_eval_step": best_eval_step,
+                **(
+                    {"memory_read_stats": model.memory_read_stats()}
+                    if hasattr(model, "memory_read_stats")
+                    else {}
+                ),
             },
         )
         checkpoint_extra = {
