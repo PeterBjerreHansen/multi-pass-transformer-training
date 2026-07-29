@@ -2,11 +2,11 @@
 
 ## Experiment and hypothesis
 
-This branch adds an optional null source to each `MemoryTapeTransformer` reader. The null source has a learned key per attention head and a fixed zero value, so a query can explicitly allocate attention probability to "no useful memory here" without adding a learned content vector. The existing scalar memory gate remains after the attention projection.
+This branch adds an optional null source to each `MemoryTapeTransformer` reader. The null source has a learned key per attention head and a fixed zero value, so a query can explicitly allocate attention probability to "no useful memory here" without adding a learned content vector. Like `main`, the reader residual is gateless.
 
-The hypothesis is diagnostic as much as architectural: a null slot should help only when ordinary memory attention is compulsory and diffuse. The benchmark therefore compares null off versus on and requires high normalized attention entropy, a materially active scalar gate, non-trivial null mass, and a quality win before recommending a merge.
+The hypothesis is diagnostic as much as architectural: a null slot should help only when ordinary memory attention is compulsory and diffuse. The benchmark therefore compares null off versus on and requires high normalized attention entropy in the null-free control, non-trivial null mass in the treatment, and a quality win before recommending a merge. A separate gate-activity precondition is no longer necessary because the memory residual is applied unconditionally.
 
-For a short local null-off versus null-on run with both inference modes and diagnostics, use `bash scripts/pilot_08_null_memory_slot.sh`. It defaults to one seed and 250 steps; `DEVICE`, `TRAIN_STEPS`, `BATCH_SIZE`, and `RESULT_ROOT` are overrideable.
+For a short local null-off versus null-on run with both inference modes and diagnostics, use `bash scripts/trace/pilot_null_memory_slot.sh`. It defaults to one seed and 250 steps; `DEVICE`, `TRAIN_STEPS`, `BATCH_SIZE`, and `RESULT_ROOT` are overrideable.
 
 ## Branch-specific code review
 
