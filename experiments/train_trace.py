@@ -6,6 +6,7 @@ import time
 
 from tasks.trace.registry import TRACE_TASKS, get_trace_task
 from experiments.common import (
+    apply_learning_rate,
     append_jsonl,
     build_model_and_optimizer,
     effective_inference_mode,
@@ -35,6 +36,15 @@ from experiments.common import (
 )
 from experiments.presets import TRACE_PRESETS, preset_help_text, resolve_preset_args
 from model_factory import ARCHITECTURES
+
+
+_LR_OVERRIDE_KEYS = (
+    "lr",
+    "lr_schedule",
+    "min_lr",
+    "lr_warmup_steps",
+    "lr_decay_steps",
+)
 
 
 def _add_override(parser, *names, **kwargs) -> None:
@@ -67,6 +77,14 @@ def parse_args(argv: list[str] | None = None):
     _add_override(parser, "--batch-size", type=int)
     _add_override(parser, "--train-steps", type=int)
     _add_override(parser, "--lr", type=float)
+    _add_override(
+        parser,
+        "--lr-schedule",
+        choices=["constant", "warmup_cosine"],
+    )
+    _add_override(parser, "--min-lr", type=float)
+    _add_override(parser, "--lr-warmup-steps", type=int)
+    _add_override(parser, "--lr-decay-steps", type=int)
     _add_override(parser, "--weight-decay", type=float)
     _add_override(parser, "--eval-interval", type=int)
     _add_override(parser, "--eval-batches", type=int)
@@ -76,14 +94,18 @@ def parse_args(argv: list[str] | None = None):
     _add_override(parser, "--run-dir")
     _add_override(parser, "--resume-from")
     raw_args = parser.parse_args(argv)
-    lr_was_explicit = hasattr(raw_args, "lr")
+    explicit_lr_overrides = {
+        key: getattr(raw_args, key)
+        for key in _LR_OVERRIDE_KEYS
+        if hasattr(raw_args, key)
+    }
     args = resolve_preset_args(
         raw_args,
         TRACE_PRESETS,
         default_preset="shortest_path_main",
         parser=parser,
     )
-    args._lr_was_explicit = lr_was_explicit
+    args._explicit_lr_overrides = explicit_lr_overrides
     return args
 
 
@@ -125,8 +147,14 @@ def format_trace_metrics(args, metrics: dict[str, float]) -> str:
     return get_trace_task(args.task).format_metrics(metrics)
 
 
-def _apply_resume_args(args, checkpoint: dict) -> None:
+def _apply_resume_args(
+    args,
+    checkpoint: dict,
+    *,
+    explicit_lr_overrides: dict[str, object],
+) -> None:
     saved = checkpoint.get("args", {})
+    is_legacy_schedule = "lr_schedule" not in saved
     preserve = {
         "resume_from": args.resume_from,
         "run_dir": args.run_dir,
@@ -138,25 +166,40 @@ def _apply_resume_args(args, checkpoint: dict) -> None:
     for key, value in preserve.items():
         if value is not None:
             setattr(args, key, value)
+    if is_legacy_schedule:
+        # Checkpoints created before scheduling existed must preserve their
+        # original constant-LR behavior unless the user opts in explicitly.
+        args.lr_schedule = "constant"
+        args.min_lr = args.lr
+        args.lr_warmup_steps = 0
+        args.lr_decay_steps = 0
+    for key, value in explicit_lr_overrides.items():
+        setattr(args, key, value)
+    if (
+        is_legacy_schedule
+        and args.lr_schedule == "constant"
+        and "min_lr" not in explicit_lr_overrides
+    ):
+        args.min_lr = args.lr
 
 
 def run_trace_training(args) -> None:
     checkpoint = None
     resume_step = 0
-    resume_lr_override = (
-        float(args.lr)
-        if getattr(args, "_lr_was_explicit", False)
-        else None
+    explicit_lr_overrides = dict(
+        getattr(args, "_explicit_lr_overrides", {})
     )
-    if hasattr(args, "_lr_was_explicit"):
-        delattr(args, "_lr_was_explicit")
+    if hasattr(args, "_explicit_lr_overrides"):
+        delattr(args, "_explicit_lr_overrides")
     if args.resume_from:
         resume_artifacts = resolve_resume_artifacts(args.resume_from)
         checkpoint = load_checkpoint_payload(resume_artifacts.checkpoint_path, device="cpu")
         resume_step = int(checkpoint.get("step", 0))
-        _apply_resume_args(args, checkpoint)
-        if resume_lr_override is not None:
-            args.lr = resume_lr_override
+        _apply_resume_args(
+            args,
+            checkpoint,
+            explicit_lr_overrides=explicit_lr_overrides,
+        )
 
     resolve_device_arg(args)
     set_seed(args.seed)
@@ -183,9 +226,7 @@ def run_trace_training(args) -> None:
         best_eval_step = None if saved_best_step is None else int(saved_best_step)
         if "train_rng_state" in extra:
             train_rng.setstate(extra["train_rng_state"])
-        if resume_lr_override is not None:
-            for parameter_group in optimizer.param_groups:
-                parameter_group["lr"] = resume_lr_override
+        apply_learning_rate(optimizer, args, resume_step)
         if best_eval_loss == float("inf"):
             previous_eval = find_jsonl_event(
                 artifacts.metrics_path,
@@ -221,6 +262,15 @@ def run_trace_training(args) -> None:
     print(f"inference_mode: {effective_inference_mode(args)}")
     print(f"block_size: {block_size}")
     print(f"parameters: {model.get_num_params():,}")
+    if args.lr_schedule == "warmup_cosine":
+        print(
+            "lr_schedule: warmup_cosine | "
+            f"peak {args.lr:.3g} | min {args.min_lr:.3g} | "
+            f"warmup_steps {args.lr_warmup_steps} | "
+            f"decay_steps {args.lr_decay_steps}"
+        )
+    else:
+        print(f"lr_schedule: constant | lr {args.lr:.3g}")
     if args.architecture != "transformer":
         total_weight = sum(args.pass_loss_weights)
         print(f"n_pass: {args.n_pass}")
@@ -245,6 +295,7 @@ def run_trace_training(args) -> None:
     gradient_norm_window: dict[str, dict[str, float]] = {}
 
     for step in range(start_step, final_step + 1):
+        current_lr = apply_learning_rate(optimizer, args, step)
         model.train()
         batch = build_task_batch(args, stoi, train_rng, split="train")
         optimizer.zero_grad(set_to_none=True)
@@ -261,7 +312,11 @@ def run_trace_training(args) -> None:
         synchronize_device(args.device)
         elapsed = time.perf_counter() - window_start
         tok_per_s = window_tokens / elapsed if elapsed > 0 else 0.0
-        fields = [f"loss {loss.item():.4f}", f"tok/s {tok_per_s:.1f}"]
+        fields = [
+            f"loss {loss.item():.4f}",
+            f"lr {current_lr:.3g}",
+            f"tok/s {tok_per_s:.1f}",
+        ]
         gradient_summary = summarize_gradient_norm_window(gradient_norm_window)
         fields.append(format_gradient_norms(gradient_summary))
         if args.architecture != "transformer":
@@ -292,6 +347,7 @@ def run_trace_training(args) -> None:
             {
                 "event": "eval",
                 "step": step,
+                "learning_rate": current_lr,
                 "train_loss": float(loss.item()),
                 "pass_losses": [float(item.item()) for item in pass_losses],
                 "metrics": metrics,

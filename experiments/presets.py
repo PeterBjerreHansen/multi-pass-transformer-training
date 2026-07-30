@@ -81,6 +81,10 @@ def _trace_defaults(
     )
     values.update(
         lr=3e-5,
+        lr_schedule="constant",
+        min_lr=3e-5,
+        lr_warmup_steps=0,
+        lr_decay_steps=0,
         eval_interval=1 if smoke else 1_000,
     )
     return values
@@ -124,7 +128,12 @@ shortest_path_main = _trace_defaults(
 )
 shortest_path_main.update(
     shortest_path_distribution="main",
-    train_steps=100_000,
+    train_steps=200_000,
+    lr=3e-4,
+    lr_schedule="warmup_cosine",
+    min_lr=3e-5,
+    lr_warmup_steps=4_000,
+    lr_decay_steps=200_000,
 )
 TRACE_PRESETS["shortest_path_main"] = ExperimentPreset(
     "Main mixed-difficulty, solver-verified shortest-path distribution.",

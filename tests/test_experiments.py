@@ -11,6 +11,7 @@ from experiments.common import (
     RunArtifacts,
     evaluate_prebuilt_batches,
     gradient_norms,
+    learning_rate_at_step,
     load_checkpoint_payload,
     restore_checkpoint_state,
     runtime_resource_stats,
@@ -307,6 +308,27 @@ def test_checkpoint_resume_reproduces_next_optimizer_step(tmp_path):
         assert torch.equal(value, expected[name]), name
 
 
+def test_warmup_cosine_learning_rate_uses_absolute_steps():
+    schedule = {
+        "schedule": "warmup_cosine",
+        "peak_lr": 3e-4,
+        "min_lr": 3e-5,
+        "warmup_steps": 4_000,
+        "decay_steps": 200_000,
+    }
+    assert learning_rate_at_step(1, **schedule) == pytest.approx(3e-4 / 4_000)
+    assert learning_rate_at_step(4_000, **schedule) == pytest.approx(3e-4)
+    assert learning_rate_at_step(102_000, **schedule) == pytest.approx(1.65e-4)
+    assert learning_rate_at_step(200_000, **schedule) == pytest.approx(3e-5)
+    assert learning_rate_at_step(220_000, **schedule) == pytest.approx(3e-5)
+
+    rates = [
+        learning_rate_at_step(step, **schedule)
+        for step in range(4_000, 200_001, 1_000)
+    ]
+    assert all(left >= right for left, right in zip(rates, rates[1:]))
+
+
 def test_restore_folds_legacy_memory_tape_gates_into_output_projections():
     torch.manual_seed(17)
     config = MemoryTapeConfig(8, 13, 2, 1, 8, 3)
@@ -352,7 +374,7 @@ def test_shortest_path_cli_exposes_only_easy_and_main_distributions():
     assert main.shortest_path_distribution == "main"
     assert easy.shortest_path_distribution == "easy"
     assert easy.train_steps == 50_000
-    assert main.train_steps == 100_000
+    assert main.train_steps == 200_000
     assert smoke.shortest_path_distribution == "easy"
     with pytest.raises(SystemExit):
         parse_trace_args(
@@ -365,13 +387,16 @@ def test_shortest_path_cli_exposes_only_easy_and_main_distributions():
         )
 
 
-def test_trace_presets_use_shared_learning_rate_default():
-    from experiments.presets import TRACE_PRESETS
-
-    assert {
-        name: preset.values["lr"]
-        for name, preset in TRACE_PRESETS.items()
-    } == {name: 3e-5 for name in TRACE_PRESETS}
+def test_shortest_path_main_uses_warmup_cosine_learning_rate():
+    path = TRACE_PRESETS["shortest_path_main"].values
+    assert path["lr"] == 3e-4
+    assert path["lr_schedule"] == "warmup_cosine"
+    assert path["min_lr"] == 3e-5
+    assert path["lr_warmup_steps"] == 4_000
+    assert path["lr_decay_steps"] == path["train_steps"] == 200_000
+    for name, preset in TRACE_PRESETS.items():
+        if name != "shortest_path_main":
+            assert preset.values["lr_schedule"] == "constant"
 
 
 def test_main_presets_use_declared_experiment_scales():
@@ -561,6 +586,10 @@ def test_main_trace_preset_contract_is_frozen():
             "batch_size": 128,
             "train_steps": 500_000,
             "lr": 3e-5,
+            "lr_schedule": "constant",
+            "min_lr": 3e-5,
+            "lr_warmup_steps": 0,
+            "lr_decay_steps": 0,
             "eval_interval": 5_000,
             "eval_batches": 1,
             "othello_train_games": 5_000_000,
@@ -569,8 +598,12 @@ def test_main_trace_preset_contract_is_frozen():
         "shortest_path_main": {
             "task": "shortest_path",
             "batch_size": 64,
-            "train_steps": 100_000,
-            "lr": 3e-5,
+            "train_steps": 200_000,
+            "lr": 3e-4,
+            "lr_schedule": "warmup_cosine",
+            "min_lr": 3e-5,
+            "lr_warmup_steps": 4_000,
+            "lr_decay_steps": 200_000,
             "eval_interval": 1_000,
             "eval_batches": 4,
             "shortest_path_distribution": "main",

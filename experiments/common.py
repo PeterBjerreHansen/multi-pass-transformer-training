@@ -114,6 +114,67 @@ def validate_training_args(args) -> None:
         raise ValueError("--lr must be positive")
     if args.weight_decay < 0:
         raise ValueError("--weight-decay must be non-negative")
+    lr_schedule = getattr(args, "lr_schedule", "constant")
+    if lr_schedule not in {"constant", "warmup_cosine"}:
+        raise ValueError("--lr-schedule must be constant or warmup_cosine")
+    if lr_schedule == "warmup_cosine":
+        min_lr = float(args.min_lr)
+        warmup_steps = int(args.lr_warmup_steps)
+        decay_steps = int(args.lr_decay_steps)
+        if not 0 <= min_lr <= args.lr:
+            raise ValueError("--min-lr must be between zero and --lr")
+        if warmup_steps < 1:
+            raise ValueError("--lr-warmup-steps must be at least 1")
+        if decay_steps <= warmup_steps:
+            raise ValueError("--lr-decay-steps must exceed --lr-warmup-steps")
+
+
+def learning_rate_at_step(
+    step: int,
+    *,
+    schedule: str,
+    peak_lr: float,
+    min_lr: float = 0.0,
+    warmup_steps: int = 0,
+    decay_steps: int = 0,
+) -> float:
+    """Return the deterministic learning rate for an absolute optimizer step."""
+    if step < 0:
+        raise ValueError("step must be non-negative")
+    if schedule == "constant":
+        return float(peak_lr)
+    if schedule != "warmup_cosine":
+        raise ValueError(f"unsupported learning-rate schedule: {schedule}")
+    if warmup_steps < 1:
+        raise ValueError("warmup_steps must be at least 1")
+    if decay_steps <= warmup_steps:
+        raise ValueError("decay_steps must exceed warmup_steps")
+    if not 0 <= min_lr <= peak_lr:
+        raise ValueError("min_lr must be between zero and peak_lr")
+
+    if step <= warmup_steps:
+        return float(peak_lr) * step / warmup_steps
+    if step >= decay_steps:
+        return float(min_lr)
+
+    progress = (step - warmup_steps) / (decay_steps - warmup_steps)
+    cosine = 0.5 * (1.0 + math.cos(math.pi * progress))
+    return float(min_lr) + (float(peak_lr) - float(min_lr)) * cosine
+
+
+def apply_learning_rate(optimizer, args, step: int) -> float:
+    """Apply the configured rate for ``step`` to every optimizer group."""
+    learning_rate = learning_rate_at_step(
+        step,
+        schedule=getattr(args, "lr_schedule", "constant"),
+        peak_lr=float(args.lr),
+        min_lr=float(getattr(args, "min_lr", args.lr)),
+        warmup_steps=int(getattr(args, "lr_warmup_steps", 0)),
+        decay_steps=int(getattr(args, "lr_decay_steps", 0)),
+    )
+    for parameter_group in optimizer.param_groups:
+        parameter_group["lr"] = learning_rate
+    return learning_rate
 
 
 def build_model_and_optimizer(args, *, vocab_size: int, block_size: int):

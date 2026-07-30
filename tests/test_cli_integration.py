@@ -169,6 +169,7 @@ def test_shortest_path_training_resume_drift_and_diagnostics_cli(tmp_path):
         for line in (run_dir / "metrics.jsonl").read_text(encoding="utf-8").splitlines()
     ]
     evaluation = next(event for event in events if event["event"] == "eval")
+    assert evaluation["learning_rate"] == pytest.approx(3e-5)
     for metric in (
         "valid_edge_rate",
         "goal_reached",
@@ -180,6 +181,20 @@ def test_shortest_path_training_resume_drift_and_diagnostics_cli(tmp_path):
         "path_step_1_examples",
     ):
         assert metric in evaluation["metrics"]
+
+    legacy_checkpoint = torch.load(
+        run_dir / "latest.pt",
+        map_location="cpu",
+        weights_only=False,
+    )
+    for key in (
+        "lr_schedule",
+        "min_lr",
+        "lr_warmup_steps",
+        "lr_decay_steps",
+    ):
+        legacy_checkpoint["args"].pop(key)
+    torch.save(legacy_checkpoint, run_dir / "latest.pt")
 
     _run(
         "-m", "experiments.train_trace",
@@ -194,13 +209,20 @@ def test_shortest_path_training_resume_drift_and_diagnostics_cli(tmp_path):
         json.loads(line)
         for line in (run_dir / "metrics.jsonl").read_text(encoding="utf-8").splitlines()
     ]
-    assert any(event.get("event") == "eval" and event.get("step") == 2 for event in resumed_events)
+    resumed_evaluation = next(
+        event
+        for event in resumed_events
+        if event.get("event") == "eval" and event.get("step") == 2
+    )
+    assert resumed_evaluation["learning_rate"] == pytest.approx(0.00005)
     resumed_checkpoint = torch.load(
         run_dir / "latest.pt",
         map_location="cpu",
         weights_only=False,
     )
     assert resumed_checkpoint["args"]["lr"] == pytest.approx(0.00005)
+    assert resumed_checkpoint["args"]["lr_schedule"] == "constant"
+    assert resumed_checkpoint["args"]["min_lr"] == pytest.approx(0.00005)
     assert all(
         group["lr"] == pytest.approx(0.00005)
         for group in resumed_checkpoint["optimizer_state_dict"]["param_groups"]
@@ -236,3 +258,66 @@ def test_shortest_path_training_resume_drift_and_diagnostics_cli(tmp_path):
     payload = json.loads(diagnostics.read_text(encoding="utf-8"))
     assert payload["task"] == "shortest_path"
     assert payload["teacher_forced_schedule_gap"]["overall"]["count"] > 0
+
+
+def test_trace_cosine_schedule_resume_matches_uninterrupted_training(tmp_path):
+    uninterrupted_dir = tmp_path / "uninterrupted"
+    resumed_dir = tmp_path / "resumed"
+    schedule_args = (
+        "--preset", "shortest_path_smoke",
+        "--architecture", "transformer",
+        "--device", "cpu",
+        "--eval-interval", "1",
+        "--lr", "0.0003",
+        "--lr-schedule", "warmup_cosine",
+        "--min-lr", "0.00003",
+        "--lr-warmup-steps", "2",
+        "--lr-decay-steps", "6",
+    )
+    _run(
+        "-m", "experiments.train_trace",
+        *schedule_args,
+        "--train-steps", "4",
+        "--run-dir", str(uninterrupted_dir),
+    )
+    _run(
+        "-m", "experiments.train_trace",
+        *schedule_args,
+        "--train-steps", "2",
+        "--run-dir", str(resumed_dir),
+    )
+    _run(
+        "-m", "experiments.train_trace",
+        "--preset", "shortest_path_smoke",
+        "--resume-from", str(resumed_dir),
+        "--train-steps", "2",
+        "--device", "cpu",
+        "--run-dir", str(resumed_dir),
+    )
+
+    uninterrupted = torch.load(
+        uninterrupted_dir / "latest.pt",
+        map_location="cpu",
+        weights_only=False,
+    )
+    resumed = torch.load(
+        resumed_dir / "latest.pt",
+        map_location="cpu",
+        weights_only=False,
+    )
+    assert uninterrupted["step"] == resumed["step"] == 4
+    for name, value in uninterrupted["model_state_dict"].items():
+        assert torch.equal(value, resumed["model_state_dict"][name]), name
+    assert resumed["optimizer_state_dict"]["param_groups"][0]["lr"] == pytest.approx(
+        1.65e-4
+    )
+    events = [
+        json.loads(line)
+        for line in (resumed_dir / "metrics.jsonl").read_text(encoding="utf-8").splitlines()
+    ]
+    step_four = next(
+        event
+        for event in events
+        if event.get("event") == "eval" and event.get("step") == 4
+    )
+    assert step_four["learning_rate"] == pytest.approx(1.65e-4)

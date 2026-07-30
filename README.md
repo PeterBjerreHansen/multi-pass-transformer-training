@@ -291,6 +291,11 @@ python3 -m experiments.train_trace \
   --run-dir results/trace/shortest_path/main/memory_tape/example_run
 ```
 
+`shortest_path_main` runs for 200,000 optimizer steps. Its learning rate warms
+linearly to `3e-4` over the first 4,000 steps, then decays by a cosine schedule
+to `3e-5` at step 200,000. The schedule is based on absolute optimizer steps,
+so checkpoint resumes continue the same curve.
+
 Shortest-path training and held-out evaluation always draw from the same named
 distribution. Evaluation reports valid-edge rate, sequence-legality rate,
 goal-reaching rate, optimal-path accuracy, exact path-plus-EOS accuracy, and
