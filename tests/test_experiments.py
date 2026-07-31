@@ -670,6 +670,32 @@ def test_position_offset_sampling_is_deterministic():
     ]
 
 
+def test_position_offset_recommendation_uses_task_quality_metric():
+    control = {}
+    treatment = {}
+    for seed in range(3):
+        control[str(seed)] = {
+            "drift.append_recurrent.optimal_path": 0.80,
+            "offset.16.append_recurrent.optimal_path": 0.50,
+            "offset.32.append_recurrent.optimal_path": 0.40,
+        }
+        treatment[str(seed)] = {
+            "drift.append_recurrent.optimal_path": 0.80,
+            "offset.16.append_recurrent.optimal_path": 0.52,
+            "offset.32.append_recurrent.optimal_path": 0.42,
+        }
+    result = recommend(
+        control,
+        treatment,
+        mode="position-offset",
+        quality_metric="drift.append_recurrent.optimal_path",
+    )
+    assert result["quality_metric"].endswith("optimal_path")
+    assert result["quality_win"]
+    assert result["offset_zero_noninferior"]
+    assert result["recommend_merge"]
+
+
 def test_ablation_recommendation_accepts_task_specific_quality_metric():
     control = {
         str(seed): {"drift.append_recurrent.optimal_path": 0.30}

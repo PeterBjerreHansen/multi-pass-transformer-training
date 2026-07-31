@@ -4,9 +4,14 @@
 
 This branch separates sequence capacity (`block_size`) from the learned positional-table capacity (`max_position_embeddings`) and allows a sequence to be embedded at a non-zero absolute position. Training can sample offsets uniformly with `--train-position-offset-max`; evaluation can select a fixed coordinate origin with `--eval-position-offset`.
 
-The hypothesis is that training across absolute offsets prevents the model from overfitting task roles to the first positions in the table and improves robustness when generation or memory reuse begins later in a larger coordinate system. The benchmark parameter-matches control and treatment with 195 position embeddings, trains at offset zero versus offsets 0–64, and evaluates offsets 0, 16, 32, and 64 in both inference modes.
+The hypothesis is that training across absolute offsets prevents the model from overfitting task roles to the first positions in the table and improves robustness when generation or memory reuse begins later in a larger coordinate system. The benchmark parameter-matches control and treatment with 209 position embeddings, trains at offset zero versus offsets 0–64, and evaluates offsets 0, 16, 32, and 64 in both inference modes.
 
 For a short local control/treatment run with both inference modes and diagnostics, use `bash scripts/trace/pilot_position_offsets.sh`. It defaults to one seed and 250 steps; `DEVICE`, `TRAIN_STEPS`, `BATCH_SIZE`, and `RESULT_ROOT` are overrideable. The full ablation is `scripts/trace/ablate_position_offsets.sh`, and branch validation is `tests/test_position_offsets.sh`.
+
+The full ablation defaults to three seeds and 200,000 steps. Its cosine decay
+ends with training, and each offset/schedule pair is evaluated on 4,096 fresh
+examples from the best validation-loss checkpoint. The pilot scales that
+schedule to its short training budget.
 
 ## Branch-specific code review
 

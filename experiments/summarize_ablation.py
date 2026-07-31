@@ -183,18 +183,22 @@ def recommend(
     deltas = _paired_delta(control, treatment, quality_metric)
     shifted_deltas: list[float] = []
     if mode == "position-offset":
+        metric_leaf = quality_metric.rsplit(".", maxsplit=1)[-1]
         for seed in sorted(set(control) & set(treatment)):
             metric_names = sorted(
                 key
                 for key in set(control[seed]) & set(treatment[seed])
-                if key.startswith("offset.") and key.endswith(".append_recurrent.token_legality")
+                if key.startswith("offset.")
+                and key.endswith(f".append_recurrent.{metric_leaf}")
             )
             left = [_number(control[seed].get(key)) for key in metric_names]
             right = [_number(treatment[seed].get(key)) for key in metric_names]
             pairs = [(a, b) for a, b in zip(left, right) if a is not None and b is not None]
             if pairs:
                 shifted_deltas.append(sum(b - a for a, b in pairs) / len(pairs))
-        quality_metric = "mean shifted-offset append-recurrent token legality"
+        quality_metric = (
+            f"mean shifted-offset append-recurrent {metric_leaf}"
+        )
         quality_deltas = shifted_deltas
     else:
         quality_deltas = deltas
