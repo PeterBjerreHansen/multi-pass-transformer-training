@@ -35,7 +35,14 @@ Run the full paired experiment with:
 bash scripts/trace/ablate_conditional_memory_gates.sh
 ```
 
-Both scripts accept `DEVICE`, `SEEDS`/`SEED`, `TRAIN_STEPS`, `BATCH_SIZE`, `EVAL_BATCHES`, and `RESULT_ROOT` overrides as applicable.
+The full experiment defaults to three seeds and 200,000 steps per variant,
+with cosine decay ending at training completion. Final quality uses 4,096
+fresh examples from the best validation-loss checkpoint. The 250-step pilot
+uses a five-step warmup and completes its decay within the pilot.
+
+Both scripts accept `DEVICE`, `SEEDS`/`SEED`, `TRAIN_STEPS`, `BATCH_SIZE`,
+`TRAIN_EVAL_BATCHES`, `FINAL_EVAL_BATCHES`, `DIAGNOSTIC_BATCHES`, and
+`RESULT_ROOT` overrides as applicable.
 
 ## Merging into `main`
 
