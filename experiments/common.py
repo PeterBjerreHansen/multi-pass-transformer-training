@@ -27,6 +27,7 @@ MODEL_SIZE_PRESETS = {
     "large": {"n_layer": 8, "n_head": 8, "n_embd": 256},
 }
 CHECKPOINT_LABEL_WIDTH = 14
+EVALUATION_CHECKPOINTS = ("best", "latest")
 
 
 @dataclass(frozen=True)
@@ -39,6 +40,22 @@ class RunArtifacts:
     @property
     def best_checkpoint_path(self) -> Path:
         return self.run_dir / "best.pt"
+
+
+def resolve_evaluation_checkpoint(
+    run_dir: str | Path,
+    checkpoint: str = "best",
+) -> Path:
+    """Resolve an explicitly selected checkpoint for final evaluation."""
+    if checkpoint not in EVALUATION_CHECKPOINTS:
+        choices = ", ".join(EVALUATION_CHECKPOINTS)
+        raise ValueError(f"checkpoint must be one of: {choices}")
+    path = Path(run_dir).resolve() / f"{checkpoint}.pt"
+    if not path.is_file():
+        raise FileNotFoundError(
+            f"selected {checkpoint!r} checkpoint does not exist: {path}"
+        )
+    return path
 
 
 def add_shared_model_args(parser, *, default_inference_mode: str) -> None:

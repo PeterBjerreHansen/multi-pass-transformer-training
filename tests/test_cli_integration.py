@@ -88,6 +88,8 @@ def test_trace_training_evaluation_and_diagnostics_cli(tmp_path):
         "--output", str(diagnostics),
     )
     payload = json.loads(diagnostics.read_text(encoding="utf-8"))
+    assert payload["checkpoint"] == "best"
+    assert payload["checkpoint_path"] == str(run_dir / "best.pt")
     assert "memory_interventions" in payload
     assert len(payload["pass_dynamics"]["extra_passes"]) == 2
     assert payload["teacher_forced_schedule_gap"]["horizon"] == 16
@@ -108,6 +110,8 @@ def test_trace_training_evaluation_and_diagnostics_cli(tmp_path):
         "--output-dir", str(eval_dir),
     )
     summary = json.loads((eval_dir / "summary.json").read_text(encoding="utf-8"))
+    assert summary["checkpoint"] == "best"
+    assert summary["checkpoint_path"] == str(run_dir / "best.pt")
     assert summary["effective_inference_mode"] == "append_recurrent"
     assert summary["eval_batches"] == 1
     assert summary["evaluation_examples"] == 1
@@ -140,6 +144,8 @@ def test_othello_random_prefix_evaluation_cli(tmp_path):
         "--device", "cpu",
     )
     summary = json.loads((output_dir / "summary.json").read_text(encoding="utf-8"))
+    assert summary["checkpoint"] == "best"
+    assert summary["checkpoint_path"] == str(run_dir / "best.pt")
     assert summary["evaluated_inference_modes"] == ["recompute", "append_recurrent"]
     for mode in summary["evaluated_inference_modes"]:
         overall = summary["modes"][mode]["overall"]
@@ -235,6 +241,7 @@ def test_shortest_path_training_resume_evaluation_and_diagnostics_cli(
         _run(
             "-m", "experiments.eval_trace",
             "--input-run-dir", str(run_dir),
+            "--checkpoint", "latest",
             "--inference-mode", inference_mode,
             "--token-selection", "argmax",
             "--device", "cpu",
@@ -245,6 +252,8 @@ def test_shortest_path_training_resume_evaluation_and_diagnostics_cli(
             (eval_dir / "summary.json").read_text(encoding="utf-8")
         )
         assert summary["task"] == "shortest_path"
+        assert summary["checkpoint"] == "latest"
+        assert summary["checkpoint_step"] == 2
         assert "optimal_path" in summary["metrics"]
         assert (eval_dir / "per_position.jsonl").exists()
 
@@ -252,6 +261,7 @@ def test_shortest_path_training_resume_evaluation_and_diagnostics_cli(
     _run(
         "-m", "experiments.diagnose_memory",
         "--input-run-dir", str(run_dir),
+        "--checkpoint", "latest",
         "--device", "cpu",
         "--batch-size", "2",
         "--eval-batches", "1",
@@ -261,6 +271,8 @@ def test_shortest_path_training_resume_evaluation_and_diagnostics_cli(
     )
     payload = json.loads(diagnostics.read_text(encoding="utf-8"))
     assert payload["task"] == "shortest_path"
+    assert payload["checkpoint"] == "latest"
+    assert payload["checkpoint_step"] == 2
     assert payload["teacher_forced_schedule_gap"]["overall"]["count"] > 0
 
 

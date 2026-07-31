@@ -15,9 +15,10 @@ from experiments.common import (
     load_checkpoint_payload,
     restore_checkpoint_state,
     runtime_resource_stats,
+    resolve_evaluation_checkpoint,
     save_latest_checkpoint,
 )
-from experiments.summarize_ablation import recommend
+from experiments.summarize_ablation import infer_quality_metric, recommend
 from experiments.diagnose_memory import (
     memory_interventions,
     pass_dynamics,
@@ -663,3 +664,33 @@ def test_ablation_recommendation_accepts_task_specific_quality_metric():
     assert result["quality_metric"] == "drift.append_recurrent.optimal_path"
     assert result["quality_win"]
     assert result["recommend_merge"]
+
+
+def test_ablation_quality_metric_is_inferred_from_task():
+    shortest_path = {
+        str(seed): {"task": "shortest_path"}
+        for seed in range(3)
+    }
+    assert (
+        infer_quality_metric(shortest_path)
+        == "drift.append_recurrent.optimal_path"
+    )
+    assert (
+        infer_quality_metric({"1337": {"task": "othello"}})
+        == "drift.append_recurrent.sequence_legality"
+    )
+    assert (
+        infer_quality_metric({"1337": {"task": "unknown"}})
+        == "drift.append_recurrent.token_legality"
+    )
+
+
+def test_evaluation_checkpoint_selection_is_explicit(tmp_path):
+    best = tmp_path / "best.pt"
+    latest = tmp_path / "latest.pt"
+    best.touch()
+    latest.touch()
+    assert resolve_evaluation_checkpoint(tmp_path) == best
+    assert resolve_evaluation_checkpoint(tmp_path, "latest") == latest
+    with pytest.raises(ValueError, match="checkpoint must be one of"):
+        resolve_evaluation_checkpoint(tmp_path, "other")

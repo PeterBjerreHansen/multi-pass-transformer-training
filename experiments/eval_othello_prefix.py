@@ -10,10 +10,12 @@ from types import SimpleNamespace
 import torch
 
 from experiments.common import (
+    EVALUATION_CHECKPOINTS,
     append_jsonl,
     isolated_torch_rng,
     load_checkpoint_payload,
     resolve_device_arg,
+    resolve_evaluation_checkpoint,
     restore_checkpoint_state,
     saved_args_from_run,
     stable_seed,
@@ -43,6 +45,12 @@ def parse_args(argv: list[str] | None = None):
     )
     parser.add_argument("--input-run-dir", required=True)
     parser.add_argument("--output-dir", default=None)
+    parser.add_argument(
+        "--checkpoint",
+        choices=EVALUATION_CHECKPOINTS,
+        default="best",
+        help="Saved checkpoint to evaluate (default: best validation loss).",
+    )
     parser.add_argument("--device", default=None)
     parser.add_argument("--examples", type=int, default=64)
     parser.add_argument(
@@ -159,10 +167,11 @@ def evaluate_othello_prefix(cli_args) -> Path:
     if per_example_path.exists():
         per_example_path.unlink()
 
-    checkpoint = load_checkpoint_payload(
-        run_dir / "latest.pt",
-        device="cpu",
+    checkpoint_path = resolve_evaluation_checkpoint(
+        run_dir,
+        cli_args.checkpoint,
     )
+    checkpoint = load_checkpoint_payload(checkpoint_path, device="cpu")
     _block_size, _vocab, stoi, _itos, model, _optimizer = (
         build_training_objects(args)
     )
@@ -282,6 +291,8 @@ def evaluate_othello_prefix(cli_args) -> Path:
     payload = {
         "created_at": datetime.now(timezone.utc).isoformat(),
         "input_run_dir": str(run_dir),
+        "checkpoint": cli_args.checkpoint,
+        "checkpoint_path": str(checkpoint_path),
         "task": args.task,
         "architecture": args.architecture,
         "checkpoint_step": int(checkpoint.get("step", 0)),

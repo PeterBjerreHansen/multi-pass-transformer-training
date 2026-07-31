@@ -133,6 +133,8 @@ def test_trace_eval_routes_to_task_specific_evaluator(tmp_path):
     calls = log_path.read_text(encoding="utf-8").splitlines()
     assert len(calls) == 1
     assert "-m experiments.eval_trace" in calls[0]
+    assert "--checkpoint best" in calls[0]
+    assert "--eval-batches 64" in calls[0]
     assert "--inference-mode recompute" in calls[0]
     assert "--inference-mode append_recurrent" not in calls[0]
 
@@ -154,6 +156,8 @@ def test_trace_eval_routes_to_task_specific_evaluator(tmp_path):
     calls = log_path.read_text(encoding="utf-8").splitlines()
     assert len(calls) == 1
     assert "-m experiments.eval_othello_prefix" in calls[0]
+    assert "--checkpoint best" in calls[0]
+    assert "--examples 64" in calls[0]
     assert "--inference-modes recompute append_recurrent" in calls[0]
 
 

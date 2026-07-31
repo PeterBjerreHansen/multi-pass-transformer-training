@@ -7,11 +7,13 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from experiments.common import (
+    EVALUATION_CHECKPOINTS,
     append_jsonl,
     effective_inference_mode,
     evaluate_prebuilt_batches,
     load_checkpoint_payload,
     resolve_device_arg,
+    resolve_evaluation_checkpoint,
     restore_checkpoint_state,
     saved_args_from_run,
     set_seed,
@@ -36,6 +38,12 @@ def parse_args(argv: list[str] | None = None):
     )
     parser.add_argument("--input-run-dir", required=True)
     parser.add_argument("--output-dir", default=None)
+    parser.add_argument(
+        "--checkpoint",
+        choices=EVALUATION_CHECKPOINTS,
+        default="best",
+        help="Saved checkpoint to evaluate (default: best validation loss).",
+    )
     parser.add_argument("--device", default=None)
     parser.add_argument("--eval-batches", type=int, default=None)
     parser.add_argument("--token-selection", choices=["sample", "argmax"], default="argmax")
@@ -138,7 +146,11 @@ def evaluate_run(cli_args) -> Path:
     if per_position_path.exists():
         per_position_path.unlink()
 
-    checkpoint = load_checkpoint_payload(input_dir / "latest.pt", device="cpu")
+    checkpoint_path = resolve_evaluation_checkpoint(
+        input_dir,
+        cli_args.checkpoint,
+    )
+    checkpoint = load_checkpoint_payload(checkpoint_path, device="cpu")
     block_size, vocab, stoi, _itos, model, _optimizer = build_training_objects(args)
     restore_checkpoint_state(checkpoint, model=model, optimizer=None, device=args.device)
     batches = build_fixed_eval_batches(args, stoi)
@@ -167,6 +179,9 @@ def evaluate_run(cli_args) -> Path:
     summary = {
         "created_at": datetime.now(timezone.utc).isoformat(),
         "input_run_dir": str(input_dir),
+        "checkpoint": cli_args.checkpoint,
+        "checkpoint_path": str(checkpoint_path),
+        "checkpoint_step": int(checkpoint.get("step", 0)),
         "task": args.task,
         "architecture": args.architecture,
         "inference_mode": cli_args.inference_mode,

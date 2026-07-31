@@ -6,6 +6,9 @@ cd "${ROOT}"
 
 RUN_DIR="${RUN_DIR:?Set RUN_DIR to a trained trace run directory}"
 OUTPUT_DIR="${OUTPUT_DIR:-${RUN_DIR}/eval}"
+CHECKPOINT="${CHECKPOINT:-best}"
+EVAL_BATCHES="${EVAL_BATCHES:-64}"
+OTHELLO_EXAMPLES="${OTHELLO_EXAMPLES:-64}"
 
 runtime_args=()
 [[ -n "${DEVICE:-}" ]] && runtime_args+=(--device "${DEVICE}")
@@ -27,6 +30,8 @@ case "${task}" in
       python -m experiments.eval_trace \
         --input-run-dir "${RUN_DIR}" \
         --output-dir "${OUTPUT_DIR}/${inference_mode}" \
+        --checkpoint "${CHECKPOINT}" \
+        --eval-batches "${EVAL_BATCHES}" \
         --inference-mode "${inference_mode}" \
         --token-selection argmax \
         "${runtime_args[@]+"${runtime_args[@]}"}"
@@ -36,7 +41,8 @@ case "${task}" in
     python -m experiments.eval_othello_prefix \
       --input-run-dir "${RUN_DIR}" \
       --output-dir "${OUTPUT_DIR}" \
-      --examples 64 \
+      --checkpoint "${CHECKPOINT}" \
+      --examples "${OTHELLO_EXAMPLES}" \
       --evaluation-mode all \
       --inference-modes "${inference_modes[@]}" \
       --token-selection argmax \

@@ -14,6 +14,11 @@ from experiments.common import write_json
 QUALITY_MARGIN = 0.01
 THROUGHPUT_WIN = 0.10
 SIZE_WIN = 0.25
+DEFAULT_QUALITY_METRIC = "drift.append_recurrent.token_legality"
+TASK_QUALITY_METRICS = {
+    "shortest_path": "drift.append_recurrent.optimal_path",
+    "othello": "drift.append_recurrent.sequence_legality",
+}
 
 
 def parse_args(argv: list[str] | None = None):
@@ -29,8 +34,11 @@ def parse_args(argv: list[str] | None = None):
     )
     parser.add_argument(
         "--quality-metric",
-        default="drift.append_recurrent.token_legality",
-        help="Flattened metric used for paired quality deltas.",
+        default=None,
+        help=(
+            "Flattened metric used for paired quality deltas. By default it "
+            "is inferred from the saved task."
+        ),
     )
     return parser.parse_args(argv)
 
@@ -74,7 +82,12 @@ def collect_run(run_dir: Path) -> dict[str, float | str]:
     events = _read_jsonl(run_dir / "metrics.jsonl")
     final_eval = _last_eval(events)
     diagnostics = _read_json(run_dir / "diagnostics.json") or {}
-    result: dict[str, float | str] = {"run_dir": str(run_dir)}
+    saved_args = config.get("args", {})
+    result: dict[str, float | str] = {
+        "run_dir": str(run_dir),
+        "task": str(saved_args.get("task", "")),
+        "architecture": str(saved_args.get("architecture", "")),
+    }
 
     numeric: dict[str, float] = {}
     _flatten("model", config.get("model_stats", {}), numeric)
@@ -134,12 +147,29 @@ def _median_ratio(
     return _median(ratios)
 
 
+def infer_quality_metric(
+    control: dict[str, dict[str, float | str]],
+) -> str:
+    tasks = {
+        str(run.get("task"))
+        for run in control.values()
+        if run.get("task")
+    }
+    if len(tasks) > 1:
+        raise ValueError(
+            "control runs contain multiple tasks; pass --quality-metric "
+            "explicitly"
+        )
+    task = next(iter(tasks), None)
+    return TASK_QUALITY_METRICS.get(task, DEFAULT_QUALITY_METRIC)
+
+
 def recommend(
     control: dict[str, dict[str, float | str]],
     treatment: dict[str, dict[str, float | str]],
     *,
     mode: str,
-    quality_metric: str = "drift.append_recurrent.token_legality",
+    quality_metric: str = DEFAULT_QUALITY_METRIC,
 ) -> dict:
     deltas = _paired_delta(control, treatment, quality_metric)
     median_delta = _median(deltas)
@@ -202,10 +232,15 @@ def summarize(
     variants: list[str],
     *,
     mode: str,
-    quality_metric: str = "drift.append_recurrent.token_legality",
+    quality_metric: str | None = None,
 ) -> tuple[list[dict], dict]:
     runs = {name: discover_variant(root, name) for name in [control_name, *variants]}
     control = runs[control_name]
+    resolved_quality_metric = (
+        quality_metric
+        if quality_metric is not None
+        else infer_quality_metric(control)
+    )
     rows = []
     for variant, per_seed in runs.items():
         for seed, values in per_seed.items():
@@ -213,12 +248,13 @@ def summarize(
     summary = {
         "root": str(root),
         "control": control_name,
+        "quality_metric": resolved_quality_metric,
         "variants": {
             variant: recommend(
                 control,
                 runs[variant],
                 mode=mode,
-                quality_metric=quality_metric,
+                quality_metric=resolved_quality_metric,
             )
             for variant in variants
         },

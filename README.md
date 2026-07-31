@@ -334,7 +334,9 @@ bash scripts/trace/eval.sh
 
 The launcher reads the saved task and architecture from `config.json`.
 Shortest-path runs receive deterministic free-generation evaluation under
-each supported inference schedule. Othello runs receive full-game,
+each supported inference schedule on 4,096 fresh examples by default. Final
+evaluation and diagnostics use `best.pt`; set `CHECKPOINT=latest` to inspect
+the terminal training state instead. Othello runs receive full-game,
 random-prefix, and fixed-fraction continuation evaluation, including
 teacher-forced gold-move NLL, legal-set NLL, legal probability mass, top-1
 legality, and legal-set size. Transformer checkpoints evaluate only in
@@ -346,6 +348,7 @@ Each training run writes:
 
 - `config.json`
 - `metrics.jsonl`
+- `best.pt`
 - `latest.pt`
 
 Run the main experiment matrices with:

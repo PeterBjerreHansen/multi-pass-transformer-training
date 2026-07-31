@@ -10,9 +10,11 @@ import torch
 import torch.nn.functional as F
 
 from experiments.common import (
+    EVALUATION_CHECKPOINTS,
     load_checkpoint_payload,
     load_json_if_exists,
     resolve_device_arg,
+    resolve_evaluation_checkpoint,
     restore_checkpoint_state,
     stable_seed,
     validate_model_args,
@@ -41,6 +43,12 @@ def parse_args(argv: list[str] | None = None):
     )
     parser.add_argument("--input-run-dir", required=True)
     parser.add_argument("--output", default=None)
+    parser.add_argument(
+        "--checkpoint",
+        choices=EVALUATION_CHECKPOINTS,
+        default="best",
+        help="Saved checkpoint to diagnose (default: best validation loss).",
+    )
     parser.add_argument("--device", default=None)
     parser.add_argument("--batch-size", type=int, default=None)
     parser.add_argument("--eval-batches", type=int, default=1)
@@ -451,7 +459,11 @@ def diagnose_memory(cli_args) -> Path:
     args, run_dir = _load_args(cli_args)
     if not is_multi_pass_architecture(args.architecture):
         raise ValueError("memory diagnostics require a multi-pass architecture")
-    checkpoint = load_checkpoint_payload(run_dir / "latest.pt", device="cpu")
+    checkpoint_path = resolve_evaluation_checkpoint(
+        run_dir,
+        cli_args.checkpoint,
+    )
+    checkpoint = load_checkpoint_payload(checkpoint_path, device="cpu")
     bbh_level = None
     if args.task in BBH_TASKS:
         bbh_level = int(checkpoint.get("extra_state", {}).get("current_level", args.curriculum_start_level))
@@ -482,6 +494,8 @@ def diagnose_memory(cli_args) -> Path:
     payload = {
         "created_at": datetime.now(timezone.utc).isoformat(),
         "input_run_dir": str(run_dir),
+        "checkpoint": cli_args.checkpoint,
+        "checkpoint_path": str(checkpoint_path),
         "task": args.task,
         "architecture": args.architecture,
         "checkpoint_step": int(checkpoint.get("step", 0)),
