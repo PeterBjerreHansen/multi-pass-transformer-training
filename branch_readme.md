@@ -8,6 +8,11 @@ The hypothesis is that the recurrent tape is over-wide relative to the informati
 
 For a short local `Dm=128` versus `Dm=64` run with both inference modes and diagnostics, use `bash scripts/trace/pilot_memory_width.sh`. It defaults to one seed and 250 steps; `DEVICE`, `TRAIN_STEPS`, `BATCH_SIZE`, and `RESULT_ROOT` are overrideable.
 
+The full four-way ablation defaults to three seeds and 200,000 steps, with
+cosine decay ending at the final optimizer step. Final quality uses 4,096
+fresh examples from the best validation-loss checkpoint; the short pilot uses
+a proportionally scaled schedule.
+
 ## Branch-specific code review
 
 - Omitting `n_memory_embd` preserves the legacy writer shape and normalization order. Supplying it uses `D -> Dm` followed by `Dm`-wide normalization.
