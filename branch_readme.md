@@ -8,6 +8,11 @@ The hypothesis is that supervising the same recurrent computation at several dep
 
 For a short local control/treatment run with both inference modes and diagnostics, use `bash scripts/trace/pilot_variable_depth.sh`. It defaults to one seed and 250 steps; `DEVICE`, `TRAIN_STEPS`, `BATCH_SIZE`, and `RESULT_ROOT` are overrideable. The full ablation is `scripts/trace/ablate_variable_depth.sh`, and branch validation is `tests/test_variable_depth.sh`.
 
+The full ablation defaults to three seeds and 200,000 steps. Its cosine decay
+ends with training, and final generation metrics use 4,096 examples from the
+best validation-loss checkpoint; the 250-step pilot scales the same schedule
+down instead of spending the whole pilot in warmup.
+
 ## Branch-specific code review
 
 - `MultiPassTransformer.forward(idx, n_pass=None)` resolves an optional call-time depth without mutating the model config. The ordinary call path is unchanged.
