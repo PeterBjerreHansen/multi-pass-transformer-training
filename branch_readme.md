@@ -8,6 +8,11 @@ The hypothesis is that memory access may be useful at a particular representatio
 
 For a short local all-layer versus middle-only run with both inference modes and diagnostics, use `bash scripts/trace/pilot_memory_read_layers.sh`. It defaults to one seed and 250 steps; `DEVICE`, `TRAIN_STEPS`, `BATCH_SIZE`, and `RESULT_ROOT` are overrideable.
 
+The full four-pattern ablation defaults to three seeds and 200,000 steps. Its
+cosine decay ends with training, and final quality uses 4,096 fresh examples
+from the best validation-loss checkpoint. The pilot uses the same protocol
+with a proportionally scaled 250-step schedule.
+
 ## Branch-specific code review
 
 - `resolve_memory_read_layers` maps the four CLI patterns to concrete layer indices, with `middle` defined as `n_layer // 2`.
