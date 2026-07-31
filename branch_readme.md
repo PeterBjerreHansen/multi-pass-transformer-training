@@ -8,6 +8,11 @@ The hypothesis is that exposure to mixed refinement levels makes the model less 
 
 For a short local `P=0` versus `P=0.25` run with both inference modes and diagnostics, use `bash scripts/trace/pilot_stale_memory_training.sh`. It defaults to one seed and 250 steps; `DEVICE`, `TRAIN_STEPS`, `TREATMENT_PROB`, `BATCH_SIZE`, and `RESULT_ROOT` are overrideable.
 
+The full probability sweep defaults to three seeds and 200,000 steps, with
+cosine decay ending at training completion. Final quality uses 4,096 fresh
+examples from the best validation-loss checkpoint, while the short pilot
+scales the schedule to its 250-step budget.
+
 ## Branch-specific code review
 
 - `MultiPassTransformer.forward` accepts an optional per-position memory-source plan. The default path remains numerically identical, while the routed path validates that a pass can only read an available learned memory.

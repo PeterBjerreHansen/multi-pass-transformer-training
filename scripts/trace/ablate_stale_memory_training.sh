@@ -7,8 +7,11 @@ cd "${ROOT}"
 DEVICE="${DEVICE:-mps}"
 SEEDS="${SEEDS:-1337 2027 4099}"
 RESULT_ROOT="${RESULT_ROOT:-results/ablations/stale_memory_training}"
-TRAIN_STEPS="${TRAIN_STEPS:-50000}"
-EVAL_BATCHES="${EVAL_BATCHES:-4}"
+TRAIN_STEPS="${TRAIN_STEPS:-200000}"
+LR_WARMUP_STEPS="${LR_WARMUP_STEPS:-4000}"
+TRAIN_EVAL_BATCHES="${TRAIN_EVAL_BATCHES:-4}"
+FINAL_EVAL_BATCHES="${FINAL_EVAL_BATCHES:-64}"
+DIAGNOSTIC_BATCHES="${DIAGNOSTIC_BATCHES:-4}"
 
 VARIANTS=(
   "p0:0.0"
@@ -29,7 +32,9 @@ for specification in "${VARIANTS[@]}"; do
       --stale-memory-prob "${probability}" \
       --token-selection argmax \
       --train-steps "${TRAIN_STEPS}" \
-      --eval-batches "${EVAL_BATCHES}" \
+      --lr-warmup-steps "${LR_WARMUP_STEPS}" \
+      --lr-decay-steps "${TRAIN_STEPS}" \
+      --eval-batches "${TRAIN_EVAL_BATCHES}" \
       --seed "${seed}" \
       --device "${DEVICE}" \
       --run-dir "${run_dir}"
@@ -37,18 +42,20 @@ for specification in "${VARIANTS[@]}"; do
     for inference_mode in recompute append_recurrent; do
       python -m experiments.eval_trace \
         --input-run-dir "${run_dir}" \
+        --checkpoint best \
         --inference-mode "${inference_mode}" \
         --token-selection argmax \
         --device "${DEVICE}" \
-        --eval-batches "${EVAL_BATCHES}" \
+        --eval-batches "${FINAL_EVAL_BATCHES}" \
         --seed "${seed}" \
         --output-dir "${run_dir}/drift/${inference_mode}"
     done
 
     python -m experiments.diagnose_memory \
       --input-run-dir "${run_dir}" \
+      --checkpoint best \
       --device "${DEVICE}" \
-      --eval-batches "${EVAL_BATCHES}" \
+      --eval-batches "${DIAGNOSTIC_BATCHES}" \
       --seed "${seed}" \
       --output "${run_dir}/diagnostics.json"
   done
