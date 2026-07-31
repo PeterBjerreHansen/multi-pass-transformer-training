@@ -67,7 +67,7 @@ def test_additive_memory_bbh_cli_reports_fusion_gradients(tmp_path, architecture
     assert (run_dir / "latest.pt").exists()
 
 
-def test_trace_training_drift_and_diagnostics_cli(tmp_path):
+def test_trace_training_evaluation_and_diagnostics_cli(tmp_path):
     run_dir = tmp_path / "trace"
     _run(
         "-m", "experiments.train_trace",
@@ -79,7 +79,7 @@ def test_trace_training_drift_and_diagnostics_cli(tmp_path):
 
     diagnostics = tmp_path / "diagnostics.json"
     _run(
-        "-m", "experiments.eval_diagnostics",
+        "-m", "experiments.diagnose_memory",
         "--input-run-dir", str(run_dir),
         "--device", "cpu",
         "--batch-size", "2",
@@ -97,21 +97,21 @@ def test_trace_training_drift_and_diagnostics_cli(tmp_path):
     trace_evaluation = next(event for event in trace_events if event["event"] == "eval")
     assert trace_evaluation["gradient_norms"]["global"]["mean"] > 0
 
-    drift_dir = tmp_path / "drift"
+    eval_dir = tmp_path / "eval"
     _run(
-        "-m", "experiments.eval_trace_drift",
+        "-m", "experiments.eval_trace",
         "--input-run-dir", str(run_dir),
         "--inference-mode", "append_recurrent",
         "--token-selection", "argmax",
         "--device", "cpu",
         "--eval-batches", "1",
-        "--run-dir", str(drift_dir),
+        "--output-dir", str(eval_dir),
     )
-    summary = json.loads((drift_dir / "summary.json").read_text(encoding="utf-8"))
+    summary = json.loads((eval_dir / "summary.json").read_text(encoding="utf-8"))
     assert summary["effective_inference_mode"] == "append_recurrent"
     assert summary["eval_batches"] == 1
     assert summary["evaluation_examples"] == 1
-    assert (drift_dir / "per_position.jsonl").exists()
+    assert (eval_dir / "per_position.jsonl").exists()
 
 
 def test_othello_random_prefix_evaluation_cli(tmp_path):
@@ -130,7 +130,7 @@ def test_othello_random_prefix_evaluation_cli(tmp_path):
 
     output_dir = tmp_path / "othello_eval"
     _run(
-        "-m", "experiments.eval_othello",
+        "-m", "experiments.eval_othello_prefix",
         "--input-run-dir", str(run_dir),
         "--output-dir", str(output_dir),
         "--evaluation-mode", "random-prefix",
@@ -153,7 +153,9 @@ def test_othello_random_prefix_evaluation_cli(tmp_path):
     assert len(rows) == 2
 
 
-def test_shortest_path_training_resume_drift_and_diagnostics_cli(tmp_path):
+def test_shortest_path_training_resume_evaluation_and_diagnostics_cli(
+    tmp_path,
+):
     run_dir = tmp_path / "shortest_path"
     result = _run(
         "-m", "experiments.train_trace",
@@ -229,24 +231,26 @@ def test_shortest_path_training_resume_drift_and_diagnostics_cli(tmp_path):
     )
 
     for inference_mode in ("recompute", "append_recurrent"):
-        drift_dir = tmp_path / f"drift_{inference_mode}"
+        eval_dir = tmp_path / f"eval_{inference_mode}"
         _run(
-            "-m", "experiments.eval_trace_drift",
+            "-m", "experiments.eval_trace",
             "--input-run-dir", str(run_dir),
             "--inference-mode", inference_mode,
             "--token-selection", "argmax",
             "--device", "cpu",
             "--eval-batches", "1",
-            "--run-dir", str(drift_dir),
+            "--output-dir", str(eval_dir),
         )
-        summary = json.loads((drift_dir / "summary.json").read_text(encoding="utf-8"))
+        summary = json.loads(
+            (eval_dir / "summary.json").read_text(encoding="utf-8")
+        )
         assert summary["task"] == "shortest_path"
         assert "optimal_path" in summary["metrics"]
-        assert (drift_dir / "per_position.jsonl").exists()
+        assert (eval_dir / "per_position.jsonl").exists()
 
     diagnostics = tmp_path / "shortest_path_diagnostics.json"
     _run(
-        "-m", "experiments.eval_diagnostics",
+        "-m", "experiments.diagnose_memory",
         "--input-run-dir", str(run_dir),
         "--device", "cpu",
         "--batch-size", "2",

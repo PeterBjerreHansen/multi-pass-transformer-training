@@ -18,8 +18,11 @@ from experiments.common import (
     save_latest_checkpoint,
 )
 from experiments.summarize_ablation import recommend
-from experiments.eval_diagnostics import memory_interventions, pass_dynamics, teacher_forced_schedule_gap
-from experiments.eval_othello import build_eval_examples, legal_set_step_metrics
+from experiments.diagnose_memory import (
+    memory_interventions,
+    pass_dynamics,
+    teacher_forced_schedule_gap,
+)
 from experiments.presets import BBH_PRESETS, TRACE_PRESETS
 from experiments.train_bbh import BBH_TASKS, build_fixed_eval_batches, parse_args as parse_bbh_args
 from experiments.train_trace import parse_args as parse_trace_args
@@ -33,6 +36,10 @@ from models import (
 )
 from tasks.bbh import pointer_chasing
 from tasks.trace import othello, shortest_path
+from tasks.trace.othello_eval import (
+    build_eval_examples,
+    legal_set_step_metrics,
+)
 from tasks.trace.registry import TRACE_TASKS
 
 

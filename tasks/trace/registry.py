@@ -4,7 +4,12 @@ from dataclasses import dataclass
 import random
 from typing import Callable
 
-from tasks.trace import othello, shortest_path
+from tasks.trace import (
+    othello,
+    othello_eval,
+    shortest_path,
+    shortest_path_eval,
+)
 
 
 @dataclass(frozen=True)
@@ -82,7 +87,7 @@ def _othello_batch(args, stoi, rng: random.Random, split: str):
 
 
 def _othello_metrics(model, batch, args, inference_mode: str | None):
-    return othello.othello_generation_metrics(
+    return othello_eval.generation_metrics(
         model,
         batch,
         args,
@@ -117,7 +122,7 @@ def _shortest_path_batch(args, stoi, rng: random.Random, _split: str):
 
 
 def _shortest_path_metrics(model, batch, args, inference_mode: str | None):
-    return shortest_path.shortest_path_generation_metrics(
+    return shortest_path_eval.generation_metrics(
         model,
         batch,
         args,
@@ -139,7 +144,7 @@ TRACE_TASKS: dict[str, TraceTask] = {
         required_block_size_fn=_othello_block_size,
         build_batch_fn=_othello_batch,
         generation_metrics_fn=_othello_metrics,
-        format_metrics_fn=othello.format_othello_eval_metrics,
+        format_metrics_fn=othello_eval.format_metrics,
         legality_prefix_fn=_othello_legality,
         valid_target_mask_fn=_all_target_positions,
     ),
@@ -149,7 +154,7 @@ TRACE_TASKS: dict[str, TraceTask] = {
         required_block_size_fn=_shortest_path_block_size,
         build_batch_fn=_shortest_path_batch,
         generation_metrics_fn=_shortest_path_metrics,
-        format_metrics_fn=shortest_path.format_shortest_path_eval_metrics,
+        format_metrics_fn=shortest_path_eval.format_metrics,
         legality_prefix_fn=_shortest_path_legality,
         valid_target_mask_fn=_all_target_positions,
     ),

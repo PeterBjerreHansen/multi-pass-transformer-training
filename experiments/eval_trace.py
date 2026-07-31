@@ -1,3 +1,4 @@
+"""Evaluate generation quality for a saved trace-task checkpoint."""
 from __future__ import annotations
 
 import argparse
@@ -10,9 +11,13 @@ from experiments.common import (
     effective_inference_mode,
     evaluate_prebuilt_batches,
     load_checkpoint_payload,
+    resolve_device_arg,
+    restore_checkpoint_state,
     saved_args_from_run,
     set_seed,
     stable_seed,
+    validate_model_args,
+    validate_training_args,
     write_json,
 )
 from experiments.train_trace import (
@@ -22,16 +27,15 @@ from experiments.train_trace import (
     trace_generation_metrics,
     validate_task_args,
 )
-from experiments.common import resolve_device_arg, restore_checkpoint_state, validate_model_args, validate_training_args
 
 
 def parse_args(argv: list[str] | None = None):
     parser = argparse.ArgumentParser(
-        description="Evaluate free-generation drift for a saved trace run.",
+        description="Evaluate generation for a saved trace-task run.",
         allow_abbrev=False,
     )
     parser.add_argument("--input-run-dir", required=True)
-    parser.add_argument("--run-dir", default=None)
+    parser.add_argument("--output-dir", default=None)
     parser.add_argument("--device", default=None)
     parser.add_argument("--eval-batches", type=int, default=None)
     parser.add_argument("--token-selection", choices=["sample", "argmax"], default="argmax")
@@ -61,10 +65,10 @@ def _load_eval_args(cli_args) -> tuple[SimpleNamespace, Path]:
 
 
 def _default_output_dir(cli_args, args, input_dir: Path) -> Path:
-    if cli_args.run_dir:
-        return Path(cli_args.run_dir).resolve()
+    if cli_args.output_dir:
+        return Path(cli_args.output_dir).resolve()
     name = f"{args.architecture}_{cli_args.inference_mode}_{cli_args.token_selection}"
-    return Path("results", "drift", args.task, name, input_dir.name).resolve()
+    return Path("results", "eval", args.task, name, input_dir.name).resolve()
 
 
 def _legality_prefix(args, prompt_tokens: list[int], generated_tokens: list[int]) -> tuple[int, bool]:
@@ -83,7 +87,11 @@ def collect_per_position_metrics(model, args, batches, *, inference_mode: str) -
     # Use a fixed global sampling stream while preserving the caller's RNG state.
     from experiments.common import isolated_torch_rng
 
-    with isolated_torch_rng(stable_seed(args.seed, "drift", args.task, "paired_generation")):
+    with isolated_torch_rng(
+        # Keep the established seed namespace so renaming the command does not
+        # change paired sampled evaluations.
+        stable_seed(args.seed, "drift", args.task, "paired_generation")
+    ):
         for batch in batches:
             for row in range(batch.idx.shape[0]):
                 prompt_len = int(batch.prompt_lengths[row].item())
@@ -142,7 +150,12 @@ def evaluate_run(cli_args) -> Path:
         batches,
         generation_metrics_fn=trace_generation_metrics,
         inference_mode=cli_args.inference_mode,
-        generation_seed=stable_seed(args.seed, "drift", args.task, "paired_generation"),
+        generation_seed=stable_seed(
+            args.seed,
+            "drift",
+            args.task,
+            "paired_generation",
+        ),
     )
     per_position = collect_per_position_metrics(
         model,

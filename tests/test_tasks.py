@@ -8,7 +8,7 @@ import torch
 
 from models import CausalTransformer, TransformerConfig
 from tasks.bbh import permutation, pointer_chasing, state_machine, tracking
-from tasks.trace import othello, shortest_path
+from tasks.trace import othello, shortest_path, shortest_path_eval
 
 
 class _ForcedChoiceRandom(random.Random):
@@ -305,7 +305,7 @@ def test_shortest_path_distributions_are_varied_permuted_and_solver_verified():
                 start,
                 goal,
             )
-            structure = shortest_path.graph_structure_metrics(
+            structure = shortest_path_eval.graph_structure_metrics(
                 num_nodes,
                 edges,
                 start,
@@ -354,7 +354,7 @@ def test_shortest_path_main_uniformly_mixes_feasible_path_lengths():
         path_length = len(path) - 1
         num_nodes = prompt.index(stoi[shortest_path.EDGES_TOKEN]) - 1
         path_length_counts[path_length] += 1
-        structure = shortest_path.graph_structure_metrics(
+        structure = shortest_path_eval.graph_structure_metrics(
             num_nodes,
             edges,
             start,
@@ -412,7 +412,7 @@ def test_shortest_path_step_accuracy_excludes_the_supplied_start_node():
         def generate(self, prompt, **_kwargs):
             return torch.cat((prompt, generated_suffix[None, :]), dim=1)
 
-    metrics = shortest_path.shortest_path_generation_metrics(
+    metrics = shortest_path_eval.generation_metrics(
         FixedGeneration(),
         batch,
         SimpleNamespace(

@@ -26,9 +26,6 @@ from tasks.common import (
     build_vocab,
     make_sequence,
 )
-from tasks.trace.common import format_legal_generation_metrics, trace_generation_metrics
-
-
 BOARD_SIZE = 8
 NUM_SQUARES = BOARD_SIZE * BOARD_SIZE
 MAX_MOVES = 60
@@ -389,27 +386,6 @@ def build_othello_batch(
     return build_batch_from_sequences(rows, pad_id=stoi[PAD_TOKEN], device=device)
 
 
-def othello_generation_metrics(
-    model,
-    batch,
-    args,
-    *,
-    inference_mode: str | None = None,
-    **_unused,
-) -> dict[str, float]:
-    return trace_generation_metrics(
-        model,
-        batch,
-        args,
-        legality_check=lambda _prompt_tokens, generated_tokens: legal_prefix_length(generated_tokens),
-        inference_mode=inference_mode,
-    )
-
-
-def format_othello_eval_metrics(metrics: dict[str, float]) -> str:
-    return format_legal_generation_metrics(metrics)
-
-
 def legal_move_token_ids_after_prefix(
     prefix_move_token_ids: Sequence[int],
 ) -> tuple[int, ...]:
@@ -489,12 +465,10 @@ __all__ = [
     "build_othello_batch",
     "build_othello_vocab",
     "ensure_othello_datasets",
-    "format_othello_eval_metrics",
     "legal_move_token_ids_after_prefix",
     "legal_prefix_length",
     "load_othello_dataset",
     "move_token",
-    "othello_generation_metrics",
     "random_game_trace64",
     "required_block_size",
     "sample_othello_example",

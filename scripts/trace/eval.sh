@@ -24,16 +24,16 @@ fi
 case "${task}" in
   shortest_path)
     for inference_mode in "${inference_modes[@]}"; do
-      python -m experiments.eval_trace_drift \
+      python -m experiments.eval_trace \
         --input-run-dir "${RUN_DIR}" \
-        --run-dir "${OUTPUT_DIR}/${inference_mode}" \
+        --output-dir "${OUTPUT_DIR}/${inference_mode}" \
         --inference-mode "${inference_mode}" \
         --token-selection argmax \
         "${runtime_args[@]+"${runtime_args[@]}"}"
     done
     ;;
   othello)
-    python -m experiments.eval_othello \
+    python -m experiments.eval_othello_prefix \
       --input-run-dir "${RUN_DIR}" \
       --output-dir "${OUTPUT_DIR}" \
       --examples 64 \

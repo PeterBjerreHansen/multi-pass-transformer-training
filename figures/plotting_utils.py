@@ -198,7 +198,7 @@ def load_drift_records(root: str | Path) -> list[dict]:
 
 
 def load_othello_examples(root: str | Path) -> list[dict]:
-    """Load Othello continuation rows emitted by ``eval_othello``."""
+    """Load Othello continuation rows emitted by ``eval_othello_prefix``."""
     root = Path(root).expanduser().resolve()
     records = []
     for path in sorted(root.rglob("per_example.jsonl")):

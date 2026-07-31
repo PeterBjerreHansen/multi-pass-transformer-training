@@ -1,3 +1,4 @@
+"""Run architecture diagnostics for multi-pass memory models."""
 from __future__ import annotations
 
 import argparse
@@ -442,7 +443,7 @@ def _mean_numbers(items: list[dict]) -> dict:
     return merge(items)
 
 
-def evaluate_diagnostics(cli_args) -> Path:
+def diagnose_memory(cli_args) -> Path:
     if cli_args.extra_passes < 0:
         raise ValueError("--extra-passes must be non-negative")
     if cli_args.schedule_gap_horizon < 1:
@@ -497,7 +498,7 @@ def evaluate_diagnostics(cli_args) -> Path:
 
 
 def main(argv: list[str] | None = None) -> None:
-    evaluate_diagnostics(parse_args(argv))
+    diagnose_memory(parse_args(argv))
 
 
 if __name__ == "__main__":

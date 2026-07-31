@@ -358,7 +358,7 @@ bash scripts/trace/run.sh
 The folders under `scripts/` follow the two task classes used by the training
 code: `bbh/` for curriculum tasks and `trace/` for autoregressive trace tasks.
 The BBH launcher defaults to all four BBH tasks; the trace launcher defaults to
-the 100,000-step shortest-path main preset and Othello. Select a canonical
+the 200,000-step shortest-path main preset and Othello. Select a canonical
 matrix with `TASKS`, `ARCHITECTURES`, and `SEEDS`:
 
 ```bash
@@ -385,23 +385,37 @@ repetitions without changing the preset.
 Use `tests/test_smoke.sh` for quick end-to-end checks, or
 `tests/test_shortest_path.sh` for the complete shortest-path workflow check.
 
-Drift evaluation:
+Evaluation code follows the same separation as training:
+
+- `tasks/trace/othello_eval.py` defines Othello legality, legal-set loss, and
+  prefix-continuation summaries.
+- `tasks/trace/shortest_path_eval.py` defines path legality, optimality,
+  graph-structure, path-length, and per-step metrics.
+- `experiments/eval_trace.py` is the shared checkpoint and batch runner for
+  ordinary trace evaluation.
+- `experiments/eval_othello_prefix.py` runs Othello's additional random-prefix
+  protocol.
+- `experiments/diagnose_memory.py` contains architecture diagnostics such as
+  interventions, pass dynamics, and schedule gap; these are intentionally not
+  task metrics.
+
+Trace-task evaluation:
 
 ```bash
-python3 -m experiments.eval_trace_drift \
+python3 -m experiments.eval_trace \
   --input-run-dir results/trace/shortest_path/main/memory_tape/example_run \
   --inference-mode append_recurrent \
   --token-selection argmax
 ```
 
-The drift evaluator is post-training only. Each invocation evaluates one saved
+The evaluator is post-training only. Each invocation evaluates one saved
 trace checkpoint under either `recompute` or `append_recurrent`, then writes
 `summary.json` and `per_position.jsonl`.
 
 Standalone memory-use and pass-dynamics diagnostics:
 
 ```bash
-python3 -m experiments.eval_diagnostics \
+python3 -m experiments.diagnose_memory \
   --input-run-dir results/trace/shortest_path/main/memory_tape/example_run \
   --extra-passes 6 \
   --schedule-gap-horizon 16

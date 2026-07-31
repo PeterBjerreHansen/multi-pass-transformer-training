@@ -23,16 +23,16 @@ python -m experiments.train_trace \
   --run-dir "${CPU_RUN}"
 
 for inference_mode in recompute append_recurrent; do
-  python -m experiments.eval_trace_drift \
+  python -m experiments.eval_trace \
     --input-run-dir "${CPU_RUN}" \
     --inference-mode "${inference_mode}" \
     --token-selection argmax \
     --device cpu \
     --eval-batches 1 \
-    --run-dir "${CPU_RUN}/eval/${inference_mode}"
+    --output-dir "${CPU_RUN}/eval/${inference_mode}"
 done
 
-python -m experiments.eval_diagnostics \
+python -m experiments.diagnose_memory \
   --input-run-dir "${CPU_RUN}" \
   --device cpu \
   --batch-size 2 \
