@@ -8,6 +8,12 @@ The aligned rollout starts after at least one generated token. Earlier answer to
 
 For a short local `P=0` versus generation-aligned `P=0.25` run with both inference modes and diagnostics, use `bash scripts/trace/pilot_generation_aligned_training.sh`. It defaults to one seed, 250 steps, and shortened 50-step warm-up/ramp periods; the device, step count, probability, microbatch, horizon, schedule, batch size, and result root are overrideable through their corresponding uppercase environment variables.
 
+The full probability sweep defaults to three seeds and 200,000 steps, with
+the learning-rate cosine decay ending at training completion. Final quality
+uses 4,096 fresh examples from the best validation-loss checkpoint. The
+250-step pilot separately scales the learning-rate schedule while retaining
+its deliberately short append-objective warm-up and ramp.
+
 ## Computational design
 
 - The ordinary full-sequence output is reused as an exact detached prompt prefill. Causality makes its prompt-prefix memories and logits identical to a separate prompt-only K-pass forward, avoiding that extra computation.

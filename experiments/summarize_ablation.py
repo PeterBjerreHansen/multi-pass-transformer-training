@@ -226,7 +226,10 @@ def recommend(
         recompute_deltas = _paired_delta(
             control,
             treatment,
-            "drift.recompute.token_legality",
+            (
+                "drift.recompute."
+                + quality_metric.rsplit(".", maxsplit=1)[-1]
+            ),
         )
         recompute_median = _median(recompute_deltas)
         recompute_noninferior = bool(

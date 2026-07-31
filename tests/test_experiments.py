@@ -912,21 +912,26 @@ def test_ablation_recommendation_accepts_noninferior_efficiency_win():
 def test_generation_aligned_recommendation_accepts_schedule_gap_win_with_quality_retained():
     control = {
         str(seed): {
-            "drift.append_recurrent.token_legality": 0.80,
-            "drift.recompute.token_legality": 0.82,
+            "drift.append_recurrent.optimal_path": 0.80,
+            "drift.recompute.optimal_path": 0.82,
             "diagnostics.teacher_forced_schedule_gap.overall.nll_delta": 0.20,
         }
         for seed in range(3)
     }
     treatment = {
         str(seed): {
-            "drift.append_recurrent.token_legality": 0.798,
-            "drift.recompute.token_legality": 0.819,
+            "drift.append_recurrent.optimal_path": 0.798,
+            "drift.recompute.optimal_path": 0.819,
             "diagnostics.teacher_forced_schedule_gap.overall.nll_delta": 0.10,
         }
         for seed in range(3)
     }
-    result = recommend(control, treatment, mode="generation-aligned")
+    result = recommend(
+        control,
+        treatment,
+        mode="generation-aligned",
+        quality_metric="drift.append_recurrent.optimal_path",
+    )
     assert result["quality_noninferior"]
     assert result["recompute_quality_noninferior"]
     assert result["schedule_gap_improved"]
