@@ -129,9 +129,9 @@ shortest_path_main = _trace_defaults(
 shortest_path_main.update(
     shortest_path_distribution="main",
     train_steps=200_000,
-    lr=3e-4,
+    lr=5e-4,
     lr_schedule="warmup_cosine",
-    min_lr=3e-5,
+    min_lr=1e-5,
     lr_warmup_steps=4_000,
     lr_decay_steps=200_000,
 )
