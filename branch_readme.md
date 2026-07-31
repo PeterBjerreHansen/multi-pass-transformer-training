@@ -8,6 +8,11 @@ The hypothesis is diagnostic as much as architectural: a null slot should help o
 
 For a short local null-off versus null-on run with both inference modes and diagnostics, use `bash scripts/trace/pilot_null_memory_slot.sh`. It defaults to one seed and 250 steps; `DEVICE`, `TRAIN_STEPS`, `BATCH_SIZE`, and `RESULT_ROOT` are overrideable.
 
+The full paired ablation defaults to three seeds and 200,000 steps, with
+cosine decay ending at training completion. Final quality and the diagnostic
+precondition are measured from the best validation-loss checkpoint; generation
+quality uses 4,096 fresh examples. The pilot scales the schedule to 250 steps.
+
 ## Branch-specific code review
 
 - `CausalCrossAttention` prepends the learned null key and zero value and uses an explicit boolean mask because query and source lengths no longer match.
