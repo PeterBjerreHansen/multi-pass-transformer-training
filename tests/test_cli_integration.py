@@ -169,7 +169,7 @@ def test_shortest_path_training_resume_drift_and_diagnostics_cli(tmp_path):
         for line in (run_dir / "metrics.jsonl").read_text(encoding="utf-8").splitlines()
     ]
     evaluation = next(event for event in events if event["event"] == "eval")
-    assert evaluation["learning_rate"] == pytest.approx(3e-5)
+    assert evaluation["learning_rate"] == pytest.approx(1e-4)
     for metric in (
         "valid_edge_rate",
         "goal_reached",
