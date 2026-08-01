@@ -39,6 +39,7 @@ def _base_defaults(
         "token_selection": token_selection,
         "batch_size": 1 if smoke else 64,
         "train_steps": 1 if smoke else 50_000,
+        "max_grad_norm": 5.0,
         "eval_batches": 1 if smoke else 4,
         "weight_decay": 0.0,
         "seed": 1337,

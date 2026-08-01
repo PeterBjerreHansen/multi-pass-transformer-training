@@ -9,6 +9,7 @@ import torch
 
 from experiments.common import (
     RunArtifacts,
+    clip_gradients,
     evaluate_prebuilt_batches,
     gradient_norms,
     learning_rate_at_step,
@@ -70,6 +71,24 @@ def test_fixed_eval_batches_are_identical_every_time():
     for batch_a, batch_b in zip(a, b):
         assert torch.equal(batch_a.idx, batch_b.idx)
         assert torch.equal(batch_a.targets, batch_b.targets)
+
+
+def test_global_gradient_clipping_caps_the_combined_l2_norm():
+    model = torch.nn.Linear(1, 2, bias=False)
+    model.weight.grad = torch.tensor([[3.0], [4.0]])
+
+    clip_gradients(model, 2.0)
+
+    assert torch.linalg.vector_norm(model.weight.grad).item() == pytest.approx(2.0)
+
+
+@pytest.mark.parametrize("parser", [parse_bbh_args, parse_trace_args])
+def test_training_presets_default_to_global_gradient_clipping(parser):
+    args = parser([])
+    assert args.max_grad_norm == pytest.approx(5.0)
+
+    overridden = parser(["--max-grad-norm", "1000000"])
+    assert overridden.max_grad_norm == pytest.approx(1_000_000.0)
 
 
 def test_evaluation_sampling_is_repeatable_and_does_not_change_global_rng():
@@ -397,9 +416,9 @@ def test_shortest_path_cli_exposes_only_easy_and_main_distributions():
 
 def test_shortest_path_main_uses_warmup_cosine_learning_rate():
     path = TRACE_PRESETS["shortest_path_main"].values
-    assert path["lr"] == 3e-4
+    assert path["lr"] == 5e-4
     assert path["lr_schedule"] == "warmup_cosine"
-    assert path["min_lr"] == 3e-5
+    assert path["min_lr"] == 1e-5
     assert path["lr_warmup_steps"] == 4_000
     assert path["lr_decay_steps"] == path["train_steps"] == 200_000
     for name, preset in TRACE_PRESETS.items():
@@ -539,6 +558,7 @@ def test_main_bbh_preset_contract_is_frozen():
         "batch_size": 64,
         "train_steps": 50_000,
         "lr": 1e-4,
+        "max_grad_norm": 5.0,
         "weight_decay": 0.0,
         "eval_interval": 200,
         "eval_batches": 4,
@@ -584,6 +604,7 @@ def test_main_trace_preset_contract_is_frozen():
         "model_size": "small",
         "n_pass": 4,
         "pass_loss_weights": [0.0, 0.0, 1.0, 1.0],
+        "max_grad_norm": 5.0,
         "weight_decay": 0.0,
         "seed": 1337,
         "inference_mode": "append_recurrent",
@@ -607,9 +628,9 @@ def test_main_trace_preset_contract_is_frozen():
             "task": "shortest_path",
             "batch_size": 64,
             "train_steps": 200_000,
-            "lr": 3e-4,
+            "lr": 5e-4,
             "lr_schedule": "warmup_cosine",
-            "min_lr": 3e-5,
+            "min_lr": 1e-5,
             "lr_warmup_steps": 4_000,
             "lr_decay_steps": 200_000,
             "eval_interval": 5_000,

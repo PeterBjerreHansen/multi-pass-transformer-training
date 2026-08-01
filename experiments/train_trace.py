@@ -9,6 +9,7 @@ from experiments.common import (
     apply_learning_rate,
     append_jsonl,
     build_model_and_optimizer,
+    clip_gradients,
     effective_inference_mode,
     evaluate_prebuilt_batches,
     find_jsonl_event,
@@ -38,12 +39,13 @@ from experiments.presets import TRACE_PRESETS, preset_help_text, resolve_preset_
 from model_factory import ARCHITECTURES
 
 
-_LR_OVERRIDE_KEYS = (
+_OPTIMIZATION_OVERRIDE_KEYS = (
     "lr",
     "lr_schedule",
     "min_lr",
     "lr_warmup_steps",
     "lr_decay_steps",
+    "max_grad_norm",
 )
 
 
@@ -77,6 +79,7 @@ def parse_args(argv: list[str] | None = None):
     _add_override(parser, "--batch-size", type=int)
     _add_override(parser, "--train-steps", type=int)
     _add_override(parser, "--lr", type=float)
+    _add_override(parser, "--max-grad-norm", type=float)
     _add_override(
         parser,
         "--lr-schedule",
@@ -94,9 +97,9 @@ def parse_args(argv: list[str] | None = None):
     _add_override(parser, "--run-dir")
     _add_override(parser, "--resume-from")
     raw_args = parser.parse_args(argv)
-    explicit_lr_overrides = {
+    explicit_optimization_overrides = {
         key: getattr(raw_args, key)
-        for key in _LR_OVERRIDE_KEYS
+        for key in _OPTIMIZATION_OVERRIDE_KEYS
         if hasattr(raw_args, key)
     }
     args = resolve_preset_args(
@@ -105,7 +108,7 @@ def parse_args(argv: list[str] | None = None):
         default_preset="shortest_path_main",
         parser=parser,
     )
-    args._explicit_lr_overrides = explicit_lr_overrides
+    args._explicit_optimization_overrides = explicit_optimization_overrides
     return args
 
 
@@ -151,7 +154,7 @@ def _apply_resume_args(
     args,
     checkpoint: dict,
     *,
-    explicit_lr_overrides: dict[str, object],
+    explicit_optimization_overrides: dict[str, object],
 ) -> None:
     saved = checkpoint.get("args", {})
     is_legacy_schedule = "lr_schedule" not in saved
@@ -173,12 +176,12 @@ def _apply_resume_args(
         args.min_lr = args.lr
         args.lr_warmup_steps = 0
         args.lr_decay_steps = 0
-    for key, value in explicit_lr_overrides.items():
+    for key, value in explicit_optimization_overrides.items():
         setattr(args, key, value)
     if (
         is_legacy_schedule
         and args.lr_schedule == "constant"
-        and "min_lr" not in explicit_lr_overrides
+        and "min_lr" not in explicit_optimization_overrides
     ):
         args.min_lr = args.lr
 
@@ -186,11 +189,11 @@ def _apply_resume_args(
 def run_trace_training(args) -> None:
     checkpoint = None
     resume_step = 0
-    explicit_lr_overrides = dict(
-        getattr(args, "_explicit_lr_overrides", {})
+    explicit_optimization_overrides = dict(
+        getattr(args, "_explicit_optimization_overrides", {})
     )
-    if hasattr(args, "_explicit_lr_overrides"):
-        delattr(args, "_explicit_lr_overrides")
+    if hasattr(args, "_explicit_optimization_overrides"):
+        delattr(args, "_explicit_optimization_overrides")
     if args.resume_from:
         resume_artifacts = resolve_resume_artifacts(args.resume_from)
         checkpoint = load_checkpoint_payload(resume_artifacts.checkpoint_path, device="cpu")
@@ -198,7 +201,7 @@ def run_trace_training(args) -> None:
         _apply_resume_args(
             args,
             checkpoint,
-            explicit_lr_overrides=explicit_lr_overrides,
+            explicit_optimization_overrides=explicit_optimization_overrides,
         )
 
     resolve_device_arg(args)
@@ -302,6 +305,7 @@ def run_trace_training(args) -> None:
         loss, _output, pass_losses = forward_and_loss(model, batch, args)
         loss.backward()
         update_gradient_norm_window(gradient_norm_window, gradient_norms(model))
+        clip_gradients(model, args.max_grad_norm)
         optimizer.step()
         window_tokens += int(batch.idx.numel())
 

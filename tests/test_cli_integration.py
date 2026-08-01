@@ -200,6 +200,7 @@ def test_shortest_path_training_resume_evaluation_and_diagnostics_cli(
         "min_lr",
         "lr_warmup_steps",
         "lr_decay_steps",
+        "max_grad_norm",
     ):
         legacy_checkpoint["args"].pop(key)
     torch.save(legacy_checkpoint, run_dir / "latest.pt")
@@ -210,6 +211,7 @@ def test_shortest_path_training_resume_evaluation_and_diagnostics_cli(
         "--resume-from", str(run_dir),
         "--train-steps", "1",
         "--lr", "0.00005",
+        "--max-grad-norm", "1000000",
         "--device", "cpu",
         "--run-dir", str(run_dir),
     )
@@ -231,6 +233,7 @@ def test_shortest_path_training_resume_evaluation_and_diagnostics_cli(
     assert resumed_checkpoint["args"]["lr"] == pytest.approx(0.00005)
     assert resumed_checkpoint["args"]["lr_schedule"] == "constant"
     assert resumed_checkpoint["args"]["min_lr"] == pytest.approx(0.00005)
+    assert resumed_checkpoint["args"]["max_grad_norm"] == pytest.approx(1_000_000.0)
     assert all(
         group["lr"] == pytest.approx(0.00005)
         for group in resumed_checkpoint["optimizer_state_dict"]["param_groups"]

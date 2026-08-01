@@ -10,6 +10,7 @@ from tasks.bbh import permutation, pointer_chasing, state_machine, tracking
 from experiments.common import (
     append_jsonl,
     build_model_and_optimizer,
+    clip_gradients,
     effective_inference_mode,
     evaluate_prebuilt_batches,
     find_jsonl_event,
@@ -147,6 +148,7 @@ def parse_args(argv: list[str] | None = None):
     _add_override(parser, "--batch-size", type=int)
     _add_override(parser, "--train-steps", type=int)
     _add_override(parser, "--lr", type=float)
+    _add_override(parser, "--max-grad-norm", type=float)
     _add_override(parser, "--weight-decay", type=float)
     _add_override(parser, "--eval-interval", type=int)
     _add_override(parser, "--eval-batches", type=int)
@@ -156,14 +158,18 @@ def parse_args(argv: list[str] | None = None):
     _add_override(parser, "--run-dir")
     _add_override(parser, "--resume-from")
     raw = parser.parse_args(argv)
-    lr_was_explicit = hasattr(raw, "lr")
+    explicit_optimization_overrides = {
+        key: getattr(raw, key)
+        for key in ("lr", "max_grad_norm")
+        if hasattr(raw, key)
+    }
     args = resolve_preset_args(
         raw,
         BBH_PRESETS,
         default_preset="pointer_chasing_main",
         parser=parser,
     )
-    args._lr_was_explicit = lr_was_explicit
+    args._explicit_optimization_overrides = explicit_optimization_overrides
     return args
 
 
@@ -229,20 +235,18 @@ def _apply_resume_args(args, checkpoint: dict) -> None:
 def run_answer_curriculum(args) -> None:
     checkpoint = None
     resume_step = 0
-    resume_lr_override = (
-        float(args.lr)
-        if getattr(args, "_lr_was_explicit", False)
-        else None
+    explicit_optimization_overrides = dict(
+        getattr(args, "_explicit_optimization_overrides", {})
     )
-    if hasattr(args, "_lr_was_explicit"):
-        delattr(args, "_lr_was_explicit")
+    if hasattr(args, "_explicit_optimization_overrides"):
+        delattr(args, "_explicit_optimization_overrides")
     if args.resume_from:
         artifacts = resolve_resume_artifacts(args.resume_from)
         checkpoint = load_checkpoint_payload(artifacts.checkpoint_path, device="cpu")
         resume_step = int(checkpoint.get("step", 0))
         _apply_resume_args(args, checkpoint)
-        if resume_lr_override is not None:
-            args.lr = resume_lr_override
+        for key, value in explicit_optimization_overrides.items():
+            setattr(args, key, value)
 
     resolve_device_arg(args)
     set_seed(args.seed)
@@ -275,9 +279,9 @@ def run_answer_curriculum(args) -> None:
             best_eval_score = tuple(saved_best_score)
         saved_best_step = extra.get("best_eval_step")
         best_eval_step = None if saved_best_step is None else int(saved_best_step)
-        if resume_lr_override is not None:
+        if "lr" in explicit_optimization_overrides:
             for parameter_group in optimizer.param_groups:
-                parameter_group["lr"] = resume_lr_override
+                parameter_group["lr"] = explicit_optimization_overrides["lr"]
         if best_eval_score is None:
             previous_eval = find_jsonl_event(
                 artifacts.metrics_path,
@@ -357,6 +361,7 @@ def run_answer_curriculum(args) -> None:
         loss, _output, pass_losses = forward_and_loss(model, batch, args)
         loss.backward()
         update_gradient_norm_window(gradient_norm_window, gradient_norms(model))
+        clip_gradients(model, args.max_grad_norm)
         optimizer.step()
         window_steps += 1
         window_tokens += int(batch.idx.numel())

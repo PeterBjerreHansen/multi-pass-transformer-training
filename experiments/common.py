@@ -80,6 +80,7 @@ def add_shared_training_args(parser) -> None:
     parser.add_argument("--batch-size", type=int, default=64)
     parser.add_argument("--train-steps", type=int, default=50_000)
     parser.add_argument("--lr", type=float, default=1e-4)
+    parser.add_argument("--max-grad-norm", type=float, default=5.0)
     parser.add_argument("--weight-decay", type=float, default=0.0)
     parser.add_argument("--eval-interval", type=int, default=200)
     parser.add_argument("--eval-batches", type=int, default=4)
@@ -129,6 +130,12 @@ def validate_training_args(args) -> None:
         raise ValueError("--eval-interval and --eval-batches must be at least 1")
     if args.lr <= 0:
         raise ValueError("--lr must be positive")
+    if not hasattr(args, "max_grad_norm"):
+        # Preserve compatibility with configs and checkpoints created before
+        # global gradient clipping became part of the training contract.
+        args.max_grad_norm = 5.0
+    if not math.isfinite(args.max_grad_norm) or args.max_grad_norm <= 0:
+        raise ValueError("--max-grad-norm must be finite and positive")
     if args.weight_decay < 0:
         raise ValueError("--weight-decay must be non-negative")
     lr_schedule = getattr(args, "lr_schedule", "constant")
@@ -360,6 +367,11 @@ def gradient_norms(model) -> dict[str, float]:
         for group, value in squared_sums.items()
         if counts.get(group, 0) > 0
     }
+
+
+def clip_gradients(model, max_grad_norm: float) -> None:
+    """Clip all model gradients together using their global L2 norm."""
+    torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=max_grad_norm)
 
 
 def update_gradient_norm_window(window: dict[str, dict[str, float]], norms: dict[str, float]) -> None:
