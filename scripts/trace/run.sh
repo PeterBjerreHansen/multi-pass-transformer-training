@@ -5,9 +5,9 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "${ROOT}"
 source "${ROOT}/scripts/lib/model_matrix.sh"
 
-TASKS="${TASKS:-shortest_path othello}"
+TASKS="${TASKS:-shortest_path}"
 SEEDS="${SEEDS:-1337}"
-ARCHITECTURES="${ARCHITECTURES:-transformer memory_tape joint_memory_tape memory_concat memory_add memory_state memory_update}"
+ARCHITECTURES="${ARCHITECTURES:-transformer memory_tape memory_add}"
 RESULT_ROOT="${RESULT_ROOT:-results/trace}"
 
 runtime_args=()

@@ -12,7 +12,6 @@ from experiments.common import (
     clip_gradients,
     effective_inference_mode,
     evaluate_prebuilt_batches,
-    find_jsonl_event,
     format_checkpoint_line,
     format_gradient_norms,
     format_pass_losses,
@@ -21,6 +20,7 @@ from experiments.common import (
     load_checkpoint_payload,
     model_benchmark_stats,
     prepare_run_artifacts,
+    provenance_metadata,
     resolve_device_arg,
     resolve_resume_artifacts,
     restore_checkpoint_state,
@@ -156,8 +156,7 @@ def _apply_resume_args(
     *,
     explicit_optimization_overrides: dict[str, object],
 ) -> None:
-    saved = checkpoint.get("args", {})
-    is_legacy_schedule = "lr_schedule" not in saved
+    saved = checkpoint["args"]
     preserve = {
         "resume_from": args.resume_from,
         "run_dir": args.run_dir,
@@ -169,21 +168,8 @@ def _apply_resume_args(
     for key, value in preserve.items():
         if value is not None:
             setattr(args, key, value)
-    if is_legacy_schedule:
-        # Checkpoints created before scheduling existed must preserve their
-        # original constant-LR behavior unless the user opts in explicitly.
-        args.lr_schedule = "constant"
-        args.min_lr = args.lr
-        args.lr_warmup_steps = 0
-        args.lr_decay_steps = 0
     for key, value in explicit_optimization_overrides.items():
         setattr(args, key, value)
-    if (
-        is_legacy_schedule
-        and args.lr_schedule == "constant"
-        and "min_lr" not in explicit_optimization_overrides
-    ):
-        args.min_lr = args.lr
 
 
 def run_trace_training(args) -> None:
@@ -220,44 +206,14 @@ def run_trace_training(args) -> None:
     train_rng = random.Random(stable_seed(args.seed, "trace", args.task, "train"))
     best_eval_loss = float("inf")
     best_eval_step: int | None = None
-    bootstrap_best_checkpoint = False
     if checkpoint is not None:
         restore_checkpoint_state(checkpoint, model=model, optimizer=optimizer, device=args.device)
-        extra = checkpoint.get("extra_state", {})
-        best_eval_loss = float(extra.get("best_eval_loss", best_eval_loss))
-        saved_best_step = extra.get("best_eval_step")
+        extra = checkpoint["extra_state"]
+        best_eval_loss = float(extra["best_eval_loss"])
+        saved_best_step = extra["best_eval_step"]
         best_eval_step = None if saved_best_step is None else int(saved_best_step)
-        if "train_rng_state" in extra:
-            train_rng.setstate(extra["train_rng_state"])
+        train_rng.setstate(extra["train_rng_state"])
         apply_learning_rate(optimizer, args, resume_step)
-        if best_eval_loss == float("inf"):
-            previous_eval = find_jsonl_event(
-                artifacts.metrics_path,
-                event="eval",
-                step=resume_step,
-            )
-            if previous_eval is not None:
-                best_eval_loss = float(previous_eval["metrics"]["loss"])
-                best_eval_step = resume_step
-                bootstrap_best_checkpoint = True
-
-    if bootstrap_best_checkpoint:
-        save_best_checkpoint(
-            artifacts,
-            model=model,
-            optimizer=optimizer,
-            args=args,
-            step=resume_step,
-            extra_state={
-                "train_rng_state": train_rng.getstate(),
-                "best_eval_loss": best_eval_loss,
-                "best_eval_step": best_eval_step,
-            },
-        )
-        print(
-            f"best_checkpoint -> bootstrapped step {resume_step} | "
-            f"eval_loss {best_eval_loss:.4f}"
-        )
 
     print(f"device: {args.device}")
     print(f"task: {args.task}")
@@ -285,6 +241,7 @@ def run_trace_training(args) -> None:
             "step": resume_step,
             "task": args.task,
             "architecture": args.architecture,
+            "provenance": provenance_metadata(),
             "config": vars(args),
             "model_stats": model_benchmark_stats(model),
         },

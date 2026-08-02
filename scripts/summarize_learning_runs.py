@@ -13,9 +13,6 @@ KEY_METRICS = (
     "token_legality",
     "sequence_legality",
     "optimal_path",
-    "goal_reached",
-    "valid_edge_rate",
-    "exact_path",
     "exact_match",
     "token_accuracy",
 )

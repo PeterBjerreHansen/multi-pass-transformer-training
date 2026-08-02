@@ -545,27 +545,6 @@ def load_json_if_exists(path: Path) -> dict | None:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
-def find_jsonl_event(
-    path: Path,
-    *,
-    event: str,
-    step: int | None = None,
-) -> dict | None:
-    """Return the most recent matching event from a JSONL metrics file."""
-    if not path.exists():
-        return None
-    for line in reversed(path.read_text(encoding="utf-8").splitlines()):
-        if not line.strip():
-            continue
-        payload = json.loads(line)
-        if payload.get("event") != event:
-            continue
-        if step is not None and int(payload.get("step", -1)) != step:
-            continue
-        return payload
-    return None
-
-
 def resolve_resume_artifacts(resume_from: str | Path) -> RunArtifacts:
     path = Path(resume_from).resolve()
     run_dir = path if path.is_dir() else path.parent
@@ -589,36 +568,7 @@ def load_checkpoint_payload(path: str | Path, *, device: str | None = None) -> d
 
 
 def restore_checkpoint_state(checkpoint: dict, *, model, optimizer=None, device: str | None = None) -> dict:
-    model_state = checkpoint["model_state_dict"]
-    model_parameter_names = set(model.state_dict())
-    legacy_gate_names = [
-        name
-        for name in model_state
-        if name.endswith(".memory_gate") and name not in model_parameter_names
-    ]
-    if legacy_gate_names:
-        # MemoryTape previously multiplied each cross-attention residual by a
-        # learned scalar. Its projection is bias-free, so folding that scalar
-        # into c_proj is exactly function-preserving for old checkpoints.
-        model_state = model_state.copy()
-        for gate_name in legacy_gate_names:
-            projection_name = (
-                gate_name.removesuffix("memory_gate")
-                + "cross_attn.c_proj.weight"
-            )
-            if projection_name not in model_state:
-                raise KeyError(
-                    f"cannot migrate legacy gate without {projection_name}"
-                )
-            gate = model_state.pop(gate_name)
-            if gate.numel() != 1:
-                raise ValueError(
-                    f"legacy memory gate {gate_name} must be scalar"
-                )
-            model_state[projection_name] = (
-                model_state[projection_name] * gate.reshape(())
-            )
-    model.load_state_dict(model_state)
+    model.load_state_dict(checkpoint["model_state_dict"])
     if optimizer is not None:
         optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
         if device is not None:
@@ -715,13 +665,27 @@ def prepare_run_artifacts(
     default_root_parts: tuple[str, ...],
     extra_config: dict | None = None,
 ) -> RunArtifacts:
+    resume_dir = (
+        resolve_resume_artifacts(args.resume_from).run_dir
+        if args.resume_from
+        else None
+    )
     if args.run_dir:
         run_dir = Path(args.run_dir).resolve()
-    elif args.resume_from:
-        run_dir = resolve_resume_artifacts(args.resume_from).run_dir
+        if resume_dir is not None and run_dir != resume_dir:
+            raise ValueError(
+                "--run-dir must match the resumed run directory"
+            )
+    elif resume_dir is not None:
+        run_dir = resume_dir
     else:
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         run_dir = Path("results").joinpath(*default_root_parts, timestamp).resolve()
+
+    if run_dir.exists() and resume_dir is None and any(run_dir.iterdir()):
+        raise FileExistsError(
+            f"run directory is not empty: {run_dir}; choose a new directory"
+        )
     run_dir.mkdir(parents=True, exist_ok=True)
     args.run_dir = str(run_dir)
     artifacts = RunArtifacts(
@@ -730,12 +694,15 @@ def prepare_run_artifacts(
         metrics_path=run_dir / "metrics.jsonl",
         checkpoint_path=run_dir / "latest.pt",
     )
+    if resume_dir is not None:
+        if not artifacts.config_path.is_file():
+            raise FileNotFoundError(
+                f"resumed run is missing config.json: {artifacts.config_path}"
+            )
+        return artifacts
+
     payload = {
-        "created_at": datetime.now(timezone.utc).isoformat(),
-        "cwd": str(Path.cwd()),
-        "argv": list(sys.argv),
-        "command": " ".join(shlex.quote(item) for item in sys.argv),
-        "git": _git_metadata(),
+        **provenance_metadata(),
         "args": dict(vars(args)),
         "model_config": model.config.to_dict(),
         "model_stats": model_benchmark_stats(model),
@@ -778,7 +745,21 @@ def _git_metadata() -> dict[str, str | None]:
             return None
         return result.stdout.strip() or None
 
-    return {"branch": run_git("branch", "--show-current"), "commit": run_git("rev-parse", "HEAD")}
+    return {
+        "branch": run_git("branch", "--show-current"),
+        "commit": run_git("rev-parse", "HEAD"),
+        "status": run_git("status", "--short"),
+    }
+
+
+def provenance_metadata() -> dict:
+    return {
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "cwd": str(Path.cwd()),
+        "argv": list(sys.argv),
+        "command": " ".join(shlex.quote(item) for item in sys.argv),
+        "git": _git_metadata(),
+    }
 
 
 def _json_default(value):

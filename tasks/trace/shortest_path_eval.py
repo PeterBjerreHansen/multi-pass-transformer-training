@@ -88,7 +88,7 @@ def generation_metrics(
     inference_mode: str | None = None,
     **_unused,
 ) -> dict[str, float]:
-    """Evaluate generated paths against graph legality and the optimal target."""
+    """Evaluate exact optimal-path generation and dataset difficulty."""
     mode = (
         "recompute"
         if args.architecture == "transformer"
@@ -96,13 +96,7 @@ def generation_metrics(
     )
     do_sample = getattr(args, "token_selection", "argmax") == "sample"
     totals = {
-        "token_legality": 0.0,
-        "sequence_legality": 0.0,
-        "valid_edge_rate": 0.0,
-        "goal_reached": 0.0,
         "optimal_path": 0.0,
-        "exact_path": 0.0,
-        "mean_generated_path_length": 0.0,
         "mean_target_path_length": 0.0,
         "mean_node_count": 0.0,
         "mean_edge_count": 0.0,
@@ -153,56 +147,13 @@ def generation_metrics(
             0,
             prompt_len : prompt_len + output_len,
         ].tolist()
-        eos_position = next(
-            (
-                position
-                for position, token_id in enumerate(generated_suffix)
-                if token_id == 3
-            ),
-            None,
-        )
-        generated_path_ids = (
-            generated_suffix
-            if eos_position is None
-            else generated_suffix[:eos_position]
-        )
         prompt_tokens = batch.idx[row, 1 : prompt_len - 1].tolist()
         edges, start, goal = shortest_path.parse_prompt_metadata(prompt_tokens)
         row_num_nodes = prompt_tokens.index(5) - 1
         target_path_ids = target_suffix[:-1]
         target_path_length = len(target_path_ids) - 1
         bucket = shortest_path.path_length_bucket(target_path_length)
-        legal_length, _all_legal = shortest_path.legal_prefix_length(
-            prompt_tokens,
-            generated_path_ids,
-        )
-        decoded_path = [
-            shortest_path.token_id_to_node(
-                token_id,
-                num_nodes=row_num_nodes,
-            )
-            for token_id in generated_path_ids
-        ]
-        edge_set = set(edges)
-        valid_edges = sum(
-            previous is not None
-            and current is not None
-            and (previous, current) in edge_set
-            for previous, current in zip(decoded_path, decoded_path[1:])
-        )
-        edge_total = max(len(decoded_path) - 1, 0)
-        path_is_edge_valid = bool(
-            decoded_path
-            and decoded_path[0] == start
-            and all(node is not None for node in decoded_path)
-            and valid_edges == edge_total
-        )
-        goal_reached = bool(
-            path_is_edge_valid
-            and decoded_path[-1] == goal
-        )
-        exact_path = generated_path_ids == target_path_ids
-        complete = eos_position is not None and exact_path
+        optimal_path = generated_suffix == target_suffix
         target_path = [
             shortest_path.token_id_to_node(
                 token_id,
@@ -219,16 +170,7 @@ def generation_metrics(
             goal,
             target_path,
         )
-        totals["token_legality"] += min(
-            1.0,
-            legal_length / max(len(target_path_ids), 1),
-        )
-        totals["sequence_legality"] += float(path_is_edge_valid)
-        totals["valid_edge_rate"] += valid_edges / max(edge_total, 1)
-        totals["goal_reached"] += float(goal_reached)
-        totals["optimal_path"] += float(exact_path)
-        totals["exact_path"] += float(complete)
-        totals["mean_generated_path_length"] += float(len(generated_path_ids))
+        totals["optimal_path"] += float(optimal_path)
         totals["mean_target_path_length"] += float(target_path_length)
         totals["mean_node_count"] += structure["node_count"]
         totals["mean_edge_count"] += structure["edge_count"]
@@ -249,12 +191,11 @@ def generation_metrics(
             "random_legal_path_probability"
         ]
         bucket_counts[bucket] += 1
-        bucket_optimal[bucket] += float(exact_path)
+        bucket_optimal[bucket] += float(optimal_path)
         for step in range(1, len(target_path_ids)):
             step_counts[step] += 1
             step_correct[step] += float(
-                step < len(generated_path_ids)
-                and generated_path_ids[step] == target_path_ids[step]
+                generated_suffix[step] == target_path_ids[step]
             )
 
     count = int(batch.idx.shape[0])
@@ -277,11 +218,7 @@ def generation_metrics(
 
 
 def format_metrics(metrics: dict[str, float]) -> str:
-    fields = [
-        f"optimal {metrics['optimal_path']:.3f}",
-        f"goal {metrics['goal_reached']:.3f}",
-        f"edge_valid {metrics['valid_edge_rate']:.3f}",
-    ]
+    fields = [f"optimal {metrics['optimal_path']:.3f}"]
     fields.extend(
         f"{bucket} {metrics[f'optimal_path_{bucket}']:.3f}"
         for bucket in shortest_path.PATH_LENGTH_BUCKETS

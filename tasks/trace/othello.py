@@ -350,7 +350,6 @@ def sample_othello_example(
     trace = dataset.sample_trace(rng)
     prompt = [stoi[move_token(square)] for square in OPENING_PREFIX] if othello_prepend_opening else []
     answer = [stoi[move_token(square)] for square in trace]
-    answer.extend([stoi[PAD_TOKEN]] * (MAX_MOVES - len(trace)))
     return prompt, answer, trace
 
 
@@ -400,32 +399,29 @@ def legal_prefix_length(
     *,
     prefix_move_token_ids: Sequence[int] = (),
 ) -> tuple[int, bool]:
-    """Return the number of valid generated positions and full-sequence legality.
+    """Return the number of legal moves and whether they complete the game.
 
     ``prefix_move_token_ids`` is replayed before generated moves are checked.
     This supports continuation evaluation from arbitrary points in a game while
     preserving the training serialization, where ``<sep>`` precedes all moves.
-
-    Once the game is terminal, padding tokens are valid and count as consumed
-    positions.  This makes a fully legal fixed-width trace score 1.0 regardless
-    of how many actual moves its game contains.
     """
     board, player = _replay_token_prefix(prefix_move_token_ids)
     valid_positions = 0
     for token_id in move_token_ids:
         active_player, legal_moves = _active_player_and_legal_move_indices(board, player)
         if active_player is None:
-            if int(token_id) != 0:
-                return valid_positions, False
-            valid_positions += 1
-            continue
+            return valid_positions, False
         move = token_id_to_square(token_id)
         if move is None or move not in legal_moves:
             return valid_positions, False
         board = _apply_move_flat(board, move, active_player)
         valid_positions += 1
         player = -active_player
-    return valid_positions, True
+    active_player, _legal_moves = _active_player_and_legal_move_indices(
+        board,
+        player,
+    )
+    return valid_positions, active_player is None
 
 
 def _replay_token_prefix(move_token_ids: Sequence[int]) -> tuple[np.ndarray, int]:

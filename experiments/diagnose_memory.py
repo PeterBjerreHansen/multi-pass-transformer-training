@@ -509,7 +509,7 @@ def diagnose_memory(cli_args) -> Path:
     checkpoint = load_checkpoint_payload(checkpoint_path, device="cpu")
     bbh_level = None
     if args.task in BBH_TASKS:
-        bbh_level = int(checkpoint.get("extra_state", {}).get("current_level", args.curriculum_start_level))
+        bbh_level = int(checkpoint["extra_state"]["evaluated_level"])
     model, batches = _build_model_and_batches(args, bbh_level=bbh_level)
     restore_checkpoint_state(checkpoint, model=model, optimizer=None, device=args.device)
 
@@ -548,6 +548,8 @@ def diagnose_memory(cli_args) -> Path:
         "pass_dynamics": _mean_numbers(dynamics_results),
         "teacher_forced_schedule_gap": _aggregate_teacher_forced_schedule_gaps(schedule_gap_results),
     }
+    if bbh_level is not None:
+        payload["evaluated_level"] = bbh_level
     output = Path(cli_args.output).resolve() if cli_args.output else run_dir / "diagnostics.json"
     write_json(output, payload)
     print(f"wrote {output}")

@@ -460,30 +460,6 @@ def token_id_to_node(token_id: int, *, num_nodes: int) -> int | None:
     return node if 0 <= node < num_nodes else None
 
 
-def legal_prefix_length(
-    prompt_tokens: Sequence[int],
-    generated_node_token_ids: Sequence[int],
-) -> tuple[int, bool]:
-    edges, start, goal = parse_prompt_metadata(prompt_tokens)
-    num_nodes = [int(token_id) for token_id in prompt_tokens].index(5) - 1
-    target_path, path_count = solve_shortest_path(num_nodes, edges, start, goal)
-    if path_count != 1:
-        raise ValueError("shortest-path prompt does not have a unique shortest path")
-    edge_set = set(edges)
-    decoded = [
-        token_id_to_node(token_id, num_nodes=num_nodes)
-        for token_id in generated_node_token_ids
-    ]
-    if not decoded or decoded[0] != start:
-        return 0, False
-    legal_tokens = 1
-    for previous, current in zip(decoded, decoded[1:]):
-        if current is None or previous is None or (previous, current) not in edge_set:
-            return legal_tokens, False
-        legal_tokens += 1
-    return legal_tokens, decoded == target_path and decoded[-1] == goal
-
-
 __all__ = [
     "SHORTEST_PATH_DISTRIBUTIONS",
     "PATH_LENGTH_BUCKETS",
@@ -491,7 +467,6 @@ __all__ = [
     "build_shortest_path_batch",
     "build_shortest_path_vocab",
     "get_shortest_path_distribution",
-    "legal_prefix_length",
     "node_token",
     "path_length_bucket",
     "parse_prompt_metadata",

@@ -238,8 +238,7 @@ def test_othello_generated_games_are_legal_and_dataset_cache_is_deterministic(tm
             prefix_move_token_ids=ids[:cut],
         ) == (len(ids) - cut, True)
         assert ids[cut] in othello.legal_move_token_ids_after_prefix(ids[:cut])
-        padded = ids + [0] * (othello.MAX_MOVES - len(ids))
-        assert othello.legal_prefix_length(padded) == (othello.MAX_MOVES, True)
+        assert othello.legal_prefix_length([*ids, 0]) == (len(ids), False)
 
     with pytest.raises(ValueError, match="illegal move"):
         othello.legal_move_token_ids_after_prefix([othello.MOVE_TOKEN_OFFSET])
@@ -257,6 +256,19 @@ def test_othello_generated_games_are_legal_and_dataset_cache_is_deterministic(tm
     second = othello.load_othello_dataset(split="train", **kwargs)
     trace_b = second.sample_trace(random.Random(7))
     assert trace_a == trace_b
+
+    _vocab, stoi, _itos = othello.build_othello_vocab(
+        othello_train_games=8,
+        othello_val_games=4,
+    )
+    _prompt, answer, trace = othello.sample_othello_example(
+        stoi,
+        random.Random(7),
+        split="train",
+        **kwargs,
+    )
+    assert answer == [stoi[othello.move_token(square)] for square in trace]
+    assert stoi["<pad>"] not in answer
 
 
 def test_othello_generation_is_partition_invariant():

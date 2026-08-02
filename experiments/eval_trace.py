@@ -8,7 +8,6 @@ from types import SimpleNamespace
 
 from experiments.common import (
     EVALUATION_CHECKPOINTS,
-    append_jsonl,
     effective_inference_mode,
     evaluate_prebuilt_batches,
     load_checkpoint_payload,
@@ -23,9 +22,9 @@ from experiments.common import (
     write_json,
 )
 from experiments.train_trace import (
-    TRACE_TASKS,
     build_fixed_eval_batches,
     build_training_objects,
+    format_trace_metrics,
     trace_generation_metrics,
     validate_task_args,
 )
@@ -79,72 +78,11 @@ def _default_output_dir(cli_args, args, input_dir: Path) -> Path:
     return Path("results", "eval", args.task, name, input_dir.name).resolve()
 
 
-def _legality_prefix(args, prompt_tokens: list[int], generated_tokens: list[int]) -> tuple[int, bool]:
-    return TRACE_TASKS[args.task].legality_prefix(args, prompt_tokens, generated_tokens)
-
-
-def _valid_target_mask(args, target_tokens: list[int]) -> list[bool]:
-    return TRACE_TASKS[args.task].valid_target_mask(args, target_tokens)
-
-
-def collect_per_position_metrics(model, args, batches, *, inference_mode: str) -> dict[int, dict[str, float]]:
-    do_sample = args.token_selection == "sample"
-    legal_counts: dict[int, int] = {}
-    totals: dict[int, int] = {}
-
-    # Use a fixed global sampling stream while preserving the caller's RNG state.
-    from experiments.common import isolated_torch_rng
-
-    with isolated_torch_rng(
-        # Keep the established seed namespace so renaming the command does not
-        # change paired sampled evaluations.
-        stable_seed(args.seed, "drift", args.task, "paired_generation")
-    ):
-        for batch in batches:
-            for row in range(batch.idx.shape[0]):
-                prompt_len = int(batch.prompt_lengths[row].item())
-                output_len = int(batch.output_lengths[row].item())
-                trace_len = output_len - 1
-                prompt = batch.idx[row : row + 1, :prompt_len]
-                target_trace = batch.targets[
-                    row,
-                    prompt_len - 1 : prompt_len - 1 + trace_len,
-                ].tolist()
-                generated = model.generate(
-                    prompt,
-                    max_new_tokens=output_len,
-                    do_sample=do_sample,
-                    inference_mode=inference_mode,
-                )
-                generated_trace = generated[0, prompt_len : prompt_len + trace_len].tolist()
-                prompt_tokens = batch.idx[row, 1 : prompt_len - 1].tolist()
-                legal_prefix_len, _all_legal = _legality_prefix(args, prompt_tokens, generated_trace)
-                valid = _valid_target_mask(args, target_trace)
-                for position, is_valid in enumerate(valid):
-                    if not is_valid:
-                        continue
-                    totals[position] = totals.get(position, 0) + 1
-                    legal_counts[position] = legal_counts.get(position, 0) + int(
-                        legal_prefix_len >= position + 1
-                    )
-
-    return {
-        position: {
-            "count": float(totals[position]),
-            "token_legality": legal_counts[position] / totals[position],
-        }
-        for position in sorted(totals)
-    }
-
-
 def evaluate_run(cli_args) -> Path:
     args, input_dir = _load_eval_args(cli_args)
     output_dir = _default_output_dir(cli_args, args, input_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     summary_path = output_dir / "summary.json"
-    per_position_path = output_dir / "per_position.jsonl"
-    if per_position_path.exists():
-        per_position_path.unlink()
 
     checkpoint_path = resolve_evaluation_checkpoint(
         input_dir,
@@ -169,13 +107,6 @@ def evaluate_run(cli_args) -> Path:
             "paired_generation",
         ),
     )
-    per_position = collect_per_position_metrics(
-        model,
-        args,
-        batches,
-        inference_mode=effective_inference_mode(args, cli_args.inference_mode),
-    )
-
     summary = {
         "created_at": datetime.now(timezone.utc).isoformat(),
         "input_run_dir": str(input_dir),
@@ -195,20 +126,10 @@ def evaluate_run(cli_args) -> Path:
         "metrics": metrics,
     }
     write_json(summary_path, summary)
-    for position, values in per_position.items():
-        append_jsonl(
-            per_position_path,
-            {
-                "position": position,
-                "count": int(values["count"]),
-                "token_legality": values["token_legality"],
-            },
-        )
 
     print(
         f"{input_dir.name}: {args.task} | {args.architecture} | {cli_args.inference_mode} | "
-        f"token_legality {metrics['token_legality']:.3f} | "
-        f"sequence_legality {metrics['sequence_legality']:.3f}"
+        f"{format_trace_metrics(args, metrics)}"
     )
     print(f"output_dir: {output_dir}")
     return output_dir

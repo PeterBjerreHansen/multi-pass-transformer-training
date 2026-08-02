@@ -58,9 +58,6 @@ METRIC_LABELS = {
         f"path_step_{step}_accuracy": f"Path step {step} accuracy"
         for step in range(1, 11)
     },
-    "goal_reached": "Goal-reached rate",
-    "valid_edge_rate": "Valid-edge rate",
-    "exact_path": "Exact-path rate",
     "legal_move_fraction": "Legal-move fraction",
     "legal_probability_mass": "Probability mass on legal moves",
     "legal_set_nll": "Legal-set NLL",
@@ -168,7 +165,7 @@ def load_training_records(root: str | Path) -> list[dict]:
 
 
 def load_drift_records(root: str | Path) -> list[dict]:
-    """Load drift summaries and retain their per-position legality rows."""
+    """Load post-training trace-evaluation summaries."""
     root = Path(root).expanduser().resolve()
     records = []
     for summary_path in sorted(root.rglob("summary.json")):
@@ -191,8 +188,6 @@ def load_drift_records(root: str | Path) -> list[dict]:
             number = _finite_number(value)
             if number is not None:
                 record[key] = number
-        per_position_path = summary_path.parent / "per_position.jsonl"
-        record["per_position"] = read_jsonl(per_position_path) if per_position_path.exists() else []
         records.append(record)
     return records
 

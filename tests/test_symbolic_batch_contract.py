@@ -15,7 +15,6 @@ def _assert_symbolic_batch_contract(
     stoi,
     vocab_size: int,
     required_block_size: int,
-    allow_answer_padding: bool = False,
 ) -> None:
     assert batch.idx.shape == batch.targets.shape == batch.metric_mask.shape
     assert batch.idx.size(0) == 3
@@ -45,8 +44,7 @@ def _assert_symbolic_batch_contract(
         assert int(idx_row[prompt_len - 1]) == stoi[SEP_TOKEN]
         assert int(target_suffix[-1]) == stoi[EOS_TOKEN]
         assert not (idx_row[:prompt_len] == stoi[PAD_TOKEN]).any()
-        if not allow_answer_padding:
-            assert not (idx_row[prompt_len:active_idx_len] == stoi[PAD_TOKEN]).any()
+        assert not (idx_row[prompt_len:active_idx_len] == stoi[PAD_TOKEN]).any()
 
         expected_mask = torch.zeros_like(metric_mask)
         expected_mask[suffix_start:suffix_end] = True
@@ -163,5 +161,4 @@ def test_symbolic_task_batches_follow_shared_contract(tmp_path):
         stoi=stoi,
         vocab_size=len(vocab),
         required_block_size=othello.required_block_size(**kwargs),
-        allow_answer_padding=True,
     )

@@ -22,8 +22,6 @@ class TraceTask:
     build_batch_fn: Callable
     generation_metrics_fn: Callable
     format_metrics_fn: Callable
-    legality_prefix_fn: Callable
-    valid_target_mask_fn: Callable
 
     def build_vocab(self, args):
         return self.build_vocab_fn(args)
@@ -39,22 +37,6 @@ class TraceTask:
 
     def format_metrics(self, metrics: dict[str, float]) -> str:
         return self.format_metrics_fn(metrics)
-
-    def legality_prefix(
-        self,
-        args,
-        prompt_tokens: list[int],
-        generated_tokens: list[int],
-    ) -> tuple[int, bool]:
-        return self.legality_prefix_fn(args, prompt_tokens, generated_tokens)
-
-    def valid_target_mask(self, args, target_tokens: list[int]) -> list[bool]:
-        return self.valid_target_mask_fn(args, target_tokens)
-
-
-def _all_target_positions(_args, target_tokens: list[int]) -> list[bool]:
-    return [True] * len(target_tokens)
-
 
 def _othello_vocab(args):
     return othello.build_othello_vocab(
@@ -95,10 +77,6 @@ def _othello_metrics(model, batch, args, inference_mode: str | None):
     )
 
 
-def _othello_legality(_args, _prompt_tokens, generated_tokens):
-    return othello.legal_prefix_length(generated_tokens)
-
-
 def _shortest_path_vocab(args):
     return shortest_path.build_shortest_path_vocab(
         args.shortest_path_distribution
@@ -130,13 +108,6 @@ def _shortest_path_metrics(model, batch, args, inference_mode: str | None):
     )
 
 
-def _shortest_path_legality(_args, prompt_tokens, generated_tokens):
-    return shortest_path.legal_prefix_length(
-        prompt_tokens,
-        generated_tokens,
-    )
-
-
 TRACE_TASKS: dict[str, TraceTask] = {
     "othello": TraceTask(
         name="othello",
@@ -145,8 +116,6 @@ TRACE_TASKS: dict[str, TraceTask] = {
         build_batch_fn=_othello_batch,
         generation_metrics_fn=_othello_metrics,
         format_metrics_fn=othello_eval.format_metrics,
-        legality_prefix_fn=_othello_legality,
-        valid_target_mask_fn=_all_target_positions,
     ),
     "shortest_path": TraceTask(
         name="shortest_path",
@@ -155,8 +124,6 @@ TRACE_TASKS: dict[str, TraceTask] = {
         build_batch_fn=_shortest_path_batch,
         generation_metrics_fn=_shortest_path_metrics,
         format_metrics_fn=shortest_path_eval.format_metrics,
-        legality_prefix_fn=_shortest_path_legality,
-        valid_target_mask_fn=_all_target_positions,
     ),
 }
 

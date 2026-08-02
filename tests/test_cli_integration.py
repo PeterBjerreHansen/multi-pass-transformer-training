@@ -33,6 +33,7 @@ def test_bbh_training_cli_writes_restorable_checkpoint(tmp_path):
         "-m", "experiments.train_bbh",
         "--preset", "pointer_chasing_smoke",
         "--architecture", "joint_memory_tape",
+        "--curriculum-threshold", "0",
         "--device", "cpu",
         "--run-dir", str(run_dir),
     )
@@ -41,10 +42,30 @@ def test_bbh_training_cli_writes_restorable_checkpoint(tmp_path):
     assert (run_dir / "best.pt").exists()
     assert (run_dir / "config.json").exists()
     assert (run_dir / "metrics.jsonl").exists()
+    checkpoint = torch.load(
+        run_dir / "best.pt",
+        map_location="cpu",
+        weights_only=False,
+    )
+    assert checkpoint["extra_state"]["current_level"] == 2
+    assert checkpoint["extra_state"]["evaluated_level"] == 1
     events = [json.loads(line) for line in (run_dir / "metrics.jsonl").read_text(encoding="utf-8").splitlines()]
     evaluation = next(event for event in events if event["event"] == "eval")
     assert "gradient_norms" in evaluation
     assert evaluation["gradient_norms"]["global"]["max"] > 0
+
+    diagnostics = tmp_path / "bbh_diagnostics.json"
+    _run(
+        "-m", "experiments.diagnose_memory",
+        "--input-run-dir", str(run_dir),
+        "--device", "cpu",
+        "--batch-size", "2",
+        "--eval-batches", "1",
+        "--extra-passes", "0",
+        "--schedule-gap-horizon", "1",
+        "--output", str(diagnostics),
+    )
+    assert json.loads(diagnostics.read_text(encoding="utf-8"))["evaluated_level"] == 1
 
 
 @pytest.mark.parametrize("architecture", ["memory_add", "memory_state"])
@@ -120,7 +141,7 @@ def test_trace_training_evaluation_and_diagnostics_cli(tmp_path):
     assert summary["effective_inference_mode"] == "append_recurrent"
     assert summary["eval_batches"] == 1
     assert summary["evaluation_examples"] == 1
-    assert (eval_dir / "per_position.jsonl").exists()
+    assert "path_step_1_accuracy" in summary["metrics"]
 
 
 def test_othello_random_prefix_evaluation_cli(tmp_path):
@@ -184,31 +205,13 @@ def test_shortest_path_training_resume_evaluation_and_diagnostics_cli(
     evaluation = next(event for event in events if event["event"] == "eval")
     assert evaluation["learning_rate"] == pytest.approx(1e-4)
     for metric in (
-        "valid_edge_rate",
-        "goal_reached",
         "optimal_path",
-        "exact_path",
         "optimal_path_short",
         "examples_short",
         "path_step_1_accuracy",
         "path_step_1_examples",
     ):
         assert metric in evaluation["metrics"]
-
-    legacy_checkpoint = torch.load(
-        run_dir / "latest.pt",
-        map_location="cpu",
-        weights_only=False,
-    )
-    for key in (
-        "lr_schedule",
-        "min_lr",
-        "lr_warmup_steps",
-        "lr_decay_steps",
-        "max_grad_norm",
-    ):
-        legacy_checkpoint["args"].pop(key)
-    torch.save(legacy_checkpoint, run_dir / "latest.pt")
 
     _run(
         "-m", "experiments.train_trace",
@@ -229,6 +232,11 @@ def test_shortest_path_training_resume_evaluation_and_diagnostics_cli(
         for event in resumed_events
         if event.get("event") == "eval" and event.get("step") == 2
     )
+    resume_event = next(
+        event for event in resumed_events if event.get("event") == "run_resume"
+    )
+    assert resume_event["provenance"]["git"]["commit"]
+    assert "train_trace.py" in resume_event["provenance"]["command"]
     assert resumed_evaluation["learning_rate"] == pytest.approx(0.00005)
     resumed_checkpoint = torch.load(
         run_dir / "latest.pt",
@@ -237,7 +245,6 @@ def test_shortest_path_training_resume_evaluation_and_diagnostics_cli(
     )
     assert resumed_checkpoint["args"]["lr"] == pytest.approx(0.00005)
     assert resumed_checkpoint["args"]["lr_schedule"] == "constant"
-    assert resumed_checkpoint["args"]["min_lr"] == pytest.approx(0.00005)
     assert resumed_checkpoint["args"]["max_grad_norm"] == pytest.approx(1_000_000.0)
     assert all(
         group["lr"] == pytest.approx(0.00005)
@@ -263,7 +270,6 @@ def test_shortest_path_training_resume_evaluation_and_diagnostics_cli(
         assert summary["checkpoint"] == "latest"
         assert summary["checkpoint_step"] == 2
         assert "optimal_path" in summary["metrics"]
-        assert (eval_dir / "per_position.jsonl").exists()
 
     diagnostics = tmp_path / "shortest_path_diagnostics.json"
     _run(

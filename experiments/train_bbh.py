@@ -13,7 +13,6 @@ from experiments.common import (
     clip_gradients,
     effective_inference_mode,
     evaluate_prebuilt_batches,
-    find_jsonl_event,
     format_checkpoint_line,
     format_default_eval_metrics,
     format_gradient_norms,
@@ -23,6 +22,7 @@ from experiments.common import (
     load_checkpoint_payload,
     model_benchmark_stats,
     prepare_run_artifacts,
+    provenance_metadata,
     resolve_device_arg,
     resolve_resume_artifacts,
     restore_checkpoint_state,
@@ -218,7 +218,7 @@ def choose_train_level(args, task: BBHTask, current_level: int, step: int, rng: 
 
 
 def _apply_resume_args(args, checkpoint: dict) -> None:
-    saved = checkpoint.get("args", {})
+    saved = checkpoint["args"]
     preserve = {
         "resume_from": args.resume_from,
         "run_dir": args.run_dir,
@@ -266,57 +266,18 @@ def run_answer_curriculum(args) -> None:
     promotion_history: list[tuple[int, int, float]] = []
     best_eval_score: tuple[int, float, float] | None = None
     best_eval_step: int | None = None
-    bootstrap_best_checkpoint = False
     if checkpoint is not None:
         restore_checkpoint_state(checkpoint, model=model, optimizer=optimizer, device=args.device)
-        extra = checkpoint.get("extra_state", {})
-        current_level = int(extra.get("current_level", current_level))
-        promotion_history = [tuple(item) for item in extra.get("promotion_history", [])]
-        if "train_rng_state" in extra:
-            train_rng.setstate(extra["train_rng_state"])
-        saved_best_score = extra.get("best_eval_score")
-        if saved_best_score is not None:
-            best_eval_score = tuple(saved_best_score)
-        saved_best_step = extra.get("best_eval_step")
+        extra = checkpoint["extra_state"]
+        current_level = int(extra["current_level"])
+        promotion_history = [tuple(item) for item in extra["promotion_history"]]
+        train_rng.setstate(extra["train_rng_state"])
+        best_eval_score = tuple(extra["best_eval_score"])
+        saved_best_step = extra["best_eval_step"]
         best_eval_step = None if saved_best_step is None else int(saved_best_step)
         if "lr" in explicit_optimization_overrides:
             for parameter_group in optimizer.param_groups:
                 parameter_group["lr"] = explicit_optimization_overrides["lr"]
-        if best_eval_score is None:
-            previous_eval = find_jsonl_event(
-                artifacts.metrics_path,
-                event="eval",
-                step=resume_step,
-            )
-            if previous_eval is not None:
-                metrics = previous_eval["metrics"]
-                best_eval_score = (
-                    int(previous_eval["level"]),
-                    float(metrics["exact_match"]),
-                    -float(metrics["loss"]),
-                )
-                best_eval_step = resume_step
-                bootstrap_best_checkpoint = True
-
-    if bootstrap_best_checkpoint:
-        save_best_checkpoint(
-            artifacts,
-            model=model,
-            optimizer=optimizer,
-            args=args,
-            step=resume_step,
-            extra_state={
-                "current_level": current_level,
-                "promotion_history": promotion_history,
-                "train_rng_state": train_rng.getstate(),
-                "best_eval_score": best_eval_score,
-                "best_eval_step": best_eval_step,
-            },
-        )
-        print(
-            f"best_checkpoint -> bootstrapped step {resume_step} | "
-            f"level {best_eval_score[0]} | exact_match {best_eval_score[1]:.4f}"
-        )
 
     print(f"device: {args.device}")
     print(f"task: {args.task}")
@@ -335,6 +296,7 @@ def run_answer_curriculum(args) -> None:
             "step": resume_step,
             "task": args.task,
             "architecture": args.architecture,
+            "provenance": provenance_metadata(),
             "config": vars(args),
             "model_stats": model_benchmark_stats(model),
         },
@@ -380,22 +342,23 @@ def run_answer_curriculum(args) -> None:
             fields.append(f"pass_losses {format_pass_losses(pass_losses)}")
         print(format_checkpoint_line(f"step {step}", fields))
 
-        eval_batches = build_fixed_eval_batches(args, task, stoi, current_level)
+        evaluated_level = current_level
+        eval_batches = build_fixed_eval_batches(args, task, stoi, evaluated_level)
         metrics = evaluate_prebuilt_batches(
             model,
             args,
             eval_batches,
             inference_mode=args.inference_mode,
-            generation_seed=stable_seed(args.seed, "bbh", args.task, "generation", current_level),
+            generation_seed=stable_seed(args.seed, "bbh", args.task, "generation", evaluated_level),
         )
         print(
             format_checkpoint_line(
                 "eval",
-                [f"loss {metrics['loss']:.4f}", f"level {current_level}", format_default_eval_metrics(metrics)],
+                [f"loss {metrics['loss']:.4f}", f"level {evaluated_level}", format_default_eval_metrics(metrics)],
             )
         )
         exact_match = float(metrics["exact_match"])
-        eval_score = (current_level, exact_match, -float(metrics["loss"]))
+        eval_score = (evaluated_level, exact_match, -float(metrics["loss"]))
         is_best_checkpoint = (
             best_eval_score is None or eval_score > best_eval_score
         )
@@ -407,7 +370,7 @@ def run_answer_curriculum(args) -> None:
             {
                 "event": "eval",
                 "step": step,
-                "level": current_level,
+                "level": evaluated_level,
                 "sampled_train_level": sampled_level,
                 "train_loss": float(loss.item()),
                 "pass_losses": [float(item.item()) for item in pass_losses],
@@ -428,6 +391,7 @@ def run_answer_curriculum(args) -> None:
 
         checkpoint_extra = {
             "current_level": current_level,
+            "evaluated_level": evaluated_level,
             "promotion_history": promotion_history,
             "train_rng_state": train_rng.getstate(),
             "best_eval_score": best_eval_score,

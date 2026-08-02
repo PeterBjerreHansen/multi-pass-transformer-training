@@ -14,6 +14,7 @@ from experiments.common import (
     gradient_norms,
     learning_rate_at_step,
     load_checkpoint_payload,
+    prepare_run_artifacts,
     restore_checkpoint_state,
     runtime_resource_stats,
     resolve_evaluation_checkpoint,
@@ -382,31 +383,40 @@ def test_warmup_cosine_learning_rate_uses_absolute_steps():
     assert all(left >= right for left, right in zip(rates, rates[1:]))
 
 
-def test_restore_folds_legacy_memory_tape_gates_into_output_projections():
-    torch.manual_seed(17)
-    config = MemoryTapeConfig(8, 13, 2, 1, 8, 3)
-    expected_model = MemoryTapeTransformer(config)
-    expected_state = {
-        name: value.detach().clone()
-        for name, value in expected_model.state_dict().items()
-    }
-    legacy_state = {
-        name: value.detach().clone()
-        for name, value in expected_state.items()
-    }
-    for layer, gate in enumerate((0.25, -0.5)):
-        prefix = f"transformer.h.{layer}."
-        projection = prefix + "cross_attn.c_proj.weight"
-        legacy_state[projection].div_(gate)
-        legacy_state[prefix + "memory_gate"] = torch.tensor(gate)
+def test_run_directory_cannot_be_reused_without_resume(tmp_path):
+    run_dir = tmp_path / "run"
+    model = MemoryTapeTransformer(MemoryTapeConfig(8, 13, 1, 1, 8, 3))
+    args = SimpleNamespace(run_dir=str(run_dir), resume_from=None)
+    prepare_run_artifacts(args, model=model, default_root_parts=("test",))
 
-    restored_model = MemoryTapeTransformer(config)
-    restore_checkpoint_state(
-        {"model_state_dict": legacy_state},
-        model=restored_model,
+    with pytest.raises(FileExistsError, match="run directory is not empty"):
+        prepare_run_artifacts(
+            SimpleNamespace(run_dir=str(run_dir), resume_from=None),
+            model=model,
+            default_root_parts=("test",),
+        )
+
+
+def test_resume_preserves_original_run_configuration(tmp_path):
+    run_dir = tmp_path / "run"
+    model = MemoryTapeTransformer(MemoryTapeConfig(8, 13, 1, 1, 8, 3))
+    prepare_run_artifacts(
+        SimpleNamespace(run_dir=str(run_dir), resume_from=None, marker="original"),
+        model=model,
+        default_root_parts=("test",),
     )
-    for name, value in restored_model.state_dict().items():
-        assert torch.equal(value, expected_state[name]), name
+    original_config = (run_dir / "config.json").read_text(encoding="utf-8")
+
+    prepare_run_artifacts(
+        SimpleNamespace(
+            run_dir=str(run_dir),
+            resume_from=str(run_dir),
+            marker="resume",
+        ),
+        model=model,
+        default_root_parts=("test",),
+    )
+    assert (run_dir / "config.json").read_text(encoding="utf-8") == original_config
 
 
 def test_cli_has_only_two_inference_modes_and_no_cache_source():

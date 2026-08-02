@@ -164,17 +164,13 @@ def test_plotting_loaders_follow_current_artifact_schemas(tmp_path):
                 "evaluation_examples": 16,
                 "metrics": {
                     "optimal_path": 0.5,
+                    "path_step_1_accuracy": 0.75,
                     "eval_output_tok_per_s": 25.0,
                 },
             }
         ),
         encoding="utf-8",
     )
-    (drift_dir / "per_position.jsonl").write_text(
-        json.dumps({"position": 0, "count": 16, "token_legality": 0.75}) + "\n",
-        encoding="utf-8",
-    )
-
     diagnostics = {
         "input_run_dir": str(run_dir),
         "task": "shortest_path",
@@ -303,7 +299,7 @@ def test_plotting_loaders_follow_current_artifact_schemas(tmp_path):
 
     drift = load_drift_records(tmp_path)
     assert drift[0]["optimal_path"] == 0.5
-    assert drift[0]["per_position"][0]["token_legality"] == 0.75
+    assert drift[0]["path_step_1_accuracy"] == 0.75
 
     loaded_diagnostics = load_diagnostic_records(tmp_path)
     assert loaded_diagnostics[0][

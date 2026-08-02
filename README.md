@@ -8,7 +8,7 @@ Transformers often struggle with algorithmic state tracking (see, for example, [
 
 ![](figures/bbh_curriculum_fig.png "BBH")
 
-The models learn these tasks by tracking an increasing number of state changes. The permutation task, for example, looks like "[A,B,C,D] swap 1 2 [B,A,C,D]". We predict only the final state and increase the number of swaps once validation accuracy exceeds 98%. For these experiments, the baseline transformer and multi-pass models use the `small` preset: 4 layers, 4 attention heads, and 128 embedding dimensions. The baseline is intentionally depth-constrained, while the multi-pass models can reuse a shifted memory tape across recurrent passes. The baseline's learned number of state changes therefore flattens in a way that multi-pass training alleviates.
+The models learn these tasks by tracking an increasing number of state changes. The permutation task, for example, looks like "[A,B,C,D] swap 1 2 [B,A,C,D]". We predict only the final state and increase the number of swaps once validation accuracy exceeds 95%. For these experiments, the baseline transformer and multi-pass models use the `small` preset: 4 layers, 4 attention heads, and 128 embedding dimensions. The baseline is intentionally depth-constrained, while the multi-pass models can reuse a shifted memory tape across recurrent passes. The baseline's learned number of state changes therefore flattens in a way that multi-pass training alleviates.
 
 ## A Theoretical Motivation
 
@@ -292,19 +292,18 @@ python3 -m experiments.train_trace \
 ```
 
 `shortest_path_main` runs for 200,000 optimizer steps. Its learning rate warms
-linearly to `3e-4` over the first 4,000 steps, then decays by a cosine schedule
-to `3e-5` at step 200,000. The schedule is based on absolute optimizer steps,
+linearly to `5e-4` over the first 4,000 steps, then decays by a cosine schedule
+to `1e-5` at step 200,000. The schedule is based on absolute optimizer steps,
 so checkpoint resumes continue the same curve.
 
 Shortest-path training and held-out evaluation always draw from the same named
-distribution. Evaluation reports valid-edge rate, sequence-legality rate,
-goal-reaching rate, optimal-path accuracy, exact path-plus-EOS accuracy, and
-per-position legality under both `recompute` and `append_recurrent`. It also
-records realized graph connectivity, decision-point, relevant-edge, and
-random-legal-policy baselines. Main-distribution accuracy is also stratified
-into short (5–6 edges), medium (7–8), and long (9–10) paths. Free-generation
-accuracy is reported separately for every transition step; step 1 is the first
-move after the explicitly supplied start node. Graph edges are shuffled and
+distribution. Evaluation reports exact optimal-path-plus-EOS accuracy under
+both `recompute` and `append_recurrent`. It also records realized graph
+connectivity, decision-point, relevant-edge, and random-policy baselines.
+Main-distribution accuracy is stratified into short (5–6 edges), medium (7–8),
+and long (9–10) paths. Free-generation accuracy is reported separately for
+every transition step; step 1 is the first move after the explicitly supplied
+start node. Graph edges are shuffled and
 node labels are independently permuted per example; the generator verifies
 that every serialized graph has exactly one shortest path.
 
@@ -351,6 +350,11 @@ Each training run writes:
 - `best.pt`
 - `latest.pt`
 
+A run directory belongs to one training history. Starting a new run in a
+non-empty directory fails; `--resume-from` continues that history, preserves
+its original `config.json`, and records the resumed command and Git state in
+`metrics.jsonl`.
+
 Run the main experiment matrices with:
 
 ```bash
@@ -360,8 +364,9 @@ bash scripts/trace/run.sh
 
 The folders under `scripts/` follow the two task classes used by the training
 code: `bbh/` for curriculum tasks and `trace/` for autoregressive trace tasks.
-The BBH launcher defaults to all four BBH tasks; the trace launcher defaults to
-the 200,000-step shortest-path main preset and Othello. Select a canonical
+The BBH launcher defaults to all four BBH tasks. The trace launcher defaults to
+the 200,000-step shortest-path main preset with `transformer`, `memory_tape`,
+and `memory_add`. Select another matrix
 matrix with `TASKS`, `ARCHITECTURES`, and `SEEDS`:
 
 ```bash
@@ -413,7 +418,7 @@ python3 -m experiments.eval_trace \
 
 The evaluator is post-training only. Each invocation evaluates one saved
 trace checkpoint under either `recompute` or `append_recurrent`, then writes
-`summary.json` and `per_position.jsonl`.
+`summary.json`.
 
 Standalone memory-use and pass-dynamics diagnostics:
 

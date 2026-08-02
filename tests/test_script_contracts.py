@@ -56,9 +56,15 @@ def test_canonical_training_launchers_do_not_accept_scientific_overrides():
     for launcher in launchers:
         text = launcher.read_text(encoding="utf-8")
         assert "memory_add" in text, f"{launcher} omits memory_add from its default matrix"
-        assert "memory_state" in text, f"{launcher} omits memory_state from its default matrix"
         for variable in prohibited:
             assert variable not in text, f"{launcher} accepts scientific override {variable}"
+
+    trace_text = launchers[1].read_text(encoding="utf-8")
+    assert 'TASKS="${TASKS:-shortest_path}"' in trace_text
+    assert (
+        'ARCHITECTURES="${ARCHITECTURES:-transformer memory_tape memory_add}"'
+        in trace_text
+    )
 
 
 def test_trace_launcher_runs_task_matrix_into_task_first_results(tmp_path):
