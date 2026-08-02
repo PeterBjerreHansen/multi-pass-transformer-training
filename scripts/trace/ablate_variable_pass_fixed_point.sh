@@ -18,6 +18,12 @@ LOGIT_KL_THRESHOLD="${LOGIT_KL_THRESHOLD:-0.001}"
 run_eval() {
   local run_dir="$1" seed="$2"
   for inference_mode in recompute append_recurrent; do
+    local adaptive_eval_name
+    if [[ "${inference_mode}" == "recompute" ]]; then
+      adaptive_eval_name="adaptive_recompute"
+    else
+      adaptive_eval_name="adaptive_prefill"
+    fi
     python -m experiments.eval_trace --input-run-dir "${run_dir}" \
       --output-dir "${run_dir}/drift/${inference_mode}" \
       --inference-mode "${inference_mode}" --eval-pass-mode fixed \
@@ -25,7 +31,7 @@ run_eval() {
       --eval-batches "${FINAL_EVAL_BATCHES}" --token-selection argmax \
       --device "${DEVICE}" --seed "${seed}"
     python -m experiments.eval_trace --input-run-dir "${run_dir}" \
-      --output-dir "${run_dir}/fixed_point/${inference_mode}" \
+      --output-dir "${run_dir}/${adaptive_eval_name}" \
       --inference-mode "${inference_mode}" --eval-pass-mode fixed_point \
       --min-n-pass 2 --max-n-pass 6 \
       --fixed-point-residual-threshold "${RESIDUAL_THRESHOLD}" \

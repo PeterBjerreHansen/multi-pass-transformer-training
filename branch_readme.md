@@ -84,11 +84,18 @@ claims of universal calibration.
 
 Every best checkpoint is evaluated under fixed `K=4` for a matched-compute
 quality comparison and under the common fixed-point rule with a six-pass cap.
-Both `recompute` and `append_recurrent` generation are retained. The adaptive
-evaluation reports teacher-forced mean/max pass count, convergence rate, final
-tape residual, and final logit KL. These are explicitly named
-`teacher_forced_*`; they are not generation-policy statistics. The standard
-offline memory diagnostic is also produced.
+Both `recompute` and `append_recurrent` generation are retained. With
+`recompute`, the adaptive rule runs whenever the full context is recomputed;
+its results are stored under `adaptive_recompute`. With `append_recurrent`, the
+adaptive rule applies to the initial prompt prefill, after which every appended
+token receives the standard single recurrent update; its results are therefore
+stored under `adaptive_prefill`. These are two applications of the same
+fixed-point pass policy, not additional generation modes.
+
+The adaptive evaluations report teacher-forced mean/max pass count,
+convergence rate, final tape residual, and final logit KL. These are explicitly
+named `teacher_forced_*`; they are not generation-policy statistics. The
+standard offline memory diagnostic is also produced.
 
 For a short sanity run use
 `scripts/trace/pilot_variable_pass_fixed_point.sh`. Full branch validation is
