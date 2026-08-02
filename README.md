@@ -26,9 +26,9 @@ But here is an idea: what if we run multiple sequential passes over the same tea
 
 ### Setup
 
-The goal is not merely to cache attention keys and values. The goal is to train the model to read and write a memory state for each token, and then test whether those memories can be reused during generation. There are many possible memory designs. This project focuses on one memory vector per token per pass.
+The goal is to train the model to read and write a memory state for each token, and then test whether those memories can be reused during generation. There are many possible memory designs. This project focuses on one memory vector per token per pass.
 
-For a token sequence $T = [t_0, \ldots, t_{n-1}]$, let $M^{(k)}$ be the length-$n$ memory tape written after pass $k$. The all-zero tape is the initial state $M^{(0)} = 0$, and the multi-pass recurrence is:
+For a token sequence $T = [t_0, \ldots, t_{n-1}]$, let $M^{(k)}$ be the length $n$ memory tape written after pass $k$. The all-zero tape is the initial state $M^{(0)} = 0$, and the multi-pass recurrence is:
 
 ```math
 (L^{(k)}, M^{(k)})
@@ -36,7 +36,7 @@ For a token sequence $T = [t_0, \ldots, t_{n-1}]$, let $M^{(k)}$ be the length-$
 \qquad k = 1, \ldots, K
 ```
 
-Here $L^{(k)}$ is the pass-$k$ logit tensor. $F_\theta$ is schematic: an architecture may write memory from any internal representation, not necessarily its final hidden state. The causal constraint is that position $t$ may read only memories written at earlier positions. In a parallel batch, that is implemented by a one-position shift:
+Here $L^{(k)}$ is the pass $k$ logit tensor. $F_\theta$ is schematic: an architecture may write memory from any internal representation, not necessarily its final hidden state. The causal constraint is that position $t$ may read only memories written at earlier positions. In a parallel batch, that is implemented by a one-position shift:
 
 ```math
 \mathrm{Shift}(M)[0] = 0
@@ -49,7 +49,7 @@ That keeps the training computation parallel over token positions while giving e
 
 ## Multi-pass Training
 
-Multi-pass training runs the same teacher-forced sequence through the model several times. The recurrence is over the pass dimension, not over token time. That distinction is the trick; within each pass, all token positions are still computed in parallel, as in an ordinary transformer.
+Multi-pass training runs the same teacher-forced sequence through the model several times. Crucially, recurrence is over the pass dimension, not over token time; within each forward pass, all token positions are still computed in parallel, as in the forward pass of an ordinary transformer.
 
 Perhaps the easiest way to illustrate this is to imagine using a transformed last-layer hidden state as the memory. That memory can be fed back into the next pass in different ways, for example by concatenating it to the input stream or by reading it through a separate causal cross-attention path.
 
