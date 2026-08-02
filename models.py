@@ -22,8 +22,17 @@ class PassOutput:
 
 
 @dataclass(frozen=True)
+class PassHaltingStats:
+    pass_counts: torch.Tensor
+    converged: torch.Tensor
+    relative_linf_residual: torch.Tensor
+    logit_kl: torch.Tensor
+
+
+@dataclass(frozen=True)
 class MultiPassOutput:
     passes: tuple[PassOutput, ...]
+    halting: PassHaltingStats | None = None
 
     def __post_init__(self) -> None:
         if not self.passes:
@@ -92,11 +101,25 @@ class TransformerConfig:
 @dataclass
 class MultiPassConfig(TransformerConfig):
     n_pass: int = 4
+    eval_pass_mode: str = "fixed"
+    min_n_pass: int = 2
+    fixed_point_residual_threshold: float = 0.1
+    fixed_point_kl_threshold: float = 1e-3
 
     def __post_init__(self) -> None:
         super().__post_init__()
         if self.n_pass < 2:
             raise ValueError(f"n_pass ({self.n_pass}) must be at least 2 for multi-pass models")
+        if self.eval_pass_mode not in {"fixed", "fixed_point"}:
+            raise ValueError("eval_pass_mode must be 'fixed' or 'fixed_point'")
+        if not 2 <= self.min_n_pass <= self.n_pass:
+            raise ValueError("min_n_pass must satisfy 2 <= min_n_pass <= n_pass")
+        for name, value in (
+            ("fixed_point_residual_threshold", self.fixed_point_residual_threshold),
+            ("fixed_point_kl_threshold", self.fixed_point_kl_threshold),
+        ):
+            if not math.isfinite(value) or value < 0:
+                raise ValueError(f"{name} must be finite and non-negative")
 
 
 @dataclass
@@ -281,6 +304,44 @@ def sample_next_token(
     return torch.multinomial(probabilities, num_samples=1)
 
 
+def relative_linf_residual_per_example(
+    previous: torch.Tensor,
+    current: torch.Tensor,
+    valid_positions: torch.Tensor,
+) -> torch.Tensor:
+    """Return the relative L-infinity state residual for each batch example."""
+    if previous.shape != current.shape or current.ndim != 3:
+        raise ValueError("states must have matching [B, T, D] shapes")
+    if valid_positions.shape != current.shape[:2]:
+        raise ValueError("valid_positions must have shape [B, T]")
+    valid = valid_positions.to(device=current.device, dtype=torch.bool).unsqueeze(-1)
+    prev = previous.detach().float().masked_fill(~valid, 0.0)
+    curr = current.detach().float().masked_fill(~valid, 0.0)
+    numerator = (curr - prev).abs().amax(dim=(1, 2))
+    denominator = curr.abs().amax(dim=(1, 2))
+    return numerator / (denominator + 1e-8)
+
+
+def logit_kl_per_example(
+    previous: torch.Tensor,
+    current: torch.Tensor,
+    valid_positions: torch.Tensor,
+) -> torch.Tensor:
+    """Return mean tokenwise KL(previous || current) for each batch example."""
+    if previous.shape != current.shape or current.ndim != 3:
+        raise ValueError("logits must have matching [B, T, V] shapes")
+    if valid_positions.shape != current.shape[:2]:
+        raise ValueError("valid_positions must have shape [B, T]")
+    valid = valid_positions.to(device=current.device, dtype=torch.bool)
+    if not valid.any(dim=1).all():
+        raise ValueError("each example must contain at least one valid position")
+    prev_log = F.log_softmax(previous.detach().float(), dim=-1)
+    curr_log = F.log_softmax(current.detach().float(), dim=-1)
+    token_kl = (prev_log.exp() * (prev_log - curr_log)).sum(dim=-1)
+    value = (token_kl * valid).sum(dim=1) / valid.sum(dim=1)
+    return value.clamp_min(0.0)
+
+
 # -----------------------------------------------------------------------------
 # Causal transformer baseline
 # -----------------------------------------------------------------------------
@@ -452,20 +513,173 @@ class MultiPassTransformer(nn.Module):
         memory = self.write_memory(hidden)
         return PassOutput(logits=logits, hidden_states=hidden, memory_states=memory)
 
-    def forward(self, idx: torch.Tensor, n_pass: int | None = None) -> MultiPassOutput:
-        effective_n_pass = self.config.n_pass if n_pass is None else n_pass
-        if not isinstance(effective_n_pass, int) or isinstance(effective_n_pass, bool) or effective_n_pass < 2:
-            raise ValueError("n_pass must be an integer of at least 2")
-        token_stream = self.embed_tokens(idx)
+    def _fixed_pass_forward(
+        self,
+        token_stream: torch.Tensor,
+        *,
+        n_pass: int,
+    ) -> MultiPassOutput:
         previous_memory = torch.zeros_like(token_stream)
         passes: list[PassOutput] = []
-        for _ in range(effective_n_pass):
+        for _ in range(n_pass):
             output = self.forward_pass(token_stream, previous_memory)
             passes.append(output)
             previous_memory = output.memory_states
             if previous_memory is None:
                 raise RuntimeError("multi-pass model failed to emit memory states")
         return MultiPassOutput(tuple(passes))
+
+    def _fixed_point_forward(
+        self,
+        token_stream: torch.Tensor,
+        *,
+        max_n_pass: int,
+        min_n_pass: int,
+        residual_threshold: float,
+        kl_threshold: float,
+        valid_positions: torch.Tensor,
+    ) -> MultiPassOutput:
+        batch_size = token_stream.shape[0]
+        previous_memory = torch.zeros_like(token_stream)
+        previous_logits: torch.Tensor | None = None
+        previous_hidden: torch.Tensor | None = None
+        active = torch.ones(batch_size, dtype=torch.bool, device=token_stream.device)
+        pass_counts = torch.zeros(batch_size, dtype=torch.long, device=token_stream.device)
+        converged = torch.zeros_like(active)
+        final_residual = torch.full(
+            (batch_size,), float("inf"), device=token_stream.device, dtype=torch.float32
+        )
+        final_kl = torch.full_like(final_residual, float("inf"))
+        passes: list[PassOutput] = []
+
+        for pass_index in range(1, max_n_pass + 1):
+            active_indices = active.nonzero(as_tuple=False).flatten()
+            active_memory = previous_memory.index_select(0, active_indices)
+            raw = self.forward_pass(
+                token_stream.index_select(0, active_indices),
+                active_memory,
+            )
+            if raw.memory_states is None:
+                raise RuntimeError("multi-pass model failed to emit memory states")
+
+            pass_counts = pass_counts + active.to(dtype=torch.long)
+            if previous_logits is None or previous_hidden is None:
+                current_memory = raw.memory_states
+                current_logits = raw.logits
+                current_hidden = raw.hidden_states
+            else:
+                current_memory = previous_memory.index_copy(
+                    0, active_indices, raw.memory_states
+                )
+                current_logits = previous_logits.index_copy(0, active_indices, raw.logits)
+                current_hidden = previous_hidden.index_copy(
+                    0, active_indices, raw.hidden_states
+                )
+
+                active_valid = valid_positions.index_select(0, active_indices)
+                residual = relative_linf_residual_per_example(
+                    active_memory,
+                    raw.memory_states,
+                    active_valid,
+                )
+                logit_kl = logit_kl_per_example(
+                    previous_logits.index_select(0, active_indices),
+                    raw.logits,
+                    active_valid,
+                )
+                final_residual = final_residual.index_copy(0, active_indices, residual)
+                final_kl = final_kl.index_copy(0, active_indices, logit_kl)
+
+                if pass_index >= min_n_pass:
+                    newly_converged = (residual <= residual_threshold) & (
+                        logit_kl <= kl_threshold
+                    )
+                    converged_indices = active_indices[newly_converged]
+                    converged = converged.index_fill(0, converged_indices, True)
+                    active = active.index_fill(0, converged_indices, False)
+
+            passes.append(
+                PassOutput(
+                    logits=current_logits,
+                    hidden_states=current_hidden,
+                    memory_states=current_memory,
+                )
+            )
+            previous_memory = current_memory
+            previous_logits = current_logits
+            previous_hidden = current_hidden
+            if not bool(active.any().item()):
+                break
+
+        return MultiPassOutput(
+            tuple(passes),
+            halting=PassHaltingStats(
+                pass_counts=pass_counts.detach(),
+                converged=converged.detach(),
+                relative_linf_residual=final_residual.detach(),
+                logit_kl=final_kl.detach(),
+            ),
+        )
+
+    def forward(
+        self,
+        idx: torch.Tensor,
+        *,
+        n_pass: int | None = None,
+        pass_mode: str | None = None,
+        min_n_pass: int | None = None,
+        residual_threshold: float | None = None,
+        kl_threshold: float | None = None,
+        valid_positions: torch.Tensor | None = None,
+    ) -> MultiPassOutput:
+        effective_n_pass = self.config.n_pass if n_pass is None else n_pass
+        if (
+            not isinstance(effective_n_pass, int)
+            or isinstance(effective_n_pass, bool)
+            or effective_n_pass < 2
+        ):
+            raise ValueError("n_pass must be an integer of at least 2")
+        effective_mode = self.config.eval_pass_mode if pass_mode is None else pass_mode
+        if effective_mode not in {"fixed", "fixed_point"}:
+            raise ValueError("pass_mode must be 'fixed' or 'fixed_point'")
+
+        token_stream = self.embed_tokens(idx)
+        if effective_mode == "fixed":
+            return self._fixed_pass_forward(token_stream, n_pass=effective_n_pass)
+
+        effective_min = self.config.min_n_pass if min_n_pass is None else min_n_pass
+        if not 2 <= effective_min <= effective_n_pass:
+            raise ValueError("min_n_pass must satisfy 2 <= min_n_pass <= n_pass")
+        effective_residual_threshold = (
+            self.config.fixed_point_residual_threshold
+            if residual_threshold is None
+            else residual_threshold
+        )
+        effective_kl_threshold = (
+            self.config.fixed_point_kl_threshold if kl_threshold is None else kl_threshold
+        )
+        for name, value in (
+            ("residual_threshold", effective_residual_threshold),
+            ("kl_threshold", effective_kl_threshold),
+        ):
+            if not math.isfinite(value) or value < 0:
+                raise ValueError(f"{name} must be finite and non-negative")
+        if valid_positions is None:
+            valid_positions = torch.ones(
+                idx.shape,
+                dtype=torch.bool,
+                device=idx.device,
+            )
+        elif valid_positions.shape != idx.shape:
+            raise ValueError("valid_positions must have the same [B, T] shape as idx")
+        return self._fixed_point_forward(
+            token_stream,
+            max_n_pass=effective_n_pass,
+            min_n_pass=effective_min,
+            residual_threshold=effective_residual_threshold,
+            kl_threshold=effective_kl_threshold,
+            valid_positions=valid_positions,
+        )
 
     @staticmethod
     def calc_loss(logits: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:

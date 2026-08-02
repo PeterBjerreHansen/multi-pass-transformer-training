@@ -7,6 +7,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from experiments.common import (
+    EVAL_PASS_MODES,
     EVALUATION_CHECKPOINTS,
     effective_inference_mode,
     evaluate_prebuilt_batches,
@@ -47,6 +48,11 @@ def parse_args(argv: list[str] | None = None):
     parser.add_argument("--eval-batches", type=int, default=None)
     parser.add_argument("--token-selection", choices=["sample", "argmax"], default="argmax")
     parser.add_argument("--inference-mode", choices=["recompute", "append_recurrent"], required=True)
+    parser.add_argument("--eval-pass-mode", choices=EVAL_PASS_MODES, default=None)
+    parser.add_argument("--max-n-pass", type=int, default=None)
+    parser.add_argument("--min-n-pass", type=int, default=None)
+    parser.add_argument("--fixed-point-residual-threshold", type=float, default=None)
+    parser.add_argument("--fixed-point-kl-threshold", type=float, default=None)
     parser.add_argument("--seed", type=int, default=1337)
     return parser.parse_args(argv)
 
@@ -54,12 +60,35 @@ def parse_args(argv: list[str] | None = None):
 def _load_eval_args(cli_args) -> tuple[SimpleNamespace, Path]:
     input_dir = Path(cli_args.input_run_dir).resolve()
     saved = saved_args_from_run(input_dir)
+    legacy_range = saved.get("train_pass_range")
+    if "max_n_pass" not in saved:
+        saved["max_n_pass"] = int(
+            legacy_range[1] if legacy_range is not None else saved.get("n_pass", 4)
+        )
+    if "min_n_pass" not in saved:
+        saved["min_n_pass"] = int(legacy_range[0]) if legacy_range is not None else 2
+    if "train_pass_mode" not in saved:
+        saved["train_pass_mode"] = "uniform" if legacy_range is not None else "fixed"
+    for legacy_name in ("n_pass", "train_pass_range", "sampled_tail_loss_weights"):
+        saved.pop(legacy_name, None)
     if cli_args.device is not None:
         saved["device"] = cli_args.device
     if cli_args.eval_batches is not None:
         saved["eval_batches"] = cli_args.eval_batches
     saved["token_selection"] = cli_args.token_selection
     saved["inference_mode"] = cli_args.inference_mode
+    for name in (
+        "eval_pass_mode",
+        "max_n_pass",
+        "min_n_pass",
+        "fixed_point_residual_threshold",
+        "fixed_point_kl_threshold",
+    ):
+        value = getattr(cli_args, name)
+        if value is not None:
+            saved[name] = value
+    if cli_args.max_n_pass is not None:
+        saved["pass_loss_weights"] = [0.0] * (cli_args.max_n_pass - 1) + [1.0]
     saved["seed"] = cli_args.seed
     saved["run_dir"] = str(input_dir)
     saved["resume_from"] = str(input_dir)
@@ -74,7 +103,10 @@ def _load_eval_args(cli_args) -> tuple[SimpleNamespace, Path]:
 def _default_output_dir(cli_args, args, input_dir: Path) -> Path:
     if cli_args.output_dir:
         return Path(cli_args.output_dir).resolve()
-    name = f"{args.architecture}_{cli_args.inference_mode}_{cli_args.token_selection}"
+    name = (
+        f"{args.architecture}_{args.eval_pass_mode}_k{args.max_n_pass}_"
+        f"{cli_args.inference_mode}_{cli_args.token_selection}"
+    )
     return Path("results", "eval", args.task, name, input_dir.name).resolve()
 
 
@@ -117,6 +149,11 @@ def evaluate_run(cli_args) -> Path:
         "architecture": args.architecture,
         "inference_mode": cli_args.inference_mode,
         "effective_inference_mode": effective_inference_mode(args, cli_args.inference_mode),
+        "eval_pass_mode": args.eval_pass_mode,
+        "min_n_pass": args.min_n_pass,
+        "max_n_pass": args.max_n_pass,
+        "fixed_point_residual_threshold": args.fixed_point_residual_threshold,
+        "fixed_point_kl_threshold": args.fixed_point_kl_threshold,
         "token_selection": args.token_selection,
         "block_size": block_size,
         "vocab_size": len(vocab),

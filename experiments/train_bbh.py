@@ -8,6 +8,9 @@ from typing import Callable
 
 from tasks.bbh import permutation, pointer_chasing, state_machine, tracking
 from experiments.common import (
+    EVAL_PASS_MODES,
+    TRAIN_PASS_MODES,
+    TrainingPassController,
     append_jsonl,
     build_model_and_optimizer,
     clip_gradients,
@@ -28,8 +31,6 @@ from experiments.common import (
     restore_checkpoint_state,
     runtime_resource_stats,
     save_best_checkpoint,
-    sample_train_pass_depth,
-    sampled_pass_loss_weights,
     save_latest_checkpoint,
     set_seed,
     stable_seed,
@@ -132,10 +133,13 @@ def parse_args(argv: list[str] | None = None):
     _add_override(parser, "--n-layer", type=int)
     _add_override(parser, "--n-head", type=int)
     _add_override(parser, "--n-embd", type=int)
-    _add_override(parser, "--n-pass", type=int)
+    _add_override(parser, "--max-n-pass", type=int)
+    _add_override(parser, "--min-n-pass", type=int)
+    _add_override(parser, "--train-pass-mode", choices=TRAIN_PASS_MODES)
+    _add_override(parser, "--eval-pass-mode", choices=EVAL_PASS_MODES)
+    _add_override(parser, "--fixed-point-residual-threshold", type=float)
+    _add_override(parser, "--fixed-point-kl-threshold", type=float)
     _add_override(parser, "--pass-loss-weights", type=float, nargs="*")
-    _add_override(parser, "--train-pass-range", type=int, nargs=2, metavar=("MIN", "MAX"))
-    _add_override(parser, "--sampled-tail-loss-weights", type=float, nargs=2, metavar=("EARLIER", "FINAL"))
     _add_override(
         parser,
         "--num-nodes",
@@ -266,8 +270,14 @@ def run_answer_curriculum(args) -> None:
     )
 
     train_rng = random.Random(stable_seed(args.seed, "bbh", args.task, "train"))
-    depth_rng = random.Random(stable_seed(args.seed, "bbh", args.task, "pass_depth"))
-    sampled_pass_histogram: dict[int, int] = {}
+    pass_controller = (
+        TrainingPassController(
+            args,
+            seed=stable_seed(args.seed, "bbh", args.task, "pass_schedule"),
+        )
+        if args.architecture != "transformer"
+        else None
+    )
     current_level = args.curriculum_start_level
     promotion_history: list[tuple[int, int, float]] = []
     best_eval_score: tuple[int, float, float] | None = None
@@ -284,11 +294,8 @@ def run_answer_curriculum(args) -> None:
         if "lr" in explicit_optimization_overrides:
             for parameter_group in optimizer.param_groups:
                 parameter_group["lr"] = explicit_optimization_overrides["lr"]
-        depth_rng.setstate(extra["depth_rng_state"])
-        sampled_pass_histogram = {
-            int(key): int(value)
-            for key, value in extra["sampled_pass_histogram"].items()
-        }
+        if pass_controller is not None:
+            pass_controller.load_state_dict(extra["pass_controller_state"])
 
     print(f"device: {args.device}")
     print(f"task: {args.task}")
@@ -298,8 +305,21 @@ def run_answer_curriculum(args) -> None:
     print(f"parameters: {model.get_num_params():,}")
     if args.architecture != "transformer":
         normalized = [weight / sum(args.pass_loss_weights) for weight in args.pass_loss_weights]
-        print(f"n_pass: {args.n_pass}")
-        print(f"pass_loss_weights_normalized: {normalized}")
+        print(
+            f"pass_schedule: train={args.train_pass_mode} eval={args.eval_pass_mode} | "
+            f"min={args.min_n_pass} max={args.max_n_pass}"
+        )
+        print(
+            f"pass_loss_weights_normalized: {normalized}"
+            if args.train_pass_mode == "fixed"
+            else "pass_loss_weights_normalized: final_only"
+        )
+        if "fixed_point" in {args.train_pass_mode, args.eval_pass_mode}:
+            print(
+                "fixed_point_thresholds: "
+                f"residual={args.fixed_point_residual_threshold:g} "
+                f"logit_kl={args.fixed_point_kl_threshold:g}"
+            )
     append_jsonl(
         artifacts.metrics_path,
         {
@@ -330,17 +350,12 @@ def run_answer_curriculum(args) -> None:
             rng=train_rng,
         )
         optimizer.zero_grad(set_to_none=True)
-        sampled_n_pass = sample_train_pass_depth(args, depth_rng)
-        dynamic_weights = (
-            sampled_pass_loss_weights(sampled_n_pass, args.sampled_tail_loss_weights)
-            if sampled_n_pass is not None
-            else None
-        )
         loss, _output, pass_losses = forward_and_loss(
-            model, batch, args, n_pass=sampled_n_pass, loss_weights=dynamic_weights
+            model,
+            batch,
+            args,
+            pass_controller=pass_controller,
         )
-        if sampled_n_pass is not None:
-            sampled_pass_histogram[sampled_n_pass] = sampled_pass_histogram.get(sampled_n_pass, 0) + 1
         loss.backward()
         update_gradient_norm_window(gradient_norm_window, gradient_norms(model))
         clip_gradients(model, args.max_grad_norm)
@@ -357,8 +372,12 @@ def run_answer_curriculum(args) -> None:
         fields = [f"loss {loss.item():.4f}", f"tok/s {tok_per_s:.1f}", f"level {current_level}"]
         gradient_summary = summarize_gradient_norm_window(gradient_norm_window)
         fields.append(format_gradient_norms(gradient_summary))
+        pass_summary = pass_controller.summary() if pass_controller is not None else None
         if args.architecture != "transformer":
             fields.append(f"pass_losses {format_pass_losses(pass_losses)}")
+            fields.append(f"mean_passes {pass_summary['mean_n_pass']:.2f}")
+            if args.train_pass_mode == "fixed_point":
+                fields.append(f"converged {pass_summary['converged_fraction']:.3f}")
         print(format_checkpoint_line(f"step {step}", fields))
 
         evaluated_level = current_level
@@ -400,9 +419,7 @@ def run_answer_curriculum(args) -> None:
                 "is_best_checkpoint": is_best_checkpoint,
                 "best_eval_score": best_eval_score,
                 "best_eval_step": best_eval_step,
-                "sampled_n_pass": sampled_n_pass,
-                "sampled_pass_histogram": sampled_pass_histogram,
-                "effective_pass_loss_weights": dynamic_weights or args.pass_loss_weights,
+                "train_pass_schedule": pass_summary,
             },
         )
 
@@ -416,8 +433,9 @@ def run_answer_curriculum(args) -> None:
             "evaluated_level": evaluated_level,
             "promotion_history": promotion_history,
             "train_rng_state": train_rng.getstate(),
-            "depth_rng_state": depth_rng.getstate(),
-            "sampled_pass_histogram": sampled_pass_histogram,
+            "pass_controller_state": (
+                pass_controller.state_dict() if pass_controller is not None else None
+            ),
             "best_eval_score": best_eval_score,
             "best_eval_step": best_eval_step,
         }

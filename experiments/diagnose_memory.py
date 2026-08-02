@@ -34,6 +34,7 @@ from experiments.train_trace import (
     validate_task_args as validate_trace_task_args,
 )
 from model_factory import is_multi_pass_architecture
+from models import relative_linf_residual_per_example
 
 
 def parse_args(argv: list[str] | None = None):
@@ -104,6 +105,14 @@ def _nll(model, logits: torch.Tensor, targets: torch.Tensor) -> float:
     return float(model.calc_loss(logits, targets).item())
 
 
+def _valid_positions(batch) -> torch.Tensor:
+    valid_lengths = batch.prompt_lengths + batch.output_lengths - 1
+    return (
+        torch.arange(batch.idx.shape[1], device=batch.idx.device)[None, :]
+        < valid_lengths[:, None]
+    )
+
+
 def _memory_stats(memory: torch.Tensor) -> dict[str, float]:
     flat = memory.detach().float().reshape(-1, memory.shape[-1])
     return {
@@ -150,12 +159,11 @@ def _relative_linf_residual(
     if valid_positions.shape != current.shape[:2]:
         raise ValueError("valid_positions must have shape [B, T]")
 
-    valid = valid_positions.detach().to(device=current.device, dtype=torch.bool).unsqueeze(-1)
-    prev = previous.detach().float().masked_fill(~valid, 0.0)
-    curr = current.detach().float().masked_fill(~valid, 0.0)
-    numerator = (curr - prev).abs().amax(dim=(1, 2))
-    denominator = curr.abs().amax(dim=(1, 2))
-    per_example = numerator / (denominator + 1e-8)
+    per_example = relative_linf_residual_per_example(
+        previous,
+        current,
+        valid_positions,
+    )
     return {
         "mean": float(per_example.mean().item()),
         "max": float(per_example.max().item()),
@@ -173,7 +181,7 @@ def _logit_kl(previous: torch.Tensor, current: torch.Tensor) -> float:
 
 @torch.no_grad()
 def memory_interventions(model, batch, *, seed: int) -> dict:
-    output = model(batch.idx)
+    output = model(batch.idx, valid_positions=_valid_positions(batch))
     if len(output.passes) < 2:
         raise ValueError("memory interventions require at least two passes")
     previous_memory = output.passes[-2].memory_states
@@ -227,12 +235,8 @@ def memory_interventions(model, batch, *, seed: int) -> dict:
 
 @torch.no_grad()
 def pass_dynamics(model, batch, *, extra_passes: int) -> dict:
-    output = model(batch.idx)
-    valid_lengths = batch.prompt_lengths + batch.output_lengths - 1
-    valid_positions = (
-        torch.arange(batch.idx.shape[1], device=batch.idx.device)[None, :]
-        < valid_lengths[:, None]
-    )
+    valid_positions = _valid_positions(batch)
+    output = model(batch.idx, valid_positions=valid_positions)
     per_pass = []
     for index, item in enumerate(output.passes, start=1):
         if item.memory_states is None:
@@ -365,7 +369,7 @@ def teacher_forced_schedule_gap(model, batch, *, horizon: int) -> dict:
     if horizon < 1:
         raise ValueError("horizon must be positive")
 
-    reference = model(batch.idx)
+    reference = model(batch.idx, valid_positions=_valid_positions(batch))
     entries_by_position: list[list[dict[str, float]]] = [[] for _ in range(horizon)]
 
     for row in range(batch.idx.shape[0]):

@@ -100,7 +100,7 @@ def _config_context(run_dir: Path, *, root: Path | None = None) -> dict:
         "preset": args.get("preset"),
         "seed": args.get("seed"),
         "device": args.get("device"),
-        "n_pass": args.get("n_pass"),
+        "n_pass": args.get("max_n_pass", args.get("n_pass")),
         "inference_mode": args.get("inference_mode"),
         "max_level": args.get("max_level"),
         "curriculum_threshold": args.get("curriculum_threshold"),

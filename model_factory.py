@@ -29,6 +29,13 @@ def build_model(args, vocab_size: int, block_size: int, device: str):
         n_head=args.n_head,
         n_embd=args.n_embd,
     )
+    multi_pass = dict(
+        n_pass=args.max_n_pass,
+        eval_pass_mode=args.eval_pass_mode,
+        min_n_pass=args.min_n_pass,
+        fixed_point_residual_threshold=args.fixed_point_residual_threshold,
+        fixed_point_kl_threshold=args.fixed_point_kl_threshold,
+    )
 
     if args.architecture == "transformer":
         model = CausalTransformer(TransformerConfig(**common))
@@ -36,14 +43,14 @@ def build_model(args, vocab_size: int, block_size: int, device: str):
         model = MemoryTapeTransformer(
             MemoryTapeConfig(
                 **common,
-                n_pass=args.n_pass,
+                **multi_pass,
             )
         )
     elif args.architecture == "memory_add":
         model = MemoryAddTransformer(
             MultiPassConfig(
                 **common,
-                n_pass=args.n_pass,
+                **multi_pass,
             )
         )
     else:

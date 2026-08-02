@@ -15,6 +15,8 @@ from models import (
     MemoryTapeConfig,
     MemoryTapeTransformer,
     MultiPassConfig,
+    MultiPassTransformer,
+    PassOutput,
     TransformerConfig,
     normalize_pass_weights,
     sample_next_token,
@@ -34,6 +36,23 @@ def tiny_memory_model(*, block_size: int = 12, n_pass: int = 3) -> MemoryTapeTra
             n_pass=n_pass,
         )
     )
+
+
+class ToyFixedPointModel(MultiPassTransformer):
+    block_cls = MemoryBlock
+
+    def embed_tokens(self, idx: torch.Tensor) -> torch.Tensor:
+        return idx.float().unsqueeze(-1)
+
+    def forward_pass(
+        self,
+        token_stream: torch.Tensor,
+        previous_memory: torch.Tensor,
+    ) -> PassOutput:
+        changes = token_stream > 0
+        memory = torch.where(changes, previous_memory + 1.0, torch.zeros_like(previous_memory))
+        logits = torch.cat((memory, torch.zeros_like(memory)), dim=-1)
+        return PassOutput(logits=logits, hidden_states=memory, memory_states=memory)
 
 
 def test_shift_right_is_exact():
@@ -141,6 +160,43 @@ def test_forward_n_pass_override_does_not_mutate_config():
     assert len(model(tokens).passes) == 4
     with pytest.raises(ValueError, match="at least 2"):
         model(tokens, n_pass=1)
+
+
+def test_fixed_point_forward_halts_per_example_and_requires_both_thresholds():
+    model = ToyFixedPointModel(MultiPassConfig(2, 2, 1, 1, 1, n_pass=5))
+    tokens = torch.tensor([[0, 0], [1, 1]])
+    valid = torch.ones_like(tokens, dtype=torch.bool)
+
+    output = model(
+        tokens,
+        pass_mode="fixed_point",
+        min_n_pass=2,
+        n_pass=5,
+        residual_threshold=0.4,
+        kl_threshold=10.0,
+        valid_positions=valid,
+    )
+    assert output.halting is not None
+    assert output.halting.pass_counts.tolist() == [2, 3]
+    assert output.halting.converged.tolist() == [True, True]
+    assert len(output.passes) == 3
+    assert torch.equal(
+        output.passes[1].memory_states[0],
+        output.passes[2].memory_states[0],
+    )
+
+    kl_blocked = model(
+        tokens,
+        pass_mode="fixed_point",
+        min_n_pass=2,
+        n_pass=5,
+        residual_threshold=1.0,
+        kl_threshold=0.0,
+        valid_positions=valid,
+    )
+    assert kl_blocked.halting is not None
+    assert kl_blocked.halting.pass_counts.tolist() == [2, 5]
+    assert kl_blocked.halting.converged.tolist() == [True, False]
 
 
 def test_memory_tape_is_causal_in_tokens_and_emitted_memory():
@@ -319,7 +375,11 @@ def test_model_factory_constructs_supported_architectures():
         n_layer=1,
         n_head=1,
         n_embd=8,
-        n_pass=3,
+        max_n_pass=3,
+        min_n_pass=2,
+        eval_pass_mode="fixed",
+        fixed_point_residual_threshold=0.1,
+        fixed_point_kl_threshold=1e-3,
         pass_loss_weights=[0, 0, 1],
     )
     expected = {
@@ -339,7 +399,11 @@ def test_canonical_memory_models_have_no_gate_parameters(architecture):
         n_layer=2,
         n_head=1,
         n_embd=8,
-        n_pass=3,
+        max_n_pass=3,
+        min_n_pass=2,
+        eval_pass_mode="fixed",
+        fixed_point_residual_threshold=0.1,
+        fixed_point_kl_threshold=1e-3,
     )
     model = build_model(args, 17, 8, "cpu")
     assert not any("gate" in name for name, _parameter in model.named_parameters())

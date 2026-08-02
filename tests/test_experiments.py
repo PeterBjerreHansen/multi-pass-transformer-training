@@ -9,6 +9,7 @@ import torch
 
 from experiments.common import (
     RunArtifacts,
+    TrainingPassController,
     clip_gradients,
     evaluate_prebuilt_batches,
     gradient_norms,
@@ -18,9 +19,8 @@ from experiments.common import (
     restore_checkpoint_state,
     runtime_resource_stats,
     resolve_evaluation_checkpoint,
-    sample_train_pass_depth,
-    sampled_pass_loss_weights,
     save_latest_checkpoint,
+    validate_model_args,
 )
 from experiments.summarize_ablation import infer_quality_metric, recommend
 from experiments.diagnose_memory import (
@@ -55,6 +55,12 @@ def _args() -> SimpleNamespace:
         inference_mode="recompute",
         token_selection="sample",
         pass_loss_weights=[0, 0, 1],
+        max_n_pass=3,
+        min_n_pass=2,
+        train_pass_mode="fixed",
+        eval_pass_mode="fixed",
+        fixed_point_residual_threshold=0.1,
+        fixed_point_kl_threshold=1e-3,
         seed=17,
         device="cpu",
         batch_size=2,
@@ -543,7 +549,12 @@ def test_runtime_resource_stats_reports_peak_rss():
 def test_main_bbh_preset_contract_is_frozen():
     common = {
         "model_size": "small",
-        "n_pass": 4,
+        "max_n_pass": 4,
+        "min_n_pass": 2,
+        "train_pass_mode": "fixed",
+        "eval_pass_mode": "fixed",
+        "fixed_point_residual_threshold": 0.1,
+        "fixed_point_kl_threshold": 1e-3,
         "pass_loss_weights": [0.0, 0.0, 1.0, 1.0],
         "batch_size": 64,
         "train_steps": 50_000,
@@ -592,7 +603,12 @@ def test_main_bbh_preset_contract_is_frozen():
 def test_main_trace_preset_contract_is_frozen():
     common = {
         "model_size": "small",
-        "n_pass": 4,
+        "max_n_pass": 4,
+        "min_n_pass": 2,
+        "train_pass_mode": "fixed",
+        "eval_pass_mode": "fixed",
+        "fixed_point_residual_threshold": 0.1,
+        "fixed_point_kl_threshold": 1e-3,
         "pass_loss_weights": [0.0, 0.0, 1.0, 1.0],
         "max_grad_norm": 5.0,
         "weight_decay": 0.0,
@@ -662,15 +678,24 @@ def test_ablation_recommendation_accepts_noninferior_efficiency_win():
     assert result["recommend_merge"]
 
 
-def test_sampled_pass_depth_and_tail_weights_are_deterministic():
-    args = SimpleNamespace(train_pass_range=[2, 6])
-    first_rng = random.Random(91)
-    second_rng = random.Random(91)
-    first = [sample_train_pass_depth(args, first_rng) for _ in range(20)]
-    second = [sample_train_pass_depth(args, second_rng) for _ in range(20)]
-    assert first == second
-    assert set(first) <= {2, 3, 4, 5, 6}
-    assert sampled_pass_loss_weights(5, [0.3, 0.7]) == [0.0, 0.0, 0.0, 0.3, 0.7]
+def test_uniform_pass_controller_is_deterministic_and_checkpointable():
+    args = SimpleNamespace(
+        train_pass_mode="uniform",
+        min_n_pass=2,
+        max_n_pass=6,
+        fixed_point_residual_threshold=0.1,
+        fixed_point_kl_threshold=1e-3,
+    )
+    first = TrainingPassController(args, seed=91)
+    second = TrainingPassController(args, seed=91)
+    first_depths = [first.forward_kwargs(args, None)["n_pass"] for _ in range(10)]
+    second_depths = [second.forward_kwargs(args, None)["n_pass"] for _ in range(10)]
+    assert first_depths == second_depths
+    assert set(first_depths) <= {2, 3, 4, 5, 6}
+
+    resumed = TrainingPassController(args, seed=0)
+    resumed.load_state_dict(first.state_dict())
+    assert resumed.forward_kwargs(args, None)["n_pass"] == first.forward_kwargs(args, None)["n_pass"]
 
 
 def test_ablation_recommendation_accepts_task_specific_quality_metric():

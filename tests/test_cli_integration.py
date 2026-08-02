@@ -88,22 +88,38 @@ def test_memory_add_bbh_cli_reports_fusion_gradients(tmp_path):
     assert (run_dir / "latest.pt").exists()
 
 
-def test_variable_depth_training_logs_sampled_depth(tmp_path):
-    run_dir = tmp_path / "variable_depth"
+@pytest.mark.parametrize("mode", ["uniform", "fixed_point"])
+def test_variable_pass_training_logs_schedule(tmp_path, mode):
+    run_dir = tmp_path / mode
+    mode_args = (
+        [
+            "--fixed-point-residual-threshold", "1000",
+            "--fixed-point-kl-threshold", "1000",
+        ]
+        if mode == "fixed_point"
+        else []
+    )
     _run(
         "-m", "experiments.train_trace",
         "--preset", "shortest_path_smoke",
         "--architecture", "memory_tape",
-        "--train-pass-range", "2", "6",
-        "--sampled-tail-loss-weights", "0.3", "0.7",
+        "--train-pass-mode", mode,
+        "--min-n-pass", "2",
+        "--max-n-pass", "4",
+        *mode_args,
         "--device", "cpu",
         "--run-dir", str(run_dir),
     )
     events = [json.loads(line) for line in (run_dir / "metrics.jsonl").read_text(encoding="utf-8").splitlines()]
     evaluation = next(event for event in events if event["event"] == "eval")
-    assert 2 <= evaluation["sampled_n_pass"] <= 6
-    assert sum(evaluation["sampled_pass_histogram"].values()) == 1
-    assert evaluation["effective_pass_loss_weights"][-2:] == [0.3, 0.7]
+    schedule = evaluation["train_pass_schedule"]
+    assert schedule["mode"] == mode
+    assert 2 <= schedule["mean_n_pass"] <= 4
+    assert sum(schedule["pass_histogram"].values()) == 1
+    assert evaluation["pass_losses"][-1] == pytest.approx(evaluation["train_loss"])
+    if mode == "fixed_point":
+        assert schedule["converged_fraction"] == 1.0
+        assert schedule["mean_n_pass"] == 2.0
 
 
 def test_trace_training_evaluation_and_diagnostics_cli(tmp_path):
@@ -149,6 +165,11 @@ def test_trace_training_evaluation_and_diagnostics_cli(tmp_path):
         "-m", "experiments.eval_trace",
         "--input-run-dir", str(run_dir),
         "--inference-mode", "append_recurrent",
+        "--eval-pass-mode", "fixed_point",
+        "--min-n-pass", "2",
+        "--max-n-pass", "4",
+        "--fixed-point-residual-threshold", "1000",
+        "--fixed-point-kl-threshold", "1000",
         "--token-selection", "argmax",
         "--device", "cpu",
         "--eval-batches", "1",
@@ -158,6 +179,12 @@ def test_trace_training_evaluation_and_diagnostics_cli(tmp_path):
     assert summary["checkpoint"] == "best"
     assert summary["checkpoint_path"] == str(run_dir / "best.pt")
     assert summary["effective_inference_mode"] == "append_recurrent"
+    assert summary["eval_pass_mode"] == "fixed_point"
+    assert summary["metrics"]["teacher_forced_mean_n_pass"] == 2.0
+    assert (
+        summary["metrics"]["teacher_forced_fixed_point_converged_fraction"]
+        == 1.0
+    )
     assert summary["eval_batches"] == 1
     assert summary["evaluation_examples"] == 1
     assert "path_step_1_accuracy" in summary["metrics"]

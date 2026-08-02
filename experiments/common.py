@@ -28,6 +28,8 @@ MODEL_SIZE_PRESETS = {
 }
 CHECKPOINT_LABEL_WIDTH = 14
 EVALUATION_CHECKPOINTS = ("best", "latest")
+TRAIN_PASS_MODES = ("fixed", "uniform", "fixed_point")
+EVAL_PASS_MODES = ("fixed", "fixed_point")
 
 
 @dataclass(frozen=True)
@@ -73,31 +75,38 @@ def validate_model_args(args) -> None:
         raise ValueError("--n-embd must be divisible by --n-head")
 
     if args.architecture == "transformer":
-        if getattr(args, "train_pass_range", None) is not None:
-            raise ValueError("--train-pass-range requires a multi-pass architecture")
+        if args.train_pass_mode != "fixed" or args.eval_pass_mode != "fixed":
+            raise ValueError("variable or fixed-point pass modes require a multi-pass architecture")
         args.pass_loss_weights = None
         args.inference_mode = "recompute"
         return
 
-    if args.n_pass < 2:
-        raise ValueError("--n-pass must be at least 2 for multi-pass architectures")
+    if args.train_pass_mode not in TRAIN_PASS_MODES:
+        raise ValueError(f"--train-pass-mode must be one of: {', '.join(TRAIN_PASS_MODES)}")
+    if args.eval_pass_mode not in EVAL_PASS_MODES:
+        raise ValueError(f"--eval-pass-mode must be one of: {', '.join(EVAL_PASS_MODES)}")
+    if args.max_n_pass < 2:
+        raise ValueError("--max-n-pass must be at least 2 for multi-pass architectures")
+    if not 2 <= args.min_n_pass <= args.max_n_pass:
+        raise ValueError("pass limits must satisfy 2 <= --min-n-pass <= --max-n-pass")
+    for name, value in (
+        ("--fixed-point-residual-threshold", args.fixed_point_residual_threshold),
+        ("--fixed-point-kl-threshold", args.fixed_point_kl_threshold),
+    ):
+        if not math.isfinite(value) or value < 0:
+            raise ValueError(f"{name} must be finite and non-negative")
+
+    if args.train_pass_mode != "fixed":
+        args.pass_loss_weights = [0.0] * (args.max_n_pass - 1) + [1.0]
     if args.pass_loss_weights is None:
-        args.pass_loss_weights = [1.0] * args.n_pass
-    if len(args.pass_loss_weights) != args.n_pass:
-        raise ValueError("--pass-loss-weights must match --n-pass")
+        args.pass_loss_weights = [0.0] * (args.max_n_pass - 1) + [1.0]
+    if len(args.pass_loss_weights) != args.max_n_pass:
+        raise ValueError("--pass-loss-weights must match --max-n-pass")
     weights = torch.tensor(args.pass_loss_weights, dtype=torch.float64)
     if not torch.isfinite(weights).all():
         raise ValueError("--pass-loss-weights must be finite")
     if (weights < 0).any() or weights.sum() <= 0:
         raise ValueError("--pass-loss-weights must be non-negative with a positive sum")
-
-    train_pass_range = getattr(args, "train_pass_range", None)
-    tail_weights = getattr(args, "sampled_tail_loss_weights", [0.3, 0.7])
-    if train_pass_range is not None:
-        minimum, maximum = train_pass_range
-        if minimum < 2 or maximum < minimum:
-            raise ValueError("--train-pass-range must satisfy 2 <= MIN <= MAX")
-        sampled_pass_loss_weights(minimum, tail_weights)
 
 
 def validate_training_args(args) -> None:
@@ -289,36 +298,154 @@ def effective_inference_mode(args, requested_mode: str | None = None) -> str:
     return requested_mode or args.inference_mode
 
 
-def sampled_pass_loss_weights(n_pass: int, tail_weights: Sequence[float]) -> list[float]:
-    if n_pass < 2:
-        raise ValueError("sampled n_pass must be at least 2")
-    if len(tail_weights) != 2:
-        raise ValueError("sampled tail loss weights must contain exactly two values")
-    weights = torch.tensor(tail_weights, dtype=torch.float64)
-    if not torch.isfinite(weights).all() or (weights < 0).any() or weights.sum() <= 0:
-        raise ValueError("sampled tail loss weights must be finite, non-negative, and have a positive sum")
-    return [0.0] * (n_pass - 2) + [float(tail_weights[0]), float(tail_weights[1])]
+def _valid_batch_positions(batch) -> torch.Tensor:
+    valid_lengths = batch.prompt_lengths + batch.output_lengths - 1
+    return (
+        torch.arange(batch.idx.shape[1], device=batch.idx.device)[None, :]
+        < valid_lengths[:, None]
+    )
 
 
-def sample_train_pass_depth(args, rng: random.Random) -> int | None:
-    train_pass_range = getattr(args, "train_pass_range", None)
-    if train_pass_range is None:
-        return None
-    minimum, maximum = train_pass_range
-    return rng.randint(minimum, maximum)
+def _pass_forward_kwargs(args, batch, *, mode: str, n_pass: int) -> dict:
+    kwargs = {"n_pass": n_pass, "pass_mode": "fixed"}
+    if mode == "fixed_point":
+        kwargs.update(
+            pass_mode="fixed_point",
+            min_n_pass=args.min_n_pass,
+            residual_threshold=args.fixed_point_residual_threshold,
+            kl_threshold=args.fixed_point_kl_threshold,
+            valid_positions=_valid_batch_positions(batch),
+        )
+    return kwargs
 
 
-def forward_and_loss(model, batch, args, *, n_pass: int | None = None, loss_weights=None):
-    output = model(batch.idx) if not is_multi_pass_architecture(args.architecture) else model(batch.idx, n_pass=n_pass)
+def _final_only_weights(n_pass: int) -> list[float]:
+    return [0.0] * (n_pass - 1) + [1.0]
+
+
+class TrainingPassController:
+    """Checkpointable selector and accumulator for a training pass policy."""
+
+    def __init__(self, args, *, seed: int):
+        self.mode = args.train_pass_mode
+        self.min_n_pass = int(args.min_n_pass)
+        self.max_n_pass = int(args.max_n_pass)
+        self.rng = random.Random(seed)
+        self.pass_histogram: dict[int, int] = {}
+        self.total_examples = 0
+        self.converged_examples = 0
+        self.residual_sum = 0.0
+        self.residual_max = 0.0
+        self.kl_sum = 0.0
+        self.kl_max = 0.0
+
+    def forward_kwargs(self, args, batch) -> dict:
+        n_pass = (
+            self.rng.randint(self.min_n_pass, self.max_n_pass)
+            if self.mode == "uniform"
+            else self.max_n_pass
+        )
+        return _pass_forward_kwargs(args, batch, mode=self.mode, n_pass=n_pass)
+
+    def loss_weights(self, args, output) -> Sequence[float]:
+        if self.mode == "fixed":
+            return args.pass_loss_weights
+        return _final_only_weights(len(output.passes))
+
+    def observe(self, output) -> None:
+        batch_size = int(output.logits.shape[0])
+        if output.halting is None:
+            pass_counts = [len(output.passes)] * batch_size
+        else:
+            pass_counts = [int(value) for value in output.halting.pass_counts.cpu().tolist()]
+            converged = output.halting.converged.float()
+            residual = output.halting.relative_linf_residual.float()
+            logit_kl = output.halting.logit_kl.float()
+            self.converged_examples += int(converged.sum().item())
+            self.residual_sum += float(residual.sum().item())
+            self.residual_max = max(self.residual_max, float(residual.max().item()))
+            self.kl_sum += float(logit_kl.sum().item())
+            self.kl_max = max(self.kl_max, float(logit_kl.max().item()))
+
+        self.total_examples += batch_size
+        for count in pass_counts:
+            self.pass_histogram[count] = self.pass_histogram.get(count, 0) + 1
+
+    def summary(self) -> dict:
+        total_passes = sum(depth * count for depth, count in self.pass_histogram.items())
+        summary = {
+            "mode": self.mode,
+            "mean_n_pass": total_passes / self.total_examples,
+            "pass_histogram": dict(sorted(self.pass_histogram.items())),
+        }
+        if self.mode == "fixed_point":
+            summary.update(
+                converged_fraction=self.converged_examples / self.total_examples,
+                final_residual_mean=self.residual_sum / self.total_examples,
+                final_residual_max=self.residual_max,
+                final_logit_kl_mean=self.kl_sum / self.total_examples,
+                final_logit_kl_max=self.kl_max,
+            )
+        return summary
+
+    def state_dict(self) -> dict:
+        return {
+            "rng_state": self.rng.getstate(),
+            "pass_histogram": self.pass_histogram,
+            "total_examples": self.total_examples,
+            "converged_examples": self.converged_examples,
+            "residual_sum": self.residual_sum,
+            "residual_max": self.residual_max,
+            "kl_sum": self.kl_sum,
+            "kl_max": self.kl_max,
+        }
+
+    def load_state_dict(self, state: dict) -> None:
+        if "rng_state" in state:
+            self.rng.setstate(state["rng_state"])
+        self.pass_histogram = {
+            int(depth): int(count)
+            for depth, count in state.get("pass_histogram", {}).items()
+        }
+        self.total_examples = int(state.get("total_examples", sum(self.pass_histogram.values())))
+        self.converged_examples = int(state.get("converged_examples", 0))
+        self.residual_sum = float(state.get("residual_sum", 0.0))
+        self.residual_max = float(state.get("residual_max", 0.0))
+        self.kl_sum = float(state.get("kl_sum", 0.0))
+        self.kl_max = float(state.get("kl_max", 0.0))
+
+
+def forward_and_loss(model, batch, args, *, pass_controller: TrainingPassController | None = None):
+    if is_multi_pass_architecture(args.architecture):
+        kwargs = (
+            pass_controller.forward_kwargs(args, batch)
+            if pass_controller is not None
+            else _pass_forward_kwargs(
+                args,
+                batch,
+                mode=args.eval_pass_mode,
+                n_pass=args.max_n_pass,
+            )
+        )
+        output = model(batch.idx, **kwargs)
+    else:
+        output = model(batch.idx)
     if not is_multi_pass_architecture(args.architecture):
         loss = model.calc_loss(output.logits, batch.targets)
         return loss, output, (loss.detach(),)
 
+    loss_weights = (
+        pass_controller.loss_weights(args, output)
+        if pass_controller is not None
+        else _final_only_weights(len(output.passes))
+    )
     loss_output = model.calc_total_loss(
         output,
         batch.targets,
-        loss_weights=args.pass_loss_weights if loss_weights is None else loss_weights,
+        loss_weights=loss_weights,
     )
+    if pass_controller is not None:
+        pass_controller.observe(output)
     return loss_output.loss, output, tuple(item.detach() for item in loss_output.pass_losses)
 
 
@@ -451,6 +578,15 @@ def evaluate_prebuilt_batches(
     sequence_count = 0
     input_token_count = 0
     output_token_count = 0
+    pass_count_sum = 0.0
+    pass_count_max = 0
+    pass_example_count = 0
+    converged_count = 0.0
+    residual_sum = 0.0
+    residual_max = 0.0
+    logit_kl_sum = 0.0
+    logit_kl_max = 0.0
+    fixed_point_example_count = 0
 
     seed = generation_seed if generation_seed is not None else stable_seed(args.seed, "generation")
     try:
@@ -459,7 +595,28 @@ def evaluate_prebuilt_batches(
                 sequence_count += int(batch.idx.shape[0])
                 input_token_count += int(batch.idx.numel())
                 output_token_count += int(batch.output_lengths.sum().item())
-                loss, _output, _pass_losses = forward_and_loss(model, batch, args)
+                loss, output, _pass_losses = forward_and_loss(model, batch, args)
+                if is_multi_pass_architecture(args.architecture):
+                    if output.halting is None:
+                        pass_counts = torch.full(
+                            (batch.idx.shape[0],),
+                            len(output.passes),
+                            device=batch.idx.device,
+                            dtype=torch.long,
+                        )
+                    else:
+                        pass_counts = output.halting.pass_counts
+                        fixed_point_example_count += int(pass_counts.numel())
+                        converged_count += float(output.halting.converged.sum().item())
+                        residual = output.halting.relative_linf_residual.float()
+                        logit_kl = output.halting.logit_kl.float()
+                        residual_sum += float(residual.sum().item())
+                        residual_max = max(residual_max, float(residual.max().item()))
+                        logit_kl_sum += float(logit_kl.sum().item())
+                        logit_kl_max = max(logit_kl_max, float(logit_kl.max().item()))
+                    pass_count_sum += float(pass_counts.sum().item())
+                    pass_count_max = max(pass_count_max, int(pass_counts.max().item()))
+                    pass_example_count += int(pass_counts.numel())
                 metrics = generation_metrics_fn(
                     model,
                     batch,
@@ -490,6 +647,25 @@ def evaluate_prebuilt_batches(
     result = {"loss": total_loss / len(batches)}
     result.update({key: total / weights[key] for key, total in totals.items()})
     result.update(summed_metrics)
+    if pass_example_count:
+        result.update(
+            teacher_forced_mean_n_pass=pass_count_sum / pass_example_count,
+            teacher_forced_max_n_pass=float(pass_count_max),
+        )
+    if fixed_point_example_count:
+        result.update(
+            teacher_forced_fixed_point_converged_fraction=(
+                converged_count / fixed_point_example_count
+            ),
+            teacher_forced_fixed_point_final_residual_mean=(
+                residual_sum / fixed_point_example_count
+            ),
+            teacher_forced_fixed_point_final_residual_max=residual_max,
+            teacher_forced_fixed_point_final_logit_kl_mean=(
+                logit_kl_sum / fixed_point_example_count
+            ),
+            teacher_forced_fixed_point_final_logit_kl_max=logit_kl_max,
+        )
     if elapsed > 0:
         result.update(
             {

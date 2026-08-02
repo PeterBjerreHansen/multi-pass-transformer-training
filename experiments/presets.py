@@ -21,7 +21,7 @@ def _base_defaults(
     inference_mode: str,
     token_selection: str,
 ) -> dict[str, object]:
-    n_pass = 3 if smoke else 4
+    max_n_pass = 3 if smoke else 4
     return {
         "task": task,
         "architecture": "transformer",
@@ -31,12 +31,15 @@ def _base_defaults(
         "n_layer": 1 if smoke else None,
         "n_head": 1 if smoke else None,
         "n_embd": 16 if smoke else None,
-        "n_pass": n_pass,
-        "pass_loss_weights": [0.0] * (n_pass - 1) + [1.0]
+        "max_n_pass": max_n_pass,
+        "min_n_pass": 2,
+        "train_pass_mode": "fixed",
+        "eval_pass_mode": "fixed",
+        "fixed_point_residual_threshold": 0.1,
+        "fixed_point_kl_threshold": 1e-3,
+        "pass_loss_weights": [0.0] * (max_n_pass - 1) + [1.0]
         if smoke
         else [0.0, 0.0, 1.0, 1.0],
-        "train_pass_range": None,
-        "sampled_tail_loss_weights": [0.3, 0.7],
         "inference_mode": inference_mode,
         "token_selection": token_selection,
         "batch_size": 1 if smoke else 64,
