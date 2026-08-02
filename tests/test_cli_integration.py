@@ -92,6 +92,11 @@ def test_trace_training_evaluation_and_diagnostics_cli(tmp_path):
     assert payload["checkpoint_path"] == str(run_dir / "best.pt")
     assert "memory_interventions" in payload
     assert len(payload["pass_dynamics"]["extra_passes"]) == 2
+    assert set(payload["pass_dynamics"]["trained_passes"][0]["relative_linf_residual"]) == {
+        "mean",
+        "max",
+    }
+    assert "logit_kl_from_previous" in payload["pass_dynamics"]["trained_passes"][1]
     assert payload["teacher_forced_schedule_gap"]["horizon"] == 16
     assert payload["teacher_forced_schedule_gap"]["overall"]["count"] > 0
 

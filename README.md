@@ -428,6 +428,18 @@ The diagnostic report includes a teacher-forced `recompute` versus
 `append_recurrent` schedule-gap curve. It compares matched gold prefixes, so
 its per-position NLL, KL, prediction agreement, and memory-distance values
 measure schedule mismatch without free-generation errors as a confound.
+
+Pass dynamics also report a relative $L_\infty$ fixed-point residual for the
+memory tape,
+$\lVert M^{(k)}-M^{(k-1)}\rVert_\infty /
+(\lVert M^{(k)}\rVert_\infty+\epsilon)$, alongside the existing logit KL.
+This adapts the per-example convergence signal used by
+[Fixed-Point Reasoners](https://arxiv.org/pdf/2606.18206v1) to the tape that is
+actually recurrent in these architectures. The normalization makes runs with
+different tape scales more comparable, while the infinity norm conservatively
+exposes the largest remaining coordinate change. Padding is excluded, and the
+report records the mean and maximum residual across examples.
+
 Memory interventions distinguish `zero_memory_bank` from
 `masked_memory_source`. These are identical for architectures whose zero tape
 removes the memory contribution, but differ for JointMemoryTape: a zero bank

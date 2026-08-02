@@ -140,6 +140,29 @@ def _memory_distance(previous: torch.Tensor, current: torch.Tensor) -> dict[str,
     }
 
 
+def _relative_linf_residual(
+    previous: torch.Tensor,
+    current: torch.Tensor,
+    valid_positions: torch.Tensor,
+) -> dict[str, float]:
+    """Summarize the per-example relative L-infinity fixed-point residual."""
+    if previous.shape != current.shape or current.ndim != 3:
+        raise ValueError("memory states must have matching [B, T, D] shapes")
+    if valid_positions.shape != current.shape[:2]:
+        raise ValueError("valid_positions must have shape [B, T]")
+
+    valid = valid_positions.detach().to(device=current.device, dtype=torch.bool).unsqueeze(-1)
+    prev = previous.detach().float().masked_fill(~valid, 0.0)
+    curr = current.detach().float().masked_fill(~valid, 0.0)
+    numerator = (curr - prev).abs().amax(dim=(1, 2))
+    denominator = curr.abs().amax(dim=(1, 2))
+    per_example = numerator / (denominator + 1e-8)
+    return {
+        "mean": float(per_example.mean().item()),
+        "max": float(per_example.max().item()),
+    }
+
+
 def _logit_kl(previous: torch.Tensor, current: torch.Tensor) -> float:
     prev_log = F.log_softmax(previous.detach().float(), dim=-1)
     curr_log = F.log_softmax(current.detach().float(), dim=-1)
@@ -216,19 +239,34 @@ def memory_interventions(model, batch, *, seed: int) -> dict:
 @torch.no_grad()
 def pass_dynamics(model, batch, *, extra_passes: int) -> dict:
     output = model(batch.idx)
+    valid_lengths = batch.prompt_lengths + batch.output_lengths - 1
+    valid_positions = (
+        torch.arange(batch.idx.shape[1], device=batch.idx.device)[None, :]
+        < valid_lengths[:, None]
+    )
     per_pass = []
     for index, item in enumerate(output.passes, start=1):
         if item.memory_states is None:
             raise ValueError("multi-pass diagnostic requires memory states")
+        previous_memory = (
+            torch.zeros_like(item.memory_states)
+            if index == 1
+            else output.passes[index - 2].memory_states
+        )
+        if previous_memory is None:
+            raise RuntimeError("previous pass did not emit memory states")
         entry = {
             "pass": index,
             "loss": _nll(model, item.logits, batch.targets),
             "memory": _memory_stats(item.memory_states),
+            "relative_linf_residual": _relative_linf_residual(
+                previous_memory,
+                item.memory_states,
+                valid_positions,
+            ),
         }
         if index > 1:
             previous = output.passes[index - 2]
-            if previous.memory_states is None:
-                raise RuntimeError("previous pass did not emit memory states")
             entry["memory_change"] = _memory_distance(previous.memory_states, item.memory_states)
             entry["logit_kl_from_previous"] = _logit_kl(previous.logits, item.logits)
             entry["hidden_rms_delta"] = float(
@@ -254,6 +292,11 @@ def pass_dynamics(model, batch, *, extra_passes: int) -> dict:
                 "pass": len(output.passes) + offset,
                 "loss": _nll(model, item.logits, batch.targets),
                 "memory": _memory_stats(item.memory_states),
+                "relative_linf_residual": _relative_linf_residual(
+                    memory,
+                    item.memory_states,
+                    valid_positions,
+                ),
                 "memory_change": _memory_distance(memory, item.memory_states),
                 "logit_kl_from_previous": _logit_kl(previous_logits, item.logits),
                 "hidden_rms_delta": float(

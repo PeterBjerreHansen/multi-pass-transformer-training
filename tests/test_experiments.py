@@ -21,6 +21,7 @@ from experiments.common import (
 )
 from experiments.summarize_ablation import infer_quality_metric, recommend
 from experiments.diagnose_memory import (
+    _relative_linf_residual,
     memory_interventions,
     pass_dynamics,
     teacher_forced_schedule_gap,
@@ -164,6 +165,10 @@ def test_memory_interventions_pass_dynamics_and_schedule_gap_return_finite_value
     dynamics = pass_dynamics(model, batch, extra_passes=2)
     assert len(dynamics["trained_passes"]) == 3
     assert len(dynamics["extra_passes"]) == 2
+    assert all(
+        set(item["relative_linf_residual"]) == {"mean", "max"}
+        for item in (*dynamics["trained_passes"], *dynamics["extra_passes"])
+    )
     assert all(torch.isfinite(torch.tensor(item["loss"])) for item in dynamics["extra_passes"])
 
     model.eval()
@@ -180,6 +185,27 @@ def test_memory_interventions_pass_dynamics_and_schedule_gap_return_finite_value
         for name, value in position.items():
             if name not in {"generated_position", "count"}:
                 assert torch.isfinite(torch.tensor(value)), name
+
+
+def test_relative_linf_residual_is_per_example_and_ignores_padding():
+    previous = torch.tensor([[[1.0], [0.0]], [[0.0], [0.0]]])
+    current = torch.tensor([[[2.0], [100.0]], [[4.0], [2.0]]])
+    valid_positions = torch.tensor([[True, False], [True, True]])
+
+    residual = _relative_linf_residual(previous, current, valid_positions)
+
+    assert residual["mean"] == pytest.approx(0.75)
+    assert residual["max"] == pytest.approx(1.0)
+
+
+def test_relative_linf_residual_is_zero_for_identical_tapes():
+    memory = torch.randn(2, 3, 4)
+    residual = _relative_linf_residual(
+        memory,
+        memory.clone(),
+        torch.ones(2, 3, dtype=torch.bool),
+    )
+    assert residual == {"mean": 0.0, "max": 0.0}
 
 
 def test_joint_memory_tape_diagnostics_return_finite_values():
