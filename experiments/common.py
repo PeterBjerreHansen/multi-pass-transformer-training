@@ -17,7 +17,11 @@ from typing import Callable, Iterator, Sequence
 
 import torch
 
-from model_factory import build_model, is_multi_pass_architecture
+from model_factory import (
+    build_model,
+    supports_append_recurrent,
+    uses_pass_loss_weights,
+)
 
 
 MODEL_SIZE_PRESETS = {
@@ -77,8 +81,24 @@ def validate_model_args(args) -> None:
         args.inference_mode = "recompute"
         return
 
+    if not supports_append_recurrent(args.architecture) and args.inference_mode != "recompute":
+        raise ValueError(
+            f"{args.architecture} supports only --inference-mode recompute; "
+            "depth recurrence does not define an append-recurrent tape"
+        )
+    if args.architecture == "looped_transformer":
+        if getattr(args, "loop_layout", "sandwich") not in {"full", "sandwich"}:
+            raise ValueError("--loop-layout must be full or sandwich")
+        if getattr(args, "loop_persistent_input", "off") not in {"off", "on"}:
+            raise ValueError("--loop-persistent-input must be off or on")
+        if args.loop_layout == "sandwich" and args.n_layer < 3:
+            raise ValueError("sandwich layout requires --n-layer >= 3")
+
     if args.n_pass < 2:
         raise ValueError("--n-pass must be at least 2 for multi-pass architectures")
+    if not uses_pass_loss_weights(args.architecture):
+        args.pass_loss_weights = None
+        return
     if args.pass_loss_weights is None:
         args.pass_loss_weights = [1.0] * args.n_pass
     if len(args.pass_loss_weights) != args.n_pass:
@@ -274,14 +294,14 @@ def token_selection_is_sampling(args) -> bool:
 
 
 def effective_inference_mode(args, requested_mode: str | None = None) -> str:
-    if args.architecture == "transformer":
+    if not supports_append_recurrent(args.architecture):
         return "recompute"
     return requested_mode or args.inference_mode
 
 
 def forward_and_loss(model, batch, args):
     output = model(batch.idx)
-    if not is_multi_pass_architecture(args.architecture):
+    if not uses_pass_loss_weights(args.architecture):
         loss = model.calc_loss(output.logits, batch.targets)
         return loss, output, (loss.detach(),)
 
@@ -310,7 +330,15 @@ def gradient_norms(model) -> dict[str, float]:
 
         if "cross_attn" in name or "ln_mem_kv" in name:
             group = "memory_attention"
-        elif name.startswith(("memory_projection", "mem_in_ln")):
+        elif name.startswith(
+            (
+                "memory_projection",
+                "mem_in_ln",
+                "input_projection",
+                "input_step_bias",
+                "retention_log_scale",
+            )
+        ):
             group = "memory_fusion"
         elif name.startswith(("mem_head", "ln_mem")):
             group = "memory_writer"

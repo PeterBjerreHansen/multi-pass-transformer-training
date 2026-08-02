@@ -104,6 +104,20 @@ class MemoryTapeConfig(MultiPassConfig):
     """Configuration seam for MemoryTape-specific ablations."""
 
 
+@dataclass
+class LoopedTransformerConfig(MultiPassConfig):
+    """Configuration for full-stack and prelude/core/coda loop ablations."""
+
+    loop_layout: str = "sandwich"
+    persistent_input: bool = False
+
+    def __post_init__(self) -> None:
+        super().__post_init__()
+        if self.loop_layout not in {"full", "sandwich"}:
+            raise ValueError("loop_layout must be 'full' or 'sandwich'")
+        if self.loop_layout == "sandwich" and self.n_layer < 3:
+            raise ValueError("sandwich layout requires at least three physical layers")
+
 # -----------------------------------------------------------------------------
 # Shared components
 # -----------------------------------------------------------------------------
@@ -379,6 +393,102 @@ class CausalTransformer(nn.Module):
             return result
         finally:
             self.train(was_training)
+
+
+class LoopedTransformer(CausalTransformer):
+    """Depth-recurrent transformer with an optional prelude/core/coda layout.
+
+    ``full`` repeats every physical block. ``sandwich`` runs the first block
+    once, repeats the middle blocks, and runs the last block once. Both layouts
+    instantiate the same parameters. The optional fixed-input write is also
+    instantiated in both settings so toggling it is parameter matched.
+    """
+
+    def __init__(self, config: LoopedTransformerConfig):
+        super().__init__(config)
+        self.config = config
+        self.input_projection = nn.Linear(config.n_embd, config.n_embd, bias=False)
+        self.input_step_bias = nn.Parameter(
+            torch.full((config.n_embd,), math.log(math.expm1(0.1)))
+        )
+        self.retention_log_scale = nn.Parameter(torch.zeros(config.n_embd))
+        with torch.no_grad():
+            self.input_projection.weight.copy_(
+                torch.eye(
+                    config.n_embd,
+                    device=self.input_projection.weight.device,
+                    dtype=self.input_projection.weight.dtype,
+                )
+            )
+
+    def fixed_recurrent_input(self, idx: torch.Tensor) -> torch.Tensor:
+        embedded = self.embed_tokens(idx)
+        if self.config.loop_layout == "full":
+            return embedded
+        return self.transformer.h[0](embedded)
+
+    def _write_fixed_input(
+        self,
+        state: torch.Tensor,
+        fixed_input: torch.Tensor,
+    ) -> torch.Tensor:
+        if not self.config.persistent_input:
+            return state
+        delta = F.softplus(self.input_step_bias)
+        alpha = torch.exp(-delta * torch.exp(self.retention_log_scale))
+        return (
+            alpha.view(1, 1, -1) * state
+            + delta.view(1, 1, -1) * self.input_projection(fixed_input)
+        )
+
+    def input_write_coefficients(self) -> tuple[torch.Tensor, torch.Tensor]:
+        delta = F.softplus(self.input_step_bias)
+        alpha = torch.exp(-delta * torch.exp(self.retention_log_scale))
+        return alpha, delta
+
+    def _readout(self, state: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        hidden = self.transformer.ln_f(state)
+        return hidden, self.lm_head(hidden)
+
+    def _forward_loop(self, idx: torch.Tensor, *, capture_iterations: bool) -> MultiPassOutput:
+        fixed_input = self.fixed_recurrent_input(idx)
+        state = fixed_input
+        passes: list[PassOutput] = []
+
+        if self.config.loop_layout == "full":
+            recurrent_blocks = self.transformer.h
+            coda = None
+        else:
+            recurrent_blocks = self.transformer.h[1:-1]
+            coda = self.transformer.h[-1]
+
+        for iteration in range(self.config.n_pass):
+            state = self._write_fixed_input(state, fixed_input)
+            for block in recurrent_blocks:
+                state = block(state)
+
+            is_final = iteration == self.config.n_pass - 1
+            if capture_iterations or is_final:
+                final_state = coda(state) if coda is not None and is_final else state
+                hidden, logits = self._readout(final_state)
+                passes.append(
+                    PassOutput(
+                        logits=logits,
+                        hidden_states=hidden,
+                        # Preserve the recurrent-core state, before the one-shot
+                        # coda, for pass-dynamics diagnostics.
+                        memory_states=state,
+                    )
+                )
+
+        return MultiPassOutput(tuple(passes))
+
+    def forward(self, idx: torch.Tensor) -> MultiPassOutput:
+        return self._forward_loop(idx, capture_iterations=False)
+
+    def forward_iterations(self, idx: torch.Tensor) -> MultiPassOutput:
+        """Return opt-in per-iteration readouts for offline diagnostics."""
+        return self._forward_loop(idx, capture_iterations=True)
 
 
 # -----------------------------------------------------------------------------

@@ -27,7 +27,7 @@ from experiments.train_trace import (
     build_training_objects,
     validate_task_args,
 )
-from model_factory import is_multi_pass_architecture
+from model_factory import supports_append_recurrent
 from tasks.common import EOS_TOKEN
 from tasks.trace import othello, othello_eval
 
@@ -196,7 +196,7 @@ def evaluate_othello_prefix(cli_args) -> Path:
         rng=example_rng,
     )
     evaluated_modes = list(cli_args.inference_modes)
-    if not is_multi_pass_architecture(args.architecture):
+    if not supports_append_recurrent(args.architecture):
         evaluated_modes = [
             mode
             for mode in evaluated_modes

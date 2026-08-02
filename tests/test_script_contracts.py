@@ -107,6 +107,68 @@ def test_trace_launcher_runs_task_matrix_into_task_first_results(tmp_path):
     )
 
 
+def test_trace_launcher_forces_looped_transformer_to_recompute(tmp_path):
+    bin_dir, log_path = _fake_python(tmp_path)
+    env = os.environ.copy()
+    env.update(
+        {
+            "PATH": f"{bin_dir}:{env['PATH']}",
+            "REAL_PYTHON": sys.executable,
+            "TASKS": "shortest_path",
+            "ARCHITECTURES": "looped_transformer",
+            "SEEDS": "1337",
+            "RESULT_ROOT": str(tmp_path / "results"),
+        }
+    )
+    subprocess.run(
+        ["bash", str(ROOT / "scripts" / "trace" / "run.sh")],
+        cwd=ROOT,
+        env=env,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    call = log_path.read_text(encoding="utf-8").strip()
+    assert "--architecture looped_transformer" in call
+    assert "--inference-mode recompute" in call
+
+
+def test_sandwich_ablation_launcher_has_four_matched_variants(tmp_path):
+    bin_dir, log_path = _fake_python(tmp_path)
+    env = os.environ.copy()
+    env.update(
+        {
+            "PATH": f"{bin_dir}:{env['PATH']}",
+            "DEVICE": "cpu",
+            "SEEDS": "1337",
+            "TRAIN_STEPS": "10",
+            "WARMUP_STEPS": "1",
+            "RESULT_ROOT": str(tmp_path / "results"),
+        }
+    )
+    subprocess.run(
+        ["bash", str(ROOT / "scripts" / "trace" / "ablate_sandwich_recurrence.sh")],
+        cwd=ROOT,
+        env=env,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    calls = log_path.read_text(encoding="utf-8").splitlines()
+    training = [call for call in calls if "-m experiments.train_trace" in call]
+    assert len(training) == 4
+    assert sum("--loop-layout full" in call for call in training) == 2
+    assert sum("--loop-layout sandwich" in call for call in training) == 2
+    assert sum("--loop-persistent-input off" in call for call in training) == 2
+    assert sum("--loop-persistent-input on" in call for call in training) == 2
+    assert all("--inference-mode recompute" in call for call in training)
+    assert sum("--n-pass 4" in call for call in training) == 2
+    assert sum("--n-pass 7" in call for call in training) == 2
+    assert sum("-m experiments.eval_trace" in call for call in calls) == 4
+    assert sum("-m experiments.diagnose_looped" in call for call in calls) == 4
+    assert sum("-m experiments.summarize_ablation" in call for call in calls) == 2
+
+
 def test_trace_eval_routes_to_task_specific_evaluator(tmp_path):
     bin_dir, log_path = _fake_python(tmp_path)
     run_dir = tmp_path / "run"

@@ -132,6 +132,8 @@ def parse_args(argv: list[str] | None = None):
     _add_override(parser, "--n-embd", type=int)
     _add_override(parser, "--n-pass", type=int)
     _add_override(parser, "--pass-loss-weights", type=float, nargs="*")
+    _add_override(parser, "--loop-layout", choices=["full", "sandwich"])
+    _add_override(parser, "--loop-persistent-input", choices=["off", "on"])
     _add_override(
         parser,
         "--num-nodes",
@@ -285,7 +287,12 @@ def run_answer_curriculum(args) -> None:
     print(f"inference_mode: {effective_inference_mode(args)}")
     print(f"block_size: {block_size}")
     print(f"parameters: {model.get_num_params():,}")
-    if args.architecture != "transformer":
+    if args.architecture == "looped_transformer":
+        print(f"loop_layout: {args.loop_layout}")
+        print(f"loop_persistent_input: {args.loop_persistent_input}")
+    if args.architecture == "looped_transformer":
+        print(f"loop_iterations: {args.n_pass} | training_readout: final_only")
+    elif args.architecture != "transformer":
         normalized = [weight / sum(args.pass_loss_weights) for weight in args.pass_loss_weights]
         print(f"n_pass: {args.n_pass}")
         print(f"pass_loss_weights_normalized: {normalized}")
@@ -336,7 +343,7 @@ def run_answer_curriculum(args) -> None:
         fields = [f"loss {loss.item():.4f}", f"tok/s {tok_per_s:.1f}", f"level {current_level}"]
         gradient_summary = summarize_gradient_norm_window(gradient_norm_window)
         fields.append(format_gradient_norms(gradient_summary))
-        if args.architecture != "transformer":
+        if len(pass_losses) > 1:
             fields.append(f"pass_losses {format_pass_losses(pass_losses)}")
         print(format_checkpoint_line(f"step {step}", fields))
 

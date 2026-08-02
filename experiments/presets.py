@@ -36,6 +36,8 @@ def _base_defaults(
         if smoke
         else [0.0, 0.0, 1.0, 1.0],
         "inference_mode": inference_mode,
+        "loop_layout": "sandwich",
+        "loop_persistent_input": "off",
         "token_selection": token_selection,
         "batch_size": 1 if smoke else 64,
         "train_steps": 1 if smoke else 50_000,

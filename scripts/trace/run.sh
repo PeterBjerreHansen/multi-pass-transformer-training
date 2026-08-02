@@ -31,11 +31,16 @@ done
 for task in "${task_matrix[@]}"; do
   for architecture in "${architecture_matrix[@]}"; do
     for seed in "${seed_matrix[@]}"; do
+      architecture_args=()
+      if [[ "${architecture}" == "looped_transformer" ]]; then
+        architecture_args+=(--inference-mode recompute)
+      fi
       python -m experiments.train_trace \
         --preset "${task}_main" \
         --architecture "${architecture}" \
         --seed "${seed}" \
         --run-dir "${RESULT_ROOT}/${task}/main/${architecture}/seed_${seed}" \
+        "${architecture_args[@]+"${architecture_args[@]}"}" \
         "${runtime_args[@]+"${runtime_args[@]}"}"
     done
   done

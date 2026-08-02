@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from models import (
     CausalTransformer,
+    LoopedTransformer,
+    LoopedTransformerConfig,
     MemoryAddTransformer,
     MemoryTapeConfig,
     MemoryTapeTransformer,
@@ -14,11 +16,25 @@ ARCHITECTURES = (
     "transformer",
     "memory_tape",
     "memory_add",
+    "looped_transformer",
 )
 
 
-def is_multi_pass_architecture(architecture: str) -> bool:
-    return architecture != "transformer"
+RECURRENT_TAPE_ARCHITECTURES = frozenset({"memory_tape", "memory_add"})
+
+
+def uses_pass_loss_weights(architecture: str) -> bool:
+    """Whether training exposes and weights a language-model loss per pass."""
+    return architecture in RECURRENT_TAPE_ARCHITECTURES
+
+
+def supports_append_recurrent(architecture: str) -> bool:
+    """Whether generation can reuse an aligned recurrent tape across tokens."""
+    return architecture in RECURRENT_TAPE_ARCHITECTURES
+
+
+def supports_memory_diagnostics(architecture: str) -> bool:
+    return architecture in RECURRENT_TAPE_ARCHITECTURES
 
 
 def build_model(args, vocab_size: int, block_size: int, device: str):
@@ -44,6 +60,15 @@ def build_model(args, vocab_size: int, block_size: int, device: str):
             MultiPassConfig(
                 **common,
                 n_pass=args.n_pass,
+            )
+        )
+    elif args.architecture == "looped_transformer":
+        model = LoopedTransformer(
+            LoopedTransformerConfig(
+                **common,
+                n_pass=args.n_pass,
+                loop_layout=getattr(args, "loop_layout", "sandwich"),
+                persistent_input=getattr(args, "loop_persistent_input", "off") == "on",
             )
         )
     else:

@@ -22,6 +22,7 @@ ARCHITECTURE_COLORS = {
     "transformer": "#6b7280",
     "memory_tape": "#e68613",
     "memory_add": "#2a9d8f",
+    "looped_transformer": "#4c72b0",
 }
 
 INFERENCE_MODE_STYLES = {
@@ -101,6 +102,8 @@ def _config_context(run_dir: Path, *, root: Path | None = None) -> dict:
         "seed": args.get("seed"),
         "device": args.get("device"),
         "n_pass": args.get("n_pass"),
+        "loop_layout": args.get("loop_layout"),
+        "loop_persistent_input": args.get("loop_persistent_input"),
         "inference_mode": args.get("inference_mode"),
         "max_level": args.get("max_level"),
         "curriculum_threshold": args.get("curriculum_threshold"),

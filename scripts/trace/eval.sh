@@ -20,7 +20,7 @@ read -r task architecture < <(
 )
 
 inference_modes=(recompute)
-if [[ "${architecture}" != "transformer" ]]; then
+if [[ "${architecture}" != "transformer" && "${architecture}" != "looped_transformer" ]]; then
   inference_modes+=(append_recurrent)
 fi
 
