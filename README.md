@@ -113,13 +113,22 @@ That is why the repo also includes longer-range trace tasks. These are fixed-tra
 
 ![](figures/trace_plot_figs.png "trace")
 
-In the plot above, all three plotted multi-pass variants outperform the transformer by a large margin. JointMemoryTape was added later and is not represented in this figure. The plotted models have around 1 million parameters, roughly $20$ times fewer than OthelloGPT. These results suggest that the plotted multi-pass models can generate reasonably accurately, but the refreshed implementations—including JointMemoryTape—still need direct evaluation under both `recompute` and `append_recurrent` to measure recurrent drift.
+The plot above comes from an earlier architecture sweep. Some plotted variants
+are now preserved on the `archived-architectures` branch rather than supported
+on `main`. The current models still need a matched rerun under both `recompute`
+and `append_recurrent` before the figure is updated.
 
 ## Multi-pass Architectures
 
-The following architectures explore some different ways of passing on the memories between passes. They all follow the abstract multi-pass training and inference-time methods (see the parent-class `MultiPassTransformer` in the codebase).
+`main` supports two multi-pass memory designs. Both use the shared training and
+inference methods implemented by `MultiPassTransformer`.
 
-The notation in this section is deliberately tensor-level: $X$ is the token-embedding stream, $M^{(k)}$ is the full tape written at pass $k$, and $R = \mathrm{Shift}(M^{(k-1)})$ is the tape read at the next pass. The shared multi-pass wrapper performs the shift, final normalization, language-model head, and memory write; each variant below defines only its decoder, which maps $(X, R)$ to the pre-final hidden stream. The equations use standard attention categories—causal self-attention and causal cross-attention—and spell out the less standard two-source construction used by JointMemoryTape.
+The notation in this section is tensor-level: $X$ is the token-embedding
+stream, $M^{(k)}$ is the full tape written at pass $k$, and
+$R = \mathrm{Shift}(M^{(k-1)})$ is the tape read at the next pass. The shared
+wrapper performs the shift, final normalization, language-model head, and
+memory write. Each model defines only the decoder mapping $(X,R)$ to its
+pre-final hidden stream.
 
 ### Memory Through Attention: The MemoryTape Architecture
 
@@ -135,64 +144,6 @@ MemoryTape retains an ordinary causal token decoder. Its decoder is:
 
 Causal cross-attention is applied over $R$ as a separately addressable key/value source; the tape is not concatenated with the token stream. Its inclusive causal mask permits query position $t$ to read tape slots $s\leq t$. Because $R_s=M_{s-1}$, this is strict causality with respect to the unshifted tape: only memories from original positions before $t$ are readable. The reader is an ordinary residual branch with no learned gate. Its output projection is initialized at half the standard residual scale, preserving the former initial memory-read amplitude without introducing a scale-nonidentifiable scalar parameter. On pass one, $R=0$, so the cross-attention contribution is exactly zero and the model begins as a causal token decoder.
 
-### Causal Attention over Token and Memory Sources: The JointMemoryTape Architecture
-
-JointMemoryTape retains the same token working stream, shifted read-only tape, and shared memory writer, but replaces the separate token self-attention and memory cross-attention distributions with one causal multi-source attention distribution. For each attention head $a$:
-
-```math
-\begin{aligned}
-Q_a &= \mathrm{LN}_{q}(H)\,W^Q_a, \\
-K_a &= \mathrm{concat}_{\mathrm{source}}\!\left(
-\mathrm{LN}_{\mathrm{tok}}(H)\,W^{K,\mathrm{tok}}_a,
-\mathrm{LN}_{\mathrm{mem}}(R)\,W^{K,\mathrm{mem}}_a
-\right), \\
-V_a &= \mathrm{concat}_{\mathrm{source}}\!\left(
-\mathrm{LN}_{\mathrm{tok}}(H)\,W^{V,\mathrm{tok}}_a,
-\mathrm{LN}_{\mathrm{mem}}(R)\,W^{V,\mathrm{mem}}_a
-\right).
-\end{aligned}
-```
-
-Both source banks use the same causal source mask:
-
-```math
-A_{t,(b,s)} =
-\begin{cases}
-0 & s \leq t, \\
--\infty & s > t,
-\end{cases}
-\qquad b \in \{\mathrm{tok},\mathrm{mem}\}.
-```
-
-The block then applies ordinary scaled dot-product attention and the standard multi-head output projection:
-
-```math
-D_a = \mathrm{softmax}\!\left(\frac{Q_aK_a^\top}{\sqrt{d_h}} + A\right)V_a,
-\qquad
-D = \mathrm{concat}_{\mathrm{head}}(D_1,\ldots,D_m)\,W^O.
-```
-
-> **JointMemoryTape decoder**
->
-> $`H = X`$<br>
-> $`\textbf{for each decoder block:}`$<br>
-> &nbsp;&nbsp; $`H = H + D \qquad \text{using the causal two-source attention defined above}`$<br>
-> &nbsp;&nbsp; $`H = H + \mathrm{MLP}(\mathrm{LN}_{\mathrm{mlp}}(H))`$<br>
-
-The token and shifted-memory banks have separate key/value projections but compete within the same softmax. The tape has the same sequence length as the token stream, with $R_t=M_{t-1}$, and no additional positional embedding is applied to it. When $R=0$ on pass one, the bias-free memory projections produce zero keys and values, but the null memory slots still occupy probability mass in the shared softmax. This deliberate first-pass dilution means JointMemoryTape is an architecture variant, not a one-variable ablation of MemoryTape: it also changes the residual structure, parameter count, and initialization-time token-attention behavior.
-
-### Memory Through Embedding Concatenation: The MemoryConcat Architecture
-
-MemoryConcat removes the separate memory reader. Its decoder is:
-
-> **MemoryConcat decoder**
->
-> $`H = W_{\mathrm{fuse}}\left(\mathrm{Concat}(X, \mathrm{LN}_{\mathrm{mem}}(R))\right)`$<br>
-> $`\textbf{for each causal decoder block:}`$<br>
-> &nbsp;&nbsp; $`H = \mathrm{DecoderBlock}(H)`$<br>
-
-The token stream remains the main object transformed by the decoder. Memory is an aligned input feature, not an independently addressable source. This is the direct ablation for whether a recurrent signal helps at all, versus whether MemoryTape specifically benefits from content-addressed reads. The implementation initializes the fusion projection so the token half starts near an identity map and the memory half starts small. This keeps the initial model close to a normal transformer while allowing training to learn how much memory to use.
-
 ### Residual Memory Fusion: The MemoryAdd Architecture
 
 MemoryAdd keeps the ordinary token stream intact and learns a residual
@@ -207,43 +158,9 @@ correction from the shifted recurrent tape:
 The bias-free memory projection starts at exactly zero. Consequently all
 passes initially reproduce the same token-only computation, while the
 projection can immediately learn whether and how to incorporate memory.
-Unlike MemoryUpdate, MemoryAdd does not repeatedly cross-attend to a separate
-token bank: after input fusion it uses the same standard decoder blocks as
-MemoryConcat. The explicit token residual prevents recurrent memory from
-erasing the current-token representation.
-
-### Memory-First Fusion Without Token Reads: The MemoryState Architecture
-
-MemoryState uses MemoryUpdate's input rule but retains ordinary causal decoder
-blocks:
-
-> **MemoryState decoder**
->
-> $`H = \mathrm{LN}_{\mathrm{mem\_in}}(R) + W_{\mathrm{token\to mem}}\mathrm{LN}_{\mathrm{token\_in}}(X)`$<br>
-> $`\textbf{for each causal decoder block:}`$<br>
-> &nbsp;&nbsp; $`H = \mathrm{DecoderBlock}(H)`$<br>
-
-The token projection starts as an identity map. Unlike MemoryAdd, the
-normalized shifted tape is therefore active immediately and forms the direct
-residual stream. Unlike MemoryUpdate, there is no per-layer cross-attention
-back to a separate token bank. MemoryState isolates whether memory-first input
-fusion is sufficient on its own, and provides a direct ablation for the
-additional token-reading computation in MemoryUpdate.
-
-### Memory-First Working Stream: The MemoryUpdate Architecture
-
-MemoryUpdate tests a different inductive bias. Instead of transforming a token stream and writing memory afterward, its decoder makes a memory-derived state stream $S$ the object transformed by the blocks:
-
-> **MemoryUpdate decoder**
->
-> $`S = \mathrm{LN}_{\mathrm{mem\_in}}(R) + W_{\mathrm{token\to mem}}\mathrm{LN}_{\mathrm{token\_in}}(X)`$<br>
-> $`\textbf{for each memory-update block:}`$<br>
-> &nbsp;&nbsp; $`D = \mathrm{CausalCrossAttention}\left(Q=\mathrm{LN}_{q}(S),\ KV=\mathrm{LN}_{kv}(X)\right)`$<br>
-> &nbsp;&nbsp; $`S = S + D`$<br>
-> &nbsp;&nbsp; $`S = S + \mathrm{CausalSelfAttention}(\mathrm{LN}_{\mathrm{self}}(S))`$<br>
-> &nbsp;&nbsp; $`S = S + \mathrm{MLP}(\mathrm{LN}_{\mathrm{mlp}}(S))`$<br>
-
-The token-derived evidence is an ordinary ungated residual update. The token-to-memory projection starts as an identity map, so pass one has a useful token signal even though $R=0$. This is **state-biased**, not a strict compact-state cell: token attention can still read the full causal token prefix, and state self-attention can read earlier positions of $S$. Its purpose is to test whether MPTT benefits when memory is the primary working representation, rather than an auxiliary tape read by a token decoder.
+After input fusion, MemoryAdd uses ordinary causal decoder blocks. The explicit
+token residual prevents recurrent memory from erasing the current-token
+representation.
 
 ## Tasks
 
@@ -259,7 +176,7 @@ The current experiment tasks are:
 - `state_machine`: per-example deterministic finite-state machines with balanced shuffled transition tables and action sequences.
 - `tracking`: shuffled-object tracking with swap, rotate, and reverse operations.
 - `permutation`: permutation composition by repeated swaps.
-- `othello`: legal Othello move-trace generation from the fixed opening prefix, evaluated both by exact suffix match and legality of the generated continuation.
+- `othello`: legal Othello move-trace generation from the standard fixed board, evaluated by continuation legality and teacher-forced legal-set probability.
 - `shortest_path`: shuffled, node-permuted directed acyclic graphs with exactly one shortest route from the declared start to goal; the model generates the complete optimal node path. Its benchmark distributions are `easy` and `main`, and each varies graph size, route length, edge density, and detour shape from example to example.
 
 The live experiment API is family-specific and preset-driven. `python3 -m experiments.train_bbh` runs the BBH-inspired tasks with final-answer-only supervision and curriculum promotions. `python3 -m experiments.train_trace` runs the trace tasks from named presets with fixed trace targets.
@@ -269,8 +186,8 @@ Answer-only curriculum:
 ```bash
 python3 -m experiments.train_bbh \
   --preset pointer_chasing_main \
-  --architecture memory_update \
-  --run-dir results/bbh/pointer_chasing/memory_update/example_run
+  --architecture memory_tape \
+  --run-dir results/bbh/pointer_chasing/memory_tape/example_run
 ```
 
 Trace training on `othello`:
@@ -341,7 +258,9 @@ teacher-forced gold-move NLL, legal-set NLL, legal probability mass, top-1
 legality, and legal-set size. Transformer checkpoints evaluate only in
 `recompute`; multi-pass checkpoints are compared under both schedules.
 
-The available architectures are `transformer`, `memory_tape`, `joint_memory_tape`, `memory_concat`, `memory_add`, `memory_state`, and `memory_update`.
+The available architectures are `transformer`, `memory_tape`, and `memory_add`.
+Earlier exploratory architectures are preserved on the
+`archived-architectures` branch.
 
 Each training run writes:
 
@@ -385,7 +304,7 @@ only matrix selection and operational placement (`DEVICE` and `RESULT_ROOT`);
 they do not accept training, evaluation, task-difficulty, or
 model-hyperparameter overrides.
 
-The BBH launcher supports all four tasks and all seven architectures. Use
+The BBH launcher supports all four tasks and all three architectures. Use
 `TASKS`, `ARCHITECTURES`, and `SEEDS` to select the matrix without changing
 any scientific preset. `SEEDS="1337 2027 4099"` expands independent
 repetitions without changing the preset.
@@ -397,8 +316,8 @@ Evaluation code follows the same separation as training:
 
 - `tasks/trace/othello_eval.py` defines Othello legality, legal-set loss, and
   prefix-continuation summaries.
-- `tasks/trace/shortest_path_eval.py` defines path legality, optimality,
-  graph-structure, path-length, and per-step metrics.
+- `tasks/trace/shortest_path_eval.py` defines optimal-path, path-length, and
+  per-step metrics.
 - `experiments/eval_trace.py` is the shared checkpoint and batch runner for
   ordinary trace evaluation.
 - `experiments/eval_othello_prefix.py` runs Othello's additional random-prefix
@@ -445,18 +364,16 @@ different tape scales more comparable, while the infinity norm conservatively
 exposes the largest remaining coordinate change. Padding is excluded, and the
 report records the mean and maximum residual across examples.
 
-Memory interventions distinguish `zero_memory_bank` from
-`masked_memory_source`. These are identical for architectures whose zero tape
-removes the memory contribution, but differ for JointMemoryTape: a zero bank
-leaves null slots in the shared softmax, whereas a masked source removes those
-slots from the attention distribution.
+Every default diagnostic run also reports the tape's effective rank. It is the
+exponential spectral entropy of the centered memory matrix, capped at 4,096
+sampled tape rows. This gives a scale-independent indication of whether the
+model uses many memory directions or collapses onto a low-dimensional state.
+It is descriptive rather than causal, so it should be read alongside the
+memory interventions rather than used alone as evidence that memory matters.
 
 Training `eval` events in `metrics.jsonl` also include rolling mean and maximum
 gradient norms for the global model, backbone, memory writer, and
-memory-specific attention parameters. For JointMemoryTape, only the memory
-key/value projection and its input normalization enter the memory-attention
-group; the shared query, token key/value, and output projections are part of the
-backbone group.
+memory-specific attention parameters.
 
 ### Plotting notebooks
 
@@ -508,44 +425,12 @@ python3 -m experiments.train_bbh \
   --architecture memory_tape
 ```
 
-JointMemoryTape:
-
-```bash
-python3 -m experiments.train_bbh \
-  --preset permutation_main \
-  --architecture joint_memory_tape
-```
-
-MemoryConcat:
-
-```bash
-python3 -m experiments.train_bbh \
-  --preset permutation_main \
-  --architecture memory_concat
-```
-
 MemoryAdd:
 
 ```bash
 python3 -m experiments.train_bbh \
   --preset permutation_main \
   --architecture memory_add
-```
-
-MemoryState:
-
-```bash
-python3 -m experiments.train_bbh \
-  --preset permutation_main \
-  --architecture memory_state
-```
-
-MemoryUpdate:
-
-```bash
-python3 -m experiments.train_bbh \
-  --preset permutation_main \
-  --architecture memory_update
 ```
 
 ## Requirements
