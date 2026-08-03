@@ -1,4 +1,7 @@
-# Conditional memory gates
+# Conditional MemoryTape gate
+
+This branch contains one MemoryTape-only ablation: a gateless control and a
+conditional-gate treatment. No other architecture is part of the experiment.
 
 ## Experiment and hypothesis
 
