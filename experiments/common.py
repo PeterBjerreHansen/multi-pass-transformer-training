@@ -17,7 +17,7 @@ from typing import Callable, Iterator, Sequence
 
 import torch
 
-from model_factory import ARCHITECTURES, build_model, is_multi_pass_architecture
+from model_factory import build_model, is_multi_pass_architecture
 
 
 MODEL_SIZE_PRESETS = {
@@ -56,37 +56,6 @@ def resolve_evaluation_checkpoint(
             f"selected {checkpoint!r} checkpoint does not exist: {path}"
         )
     return path
-
-
-def add_shared_model_args(parser, *, default_inference_mode: str) -> None:
-    parser.add_argument("--architecture", choices=ARCHITECTURES, default="transformer")
-    parser.add_argument("--model-size", choices=sorted(MODEL_SIZE_PRESETS), default="small")
-    parser.add_argument(
-        "--inference-mode",
-        choices=["recompute", "append_recurrent"],
-        default=default_inference_mode,
-    )
-    parser.add_argument("--token-selection", choices=["sample", "argmax"], default="sample")
-    parser.add_argument("--n-layer", type=int, default=None)
-    parser.add_argument("--n-head", type=int, default=None)
-    parser.add_argument("--n-embd", type=int, default=None)
-    parser.add_argument("--n-pass", type=int, default=4)
-    parser.add_argument("--pass-loss-weights", type=float, nargs="*", default=None)
-    parser.add_argument("--device", default=None)
-    parser.add_argument("--block-size", type=int, default=None)
-
-
-def add_shared_training_args(parser) -> None:
-    parser.add_argument("--batch-size", type=int, default=64)
-    parser.add_argument("--train-steps", type=int, default=50_000)
-    parser.add_argument("--lr", type=float, default=1e-4)
-    parser.add_argument("--max-grad-norm", type=float, default=5.0)
-    parser.add_argument("--weight-decay", type=float, default=0.0)
-    parser.add_argument("--eval-interval", type=int, default=200)
-    parser.add_argument("--eval-batches", type=int, default=4)
-    parser.add_argument("--seed", type=int, default=1337)
-    parser.add_argument("--run-dir", default=None)
-    parser.add_argument("--resume-from", default=None)
 
 
 def apply_model_size_preset(args) -> None:
@@ -130,10 +99,6 @@ def validate_training_args(args) -> None:
         raise ValueError("--eval-interval and --eval-batches must be at least 1")
     if args.lr <= 0:
         raise ValueError("--lr must be positive")
-    if not hasattr(args, "max_grad_norm"):
-        # Preserve compatibility with configs and checkpoints created before
-        # global gradient clipping became part of the training contract.
-        args.max_grad_norm = 5.0
     if not math.isfinite(args.max_grad_norm) or args.max_grad_norm <= 0:
         raise ValueError("--max-grad-norm must be finite and positive")
     if args.weight_decay < 0:
@@ -343,15 +308,9 @@ def gradient_norms(model) -> dict[str, float]:
             continue
         squared_norm = parameter.grad.detach().float().square().sum()
 
-        if "joint_attn.c_mem_kv" in name or "ln_mem_kv" in name:
-            # These parameters exclusively transform the memory K/V source;
-            # the other joint-attention projections form the token backbone.
+        if "cross_attn" in name or "ln_mem_kv" in name:
             group = "memory_attention"
-        elif "cross_attn" in name or "token_attn" in name:
-            group = "memory_attention"
-        elif name.startswith(
-            ("memory_projection", "mem_in_ln", "token_to_memory", "token_in_ln")
-        ):
+        elif name.startswith(("memory_projection", "mem_in_ln")):
             group = "memory_fusion"
         elif name.startswith(("mem_head", "ln_mem")):
             group = "memory_writer"
@@ -585,7 +544,7 @@ def restore_checkpoint_state(checkpoint: dict, *, model, optimizer=None, device:
 
 
 def _save_checkpoint(
-    artifacts: RunArtifacts | None,
+    artifacts: RunArtifacts,
     *,
     checkpoint_path: Path,
     model,
@@ -593,9 +552,7 @@ def _save_checkpoint(
     args,
     step: int,
     extra_state: dict | None = None,
-) -> Path | None:
-    if artifacts is None:
-        return None
+) -> Path:
     payload = {
         "step": int(step),
         "args": dict(vars(args)),
@@ -615,16 +572,14 @@ def _save_checkpoint(
 
 
 def save_latest_checkpoint(
-    artifacts: RunArtifacts | None,
+    artifacts: RunArtifacts,
     *,
     model,
     optimizer,
     args,
     step: int,
     extra_state: dict | None = None,
-) -> Path | None:
-    if artifacts is None:
-        return None
+) -> Path:
     return _save_checkpoint(
         artifacts,
         checkpoint_path=artifacts.checkpoint_path,
@@ -637,16 +592,14 @@ def save_latest_checkpoint(
 
 
 def save_best_checkpoint(
-    artifacts: RunArtifacts | None,
+    artifacts: RunArtifacts,
     *,
     model,
     optimizer,
     args,
     step: int,
     extra_state: dict | None = None,
-) -> Path | None:
-    if artifacts is None:
-        return None
+) -> Path:
     return _save_checkpoint(
         artifacts,
         checkpoint_path=artifacts.best_checkpoint_path,

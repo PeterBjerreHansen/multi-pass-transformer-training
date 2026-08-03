@@ -105,7 +105,6 @@ othello_main.update(
     othello_train_games=5_000_000,
     othello_val_games=1_024,
     othello_dataset_seed=othello.DEFAULT_DATASET_SEED,
-    othello_prepend_opening=othello.DEFAULT_PREPEND_OPENING,
 )
 TRACE_PRESETS["othello_main"] = ExperimentPreset("Main Othello trace setup.", othello_main)
 
@@ -115,7 +114,6 @@ othello_smoke.update(
     othello_train_games=16,
     othello_val_games=8,
     othello_dataset_seed=9,
-    othello_prepend_opening=False,
 )
 TRACE_PRESETS["othello_smoke"] = ExperimentPreset(
     "Tiny deterministic Othello smoke setup.",

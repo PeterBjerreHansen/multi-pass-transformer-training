@@ -8,7 +8,8 @@ import torch
 
 from models import CausalTransformer, TransformerConfig
 from tasks.bbh import permutation, pointer_chasing, state_machine, tracking
-from tasks.trace import othello, shortest_path, shortest_path_eval
+from tasks.trace import othello, shortest_path
+from tasks.trace import shortest_path_eval
 
 
 class _ForcedChoiceRandom(random.Random):
@@ -293,7 +294,6 @@ def test_shortest_path_distributions_are_varied_permuted_and_solver_verified():
         observed_shapes = set()
         observed_edge_counts = set()
         observed_starts = set()
-        multi_route_examples = 0
         for _ in range(500):
             first = shortest_path.sample_shortest_path_example(
                 distribution_name,
@@ -317,13 +317,9 @@ def test_shortest_path_distributions_are_varied_permuted_and_solver_verified():
                 start,
                 goal,
             )
-            structure = shortest_path_eval.graph_structure_metrics(
-                num_nodes,
-                edges,
-                start,
-                goal,
-                target_path,
-            )
+            adjacency = [[] for _ in range(num_nodes)]
+            for source, target in edges:
+                adjacency[source].append(target)
 
             assert set(parsed_edges) == set(edges)
             assert (parsed_start, parsed_goal) == (start, goal)
@@ -343,15 +339,13 @@ def test_shortest_path_distributions_are_varied_permuted_and_solver_verified():
                 sum(source == node for source, _target in edges)
                 for node in range(num_nodes)
             ) <= distribution.max_out_degree
-            assert structure["decision_points"] >= 1.0
-            multi_route_examples += int(structure["multi_route"])
+            assert sum(len(adjacency[node]) > 1 for node in target_path[:-1]) >= 1
             observed_shapes.add((num_nodes, len(target_path) - 1))
             observed_edge_counts.add(len(edges))
             observed_starts.add(start)
 
         assert len(observed_edge_counts) > 1
         assert len(observed_starts) >= distribution.max_nodes - 1
-        assert multi_route_examples >= 375
         assert len(observed_shapes) > 1
 
 
@@ -366,16 +360,16 @@ def test_shortest_path_main_uniformly_mixes_feasible_path_lengths():
         path_length = len(path) - 1
         num_nodes = prompt.index(stoi[shortest_path.EDGES_TOKEN]) - 1
         path_length_counts[path_length] += 1
-        structure = shortest_path_eval.graph_structure_metrics(
-            num_nodes,
-            edges,
-            start,
-            goal,
-            path,
-        )
+        adjacency = [[] for _ in range(num_nodes)]
+        for source, target in edges:
+            adjacency[source].append(target)
+        decision_points = sum(len(adjacency[node]) > 1 for node in path[:-1])
+        random_legal_probability = 1.0
+        for node in path[:-1]:
+            random_legal_probability /= len(adjacency[node])
         assert num_nodes >= path_length + 9
-        assert structure["decision_points"] >= 4
-        assert structure["random_legal_path_probability"] <= 1 / 16
+        assert decision_points >= 4
+        assert random_legal_probability <= 1 / 16
 
     assert all(count >= 850 for count in path_length_counts.values())
     assert shortest_path.path_length_bucket(5) == "short"

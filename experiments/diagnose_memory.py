@@ -108,7 +108,6 @@ def _memory_stats(memory: torch.Tensor) -> dict[str, float]:
     flat = memory.detach().float().reshape(-1, memory.shape[-1])
     return {
         "rms_norm": float(memory.detach().float().square().mean().sqrt().item()),
-        "feature_std": float(flat.std(dim=0, unbiased=False).mean().item()),
         "effective_rank": _effective_rank(flat),
     }
 
@@ -217,16 +216,6 @@ def memory_interventions(model, batch, *, seed: int) -> dict:
     for name, memory in interventions.items():
         pass_output = model.forward_pass(token_stream, memory)
         losses[name] = _nll(model, pass_output.logits, batch.targets)
-
-    # Zeroing a JointMemoryTape bank leaves null K/V slots in the shared
-    # softmax. Excluding that bank is a distinct counterfactual. For the other
-    # architectures, a zero tape already removes the memory input exactly.
-    without_memory_source = getattr(model, "forward_pass_without_memory_source", None)
-    if without_memory_source is None:
-        losses["masked_memory_source"] = losses["zero_memory_bank"]
-    else:
-        pass_output = without_memory_source(token_stream, previous_memory)
-        losses["masked_memory_source"] = _nll(model, pass_output.logits, batch.targets)
 
     baseline = losses["correct"]
     return {

@@ -73,6 +73,7 @@ def test_trace_launcher_runs_task_matrix_into_task_first_results(tmp_path):
     env.update(
         {
             "PATH": f"{bin_dir}:{env['PATH']}",
+            "REAL_PYTHON": sys.executable,
             "DEVICE": "cpu",
             "TASKS": "shortest_path othello",
             "ARCHITECTURES": "memory_add",
@@ -190,6 +191,7 @@ def test_local_trace_pilot_scales_schedule_and_runs_final_checks(tmp_path):
     env.update(
         {
             "PATH": f"{bin_dir}:{env['PATH']}",
+            "REAL_PYTHON": sys.executable,
             "DEVICE": "cpu",
             "TRAIN_STEPS": "250",
             "RESULT_ROOT": str(tmp_path / "results"),
@@ -221,14 +223,15 @@ def test_local_trace_pilot_scales_schedule_and_runs_final_checks(tmp_path):
     assert "-m experiments.diagnose_memory" in calls[-1]
 
 
-def test_bbh_launcher_passes_new_architecture_names_without_suffixes(tmp_path):
+def test_bbh_launcher_passes_supported_architecture_names(tmp_path):
     bin_dir, log_path = _fake_python(tmp_path)
     env = os.environ.copy()
     env.update(
         {
             "PATH": f"{bin_dir}:{env['PATH']}",
+            "REAL_PYTHON": sys.executable,
             "TASKS": "permutation",
-            "ARCHITECTURES": "memory_add memory_state",
+            "ARCHITECTURES": "memory_add memory_tape",
             "SEEDS": "1337",
             "RESULT_ROOT": str(tmp_path / "results"),
         }
@@ -244,8 +247,7 @@ def test_bbh_launcher_passes_new_architecture_names_without_suffixes(tmp_path):
     calls = log_path.read_text(encoding="utf-8").splitlines()
     assert len(calls) == 2
     assert "--architecture memory_add" in calls[0]
-    assert "--architecture memory_state" in calls[1]
-    assert all("memory_state#" not in call for call in calls)
+    assert "--architecture memory_tape" in calls[1]
 
 
 def test_bbh_launcher_rejects_entire_bad_matrix_before_starting(tmp_path):
@@ -254,8 +256,9 @@ def test_bbh_launcher_rejects_entire_bad_matrix_before_starting(tmp_path):
     env.update(
         {
             "PATH": f"{bin_dir}:{env['PATH']}",
+            "REAL_PYTHON": sys.executable,
             "TASKS": "permutation",
-            "ARCHITECTURES": "memory_add memory_state#",
+            "ARCHITECTURES": "memory_add memory_tape#",
             "SEEDS": "1337",
         }
     )
@@ -268,5 +271,5 @@ def test_bbh_launcher_rejects_entire_bad_matrix_before_starting(tmp_path):
         text=True,
     )
     assert result.returncode == 2
-    assert "invalid architecture in matrix: memory_state#" in result.stderr
+    assert "invalid architecture in matrix: memory_tape#" in result.stderr
     assert not log_path.exists()

@@ -24,7 +24,6 @@ from tasks.common import (
     SymbolicBatch,
     build_batch_from_sequences,
     build_vocab,
-    decode_ids,
     make_sequence,
 )
 
@@ -141,7 +140,6 @@ __all__ = [
     "active_num_nodes",
     "build_pointer_chasing_batch",
     "build_pointer_chasing_vocab",
-    "decode_ids",
     "node_token",
     "required_block_size",
     "sample_pointer_chasing_example",

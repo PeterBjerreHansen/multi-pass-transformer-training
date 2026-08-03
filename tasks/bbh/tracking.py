@@ -18,7 +18,6 @@ from tasks.common import (
     SymbolicBatch,
     build_batch_from_sequences,
     build_vocab,
-    decode_ids,
     make_sequence,
 )
 
@@ -123,7 +122,6 @@ __all__ = [
     "apply_tracking_op",
     "build_tracking_batch",
     "build_tracking_vocab",
-    "decode_ids",
     "required_block_size",
     "sample_tracking_example",
     "solve_tracking",

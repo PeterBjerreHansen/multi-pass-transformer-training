@@ -176,7 +176,7 @@ def test_plotting_loaders_follow_current_artifact_schemas(tmp_path):
         "task": "shortest_path",
         "architecture": "memory_tape",
         "memory_interventions": {
-            "loss_deltas": {"correct": 0.0, "masked_memory_source": 0.2}
+            "loss_deltas": {"correct": 0.0, "zero_memory_bank": 0.2}
         },
         "pass_dynamics": {
             "trained_passes": [{"pass": 1, "loss": 1.8}],
@@ -303,7 +303,7 @@ def test_plotting_loaders_follow_current_artifact_schemas(tmp_path):
 
     loaded_diagnostics = load_diagnostic_records(tmp_path)
     assert loaded_diagnostics[0][
-        "memory_interventions.loss_deltas.masked_memory_source"
+        "memory_interventions.loss_deltas.zero_memory_bank"
     ] == 0.2
     assert loaded_diagnostics[0]["payload"]["pass_dynamics"]["trained_passes"][0]["pass"] == 1
 
@@ -315,7 +315,7 @@ def test_plotting_loaders_follow_current_artifact_schemas(tmp_path):
     assert ablation[0]["drift.append_recurrent.optimal_path"] == 0.5
 
 
-def test_training_loader_uses_latest_logical_run(tmp_path):
+def test_training_loader_preserves_every_logged_evaluation(tmp_path):
     from figures.plotting_utils import load_training_records
 
     run_dir = tmp_path / "pointer_chasing" / "transformer" / "seed_1337"
@@ -356,6 +356,5 @@ def test_training_loader_uses_latest_logical_run(tmp_path):
     )
 
     records = load_training_records(tmp_path)
-    assert len(records) == 1
-    assert records[0]["level"] == 2
-    assert records[0]["exact_match"] == 0.60
+    assert [record["level"] for record in records] == [7, 2]
+    assert [record["exact_match"] for record in records] == [0.99, 0.60]

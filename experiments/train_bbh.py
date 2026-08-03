@@ -305,7 +305,6 @@ def run_answer_curriculum(args) -> None:
     start_step = resume_step + 1
     final_step = resume_step + args.train_steps if checkpoint is not None else args.train_steps
     window_start = time.perf_counter()
-    window_steps = 0
     window_tokens = 0
     gradient_norm_window: dict[str, dict[str, float]] = {}
 
@@ -325,7 +324,6 @@ def run_answer_curriculum(args) -> None:
         update_gradient_norm_window(gradient_norm_window, gradient_norms(model))
         clip_gradients(model, args.max_grad_norm)
         optimizer.step()
-        window_steps += 1
         window_tokens += int(batch.idx.numel())
 
         should_eval = step == 1 or step % args.eval_interval == 0 or step == final_step
@@ -420,7 +418,6 @@ def run_answer_curriculum(args) -> None:
             )
         synchronize_device(args.device)
         window_start = time.perf_counter()
-        window_steps = 0
         window_tokens = 0
         gradient_norm_window = {}
 

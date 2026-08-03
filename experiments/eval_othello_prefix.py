@@ -126,7 +126,6 @@ def _free_generation_metrics(
     generation_seed: int,
 ) -> dict[str, float]:
     prompt_tokens = othello_eval.serialized_prompt(
-        args,
         stoi,
         example.prefix_move_ids,
     )
@@ -150,7 +149,6 @@ def _free_generation_metrics(
         example.prefix_move_ids,
         generated_tokens,
         eos_id=stoi[EOS_TOKEN],
-        reference_suffix=example.suffix_move_ids,
     )
 
 

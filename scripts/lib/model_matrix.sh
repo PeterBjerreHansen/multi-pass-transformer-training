@@ -1,17 +1,10 @@
 #!/usr/bin/env bash
 
-# Keep launcher validation explicit and fail before starting any long run.
-# The Python CLI remains the authoritative model factory; this list protects
-# matrix launchers from malformed shell tokens such as "memory_state#".
-MPT_ARCHITECTURES=(
-  transformer
-  memory_tape
-  joint_memory_tape
-  memory_concat
-  memory_add
-  memory_state
-  memory_update
-)
+# Validate the complete matrix before starting a long run. Read the supported
+# names from the Python model factory so shell and Python cannot drift apart.
+read -r -a MPT_ARCHITECTURES <<< "$(
+  python -c 'from model_factory import ARCHITECTURES; print(" ".join(ARCHITECTURES))'
+)"
 
 validate_architecture_matrix() {
   if [[ "$#" -eq 0 ]]; then

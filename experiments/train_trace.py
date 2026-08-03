@@ -75,7 +75,6 @@ def parse_args(argv: list[str] | None = None):
     _add_override(parser, "--othello-train-games", type=int)
     _add_override(parser, "--othello-val-games", type=int)
     _add_override(parser, "--othello-dataset-seed", type=int)
-    _add_override(parser, "--othello-prepend-opening", action="store_true")
     _add_override(parser, "--batch-size", type=int)
     _add_override(parser, "--train-steps", type=int)
     _add_override(parser, "--lr", type=float)

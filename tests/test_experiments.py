@@ -22,6 +22,8 @@ from experiments.common import (
 )
 from experiments.summarize_ablation import infer_quality_metric, recommend
 from experiments.diagnose_memory import (
+    _effective_rank,
+    _memory_stats,
     _relative_linf_residual,
     memory_interventions,
     pass_dynamics,
@@ -31,9 +33,7 @@ from experiments.presets import BBH_PRESETS, TRACE_PRESETS
 from experiments.train_bbh import BBH_TASKS, build_fixed_eval_batches, parse_args as parse_bbh_args
 from experiments.train_trace import parse_args as parse_trace_args
 from models import (
-    JointMemoryTapeTransformer,
     MemoryAddTransformer,
-    MemoryStateTransformer,
     MemoryTapeConfig,
     MemoryTapeTransformer,
     MultiPassConfig,
@@ -158,11 +158,11 @@ def test_memory_interventions_pass_dynamics_and_schedule_gap_return_finite_value
     interventions = memory_interventions(model, batch, seed=3)
     assert interventions["losses"]["correct"] == model.calc_loss(full_output.logits, batch.targets).item()
     assert set(interventions["losses"]) == {
-        "correct", "zero_memory_bank", "masked_memory_source", "cross_example",
+        "correct", "zero_memory_bank", "cross_example",
         "causal_position_resample", "causal_prefix_mean", "extra_lag"
     }
-    assert interventions["losses"]["zero_memory_bank"] == interventions["losses"]["masked_memory_source"]
     assert interventions["loss_deltas"]["correct"] == 0.0
+    assert set(interventions["source_memory"]) == {"rms_norm", "effective_rank"}
     dynamics = pass_dynamics(model, batch, extra_passes=2)
     assert len(dynamics["trained_passes"]) == 3
     assert len(dynamics["extra_passes"]) == 2
@@ -209,23 +209,20 @@ def test_relative_linf_residual_is_zero_for_identical_tapes():
     assert residual == {"mean": 0.0, "max": 0.0}
 
 
-def test_joint_memory_tape_diagnostics_return_finite_values():
-    model = JointMemoryTapeTransformer(MultiPassConfig(24, 12, 1, 1, 8, 3))
-    _vocab, stoi, _ = pointer_chasing.build_pointer_chasing_vocab(5)
-    batch = pointer_chasing.build_pointer_chasing_batch(2, 5, 2, stoi, device="cpu", rng=random.Random(2))
-    interventions = memory_interventions(model, batch, seed=3)
-    assert all(torch.isfinite(torch.tensor(value)) for value in interventions["losses"].values())
-    assert {"zero_memory_bank", "masked_memory_source"} <= set(interventions["losses"])
-    dynamics = pass_dynamics(model, batch, extra_passes=2)
-    assert len(dynamics["extra_passes"]) == 2
-    schedule_gap = teacher_forced_schedule_gap(model, batch, horizon=2)
-    assert schedule_gap["overall"]["count"] == 4
-    assert all(torch.isfinite(torch.tensor(value)) for value in schedule_gap["overall"].values())
+def test_effective_rank_distinguishes_collapsed_and_full_rank_memory():
+    collapsed = torch.ones(16, 1) @ torch.arange(1, 9, dtype=torch.float32)[None, :]
+    full_rank = torch.eye(8).repeat(2, 1)
+
+    assert _effective_rank(collapsed) == pytest.approx(0.0, abs=1e-5)
+    assert _effective_rank(full_rank) == pytest.approx(7.0, rel=1e-5)
+    assert set(_memory_stats(full_rank.reshape(2, 8, 8))) == {
+        "rms_norm",
+        "effective_rank",
+    }
 
 
-@pytest.mark.parametrize("model_class", [MemoryAddTransformer, MemoryStateTransformer])
-def test_additive_memory_diagnostics_return_finite_values(model_class):
-    model = model_class(MultiPassConfig(24, 12, 1, 1, 8, 3))
+def test_memory_add_diagnostics_return_finite_values():
+    model = MemoryAddTransformer(MultiPassConfig(24, 12, 1, 1, 8, 3))
     _vocab, stoi, _ = pointer_chasing.build_pointer_chasing_vocab(5)
     batch = pointer_chasing.build_pointer_chasing_batch(
         2,
@@ -258,30 +255,6 @@ def test_gradient_norms_cover_memory_subsystems_after_backward():
     assert all(torch.isfinite(torch.tensor(value)) and value > 0 for value in norms.values())
 
 
-def test_joint_memory_tape_gradient_norms_cover_memory_attention_after_backward():
-    model = JointMemoryTapeTransformer(MultiPassConfig(24, 12, 1, 1, 8, 3))
-    _vocab, stoi, _ = pointer_chasing.build_pointer_chasing_vocab(5)
-    batch = pointer_chasing.build_pointer_chasing_batch(2, 5, 2, stoi, device="cpu", rng=random.Random(2))
-    output = model(batch.idx)
-    loss = model.calc_total_loss(output, batch.targets, [0, 0, 1]).loss
-    loss.backward()
-    norms = gradient_norms(model)
-    assert {"global", "backbone", "memory_writer", "memory_attention"} <= set(norms)
-    assert "memory_gate" not in norms
-    assert all(torch.isfinite(torch.tensor(value)) and value > 0 for value in norms.values())
-    memory_reader_grads = (
-        model.transformer.h[0].joint_attn.c_mem_kv.weight.grad,
-        model.transformer.h[0].ln_mem_kv.weight.grad,
-    )
-    assert all(gradient is not None for gradient in memory_reader_grads)
-    expected_memory_norm = sum(
-        gradient.detach().float().square().sum()
-        for gradient in memory_reader_grads
-        if gradient is not None
-    ).sqrt().item()
-    assert norms["memory_attention"] == pytest.approx(expected_memory_norm)
-
-
 def test_memory_add_gradient_norms_report_fusion_branch():
     model = MemoryAddTransformer(MultiPassConfig(24, 12, 1, 1, 8, 3))
     _vocab, stoi, _ = pointer_chasing.build_pointer_chasing_vocab(5)
@@ -298,24 +271,6 @@ def test_memory_add_gradient_norms_report_fusion_branch():
     norms = gradient_norms(model)
     assert norms["memory_fusion"] > 0
     assert norms["memory_writer"] == 0
-
-
-def test_memory_state_gradient_norms_report_fusion_and_writer():
-    model = MemoryStateTransformer(MultiPassConfig(24, 12, 1, 1, 8, 3))
-    _vocab, stoi, _ = pointer_chasing.build_pointer_chasing_vocab(5)
-    batch = pointer_chasing.build_pointer_chasing_batch(
-        2,
-        5,
-        2,
-        stoi,
-        device="cpu",
-        rng=random.Random(2),
-    )
-    loss = model.calc_total_loss(model(batch.idx), batch.targets, [0, 0, 1]).loss
-    loss.backward()
-    norms = gradient_norms(model)
-    assert norms["memory_fusion"] > 0
-    assert norms["memory_writer"] > 0
 
 
 def _one_step(model, optimizer, tokens, targets):
@@ -546,7 +501,6 @@ def test_trace_registry_preserves_seeded_task_behavior(tmp_path):
         othello_train_games=8,
         othello_val_games=4,
         othello_dataset_seed=31,
-        othello_prepend_opening=False,
     )
     othello_task = TRACE_TASKS["othello"]
     direct_othello_vocab = othello.build_othello_vocab(
@@ -555,7 +509,6 @@ def test_trace_registry_preserves_seeded_task_behavior(tmp_path):
     )
     assert othello_task.build_vocab(othello_args) == direct_othello_vocab
     assert othello_task.required_block_size(othello_args) == othello.required_block_size(
-        othello_prepend_opening=False,
         othello_train_games=8,
         othello_val_games=4,
     )
@@ -569,7 +522,6 @@ def test_trace_registry_preserves_seeded_task_behavior(tmp_path):
         othello_train_games=8,
         othello_val_games=4,
         othello_dataset_seed=31,
-        othello_prepend_opening=False,
     )
     registered_othello_batch = othello_task.build_batch(
         othello_args,
@@ -697,7 +649,12 @@ def test_ablation_recommendation_accepts_noninferior_efficiency_win():
         }
         for seed in range(3)
     }
-    result = recommend(control, treatment, mode="pareto")
+    result = recommend(
+        control,
+        treatment,
+        mode="pareto",
+        quality_metric="drift.append_recurrent.token_legality",
+    )
     assert result["quality_noninferior"]
     assert result["efficiency_win"]
     assert result["recommend_merge"]
@@ -736,10 +693,8 @@ def test_ablation_quality_metric_is_inferred_from_task():
         infer_quality_metric({"1337": {"task": "othello"}})
         == "drift.append_recurrent.sequence_legality"
     )
-    assert (
+    with pytest.raises(ValueError, match="pass --quality-metric"):
         infer_quality_metric({"1337": {"task": "unknown"}})
-        == "drift.append_recurrent.token_legality"
-    )
 
 
 def test_evaluation_checkpoint_selection_is_explicit(tmp_path):

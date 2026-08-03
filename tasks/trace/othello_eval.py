@@ -164,17 +164,10 @@ def sample_validation_traces(
 
 
 def serialized_prompt(
-    args,
     stoi: dict[str, int],
     prefix_move_ids: tuple[int, ...],
 ) -> list[int]:
-    prompt = [stoi[BOS_TOKEN]]
-    if args.othello_prepend_opening:
-        prompt.extend(
-            stoi[othello.move_token(square)]
-            for square in othello.OPENING_PREFIX
-        )
-    prompt.append(stoi[SEP_TOKEN])
+    prompt = [stoi[BOS_TOKEN], stoi[SEP_TOKEN]]
     prompt.extend(prefix_move_ids)
     return prompt
 
@@ -184,7 +177,6 @@ def score_generated_continuation(
     generated_token_ids: list[int],
     *,
     eos_id: int,
-    reference_suffix: tuple[int, ...],
 ) -> dict[str, float]:
     eos_position = next(
         (
@@ -222,16 +214,10 @@ def score_generated_continuation(
     legal_move_fraction = (
         float(legal_prefix_length) / denominator
         if denominator
-        else float(not reference_suffix and sequence_legality)
-    )
-    exact_tokens = [*reference_suffix, eos_id]
-    exact_suffix = float(
-        eos_position is not None
-        and generated_token_ids[: eos_position + 1] == exact_tokens
+        else float(sequence_legality)
     )
     return {
         "sequence_legality": sequence_legality,
-        "exact_suffix": exact_suffix,
         "legal_move_fraction": legal_move_fraction,
         "legal_prefix_length": float(legal_prefix_length),
         "generated_move_count": float(len(attempted_moves)),
@@ -254,7 +240,6 @@ def teacher_forced_metrics(
     trace = example.trace_move_ids
     eos_id = stoi[EOS_TOKEN]
     prompt_tokens = serialized_prompt(
-        args,
         stoi,
         example.prefix_move_ids,
     )
@@ -263,7 +248,7 @@ def teacher_forced_metrics(
     if inference_mode == "recompute":
         logits_by_position = recompute_cache.get(trace)
         if logits_by_position is None:
-            full_input = serialized_prompt(args, stoi, trace)
+            full_input = serialized_prompt(stoi, trace)
             tensor = torch.tensor(
                 [full_input],
                 dtype=torch.long,
@@ -271,7 +256,7 @@ def teacher_forced_metrics(
             )
             logits_by_position = model(tensor).logits[0].detach()
             recompute_cache[trace] = logits_by_position
-        base_length = len(serialized_prompt(args, stoi, ()))
+        base_length = len(serialized_prompt(stoi, ()))
         for move_index in range(example.cut, len(trace)):
             legal_ids = othello.legal_move_token_ids_after_prefix(
                 trace[:move_index]

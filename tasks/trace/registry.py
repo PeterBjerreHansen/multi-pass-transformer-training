@@ -47,7 +47,6 @@ def _othello_vocab(args):
 
 def _othello_block_size(args) -> int:
     return othello.required_block_size(
-        othello_prepend_opening=args.othello_prepend_opening,
         othello_train_games=args.othello_train_games,
         othello_val_games=args.othello_val_games,
     )
@@ -64,7 +63,6 @@ def _othello_batch(args, stoi, rng: random.Random, split: str):
         othello_train_games=args.othello_train_games,
         othello_val_games=args.othello_val_games,
         othello_dataset_seed=args.othello_dataset_seed,
-        othello_prepend_opening=args.othello_prepend_opening,
     )
 
 

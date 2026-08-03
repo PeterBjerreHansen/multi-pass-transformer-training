@@ -21,11 +21,7 @@ import matplotlib.pyplot as plt
 ARCHITECTURE_COLORS = {
     "transformer": "#6b7280",
     "memory_tape": "#e68613",
-    "joint_memory_tape": "#2878b5",
-    "memory_concat": "#8e5ea2",
     "memory_add": "#2a9d8f",
-    "memory_state": "#55a868",
-    "memory_update": "#c44e52",
 }
 
 INFERENCE_MODE_STYLES = {
@@ -123,15 +119,6 @@ def load_training_records(root: str | Path) -> list[dict]:
         run_dir = metrics_path.parent
         context = _config_context(run_dir, root=root)
         events = read_jsonl(metrics_path)
-        # Reusing a run directory appends a new run_start and a fresh metric
-        # stream. Plot only the latest logical run; otherwise old and new
-        # curriculum levels at the same optimizer step create false regressions.
-        run_starts = [
-            index for index, event in enumerate(events)
-            if event.get("event") == "run_start"
-        ]
-        if run_starts:
-            events = events[run_starts[-1] :]
         for event in events:
             if event.get("event") != "eval":
                 continue
@@ -409,16 +396,6 @@ def summarize_curriculum_levels(records: Sequence[dict]) -> list[dict]:
             if mastery_step is not None:
                 previous_mastery_step = mastery_step
     return summaries
-
-
-def mean_by_category(records: Sequence[dict], category: str, metric: str) -> dict[str, float]:
-    values: dict[str, list[float]] = defaultdict(list)
-    for record in records:
-        name = record.get(category)
-        value = _finite_number(record.get(metric))
-        if name is not None and value is not None:
-            values[str(name)].append(value)
-    return {name: sum(items) / len(items) for name, items in values.items()}
 
 
 def plot_seed_and_median_curves(

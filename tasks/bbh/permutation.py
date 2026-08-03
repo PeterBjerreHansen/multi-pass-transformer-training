@@ -17,7 +17,6 @@ from tasks.common import (
     SymbolicBatch,
     build_batch_from_sequences,
     build_vocab,
-    decode_ids,
     make_sequence,
 )
 
@@ -112,7 +111,6 @@ __all__ = [
     "SWAP_TOKEN",
     "build_permutation_batch",
     "build_permutation_vocab",
-    "decode_ids",
     "obj_token",
     "pos_token",
     "required_block_size",

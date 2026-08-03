@@ -14,7 +14,6 @@ from experiments.common import write_json
 QUALITY_MARGIN = 0.01
 THROUGHPUT_WIN = 0.10
 SIZE_WIN = 0.25
-DEFAULT_QUALITY_METRIC = "drift.append_recurrent.token_legality"
 TASK_QUALITY_METRICS = {
     "shortest_path": "drift.append_recurrent.optimal_path",
     "othello": "drift.append_recurrent.sequence_legality",
@@ -29,7 +28,7 @@ def parse_args(argv: list[str] | None = None):
     parser.add_argument("--output-dir", default=None)
     parser.add_argument(
         "--recommendation-mode",
-        choices=["pareto", "quality-only", "null-slot", "position-offset"],
+        choices=["pareto", "quality-only"],
         default="pareto",
     )
     parser.add_argument(
@@ -161,7 +160,12 @@ def infer_quality_metric(
             "explicitly"
         )
     task = next(iter(tasks), None)
-    return TASK_QUALITY_METRICS.get(task, DEFAULT_QUALITY_METRIC)
+    if task not in TASK_QUALITY_METRICS:
+        raise ValueError(
+            f"no default quality metric for task {task!r}; pass "
+            "--quality-metric explicitly"
+        )
+    return TASK_QUALITY_METRICS[task]
 
 
 def recommend(
@@ -169,7 +173,7 @@ def recommend(
     treatment: dict[str, dict[str, float | str]],
     *,
     mode: str,
-    quality_metric: str = DEFAULT_QUALITY_METRIC,
+    quality_metric: str,
 ) -> dict:
     deltas = _paired_delta(control, treatment, quality_metric)
     median_delta = _median(deltas)
@@ -195,20 +199,7 @@ def recommend(
         or (tape_ratio is not None and tape_ratio <= 1.0 - SIZE_WIN)
     )
 
-    eligible = quality_win if mode in {"quality-only", "null-slot"} else quality_win or (noninferior and efficiency_win)
-    if mode == "null-slot":
-        preconditions = [
-            bool(run.get("diagnostics.memory_attention.diagnostic_precondition", 0.0))
-            for run in control.values()
-        ]
-        null_mass = [
-            _number(run.get("diagnostics.memory_attention.mean_null_mass"))
-            for run in treatment.values()
-        ]
-        diagnostic_ok = sum(preconditions) >= 2 and sum(value is not None and value >= 0.05 for value in null_mass) >= 2
-        eligible = eligible and diagnostic_ok
-    else:
-        diagnostic_ok = None
+    eligible = quality_win if mode == "quality-only" else quality_win or (noninferior and efficiency_win)
 
     return {
         "recommend_merge": eligible,
@@ -222,7 +213,6 @@ def recommend(
         "median_append_eval_throughput_ratio": eval_ratio,
         "median_parameter_ratio": parameter_ratio,
         "median_tape_bytes_ratio": tape_ratio,
-        "diagnostic_precondition": diagnostic_ok,
     }
 
 

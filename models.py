@@ -48,17 +48,6 @@ class MultiPassOutput:
     def logits_per_pass(self) -> tuple[torch.Tensor, ...]:
         return tuple(item.logits for item in self.passes)
 
-    @property
-    def hidden_states_per_pass(self) -> tuple[torch.Tensor, ...]:
-        return tuple(item.hidden_states for item in self.passes)
-
-    @property
-    def memory_states_per_pass(self) -> tuple[torch.Tensor, ...]:
-        memories = tuple(item.memory_states for item in self.passes)
-        if any(memory is None for memory in memories):
-            raise RuntimeError("not every pass contains memory states")
-        return tuple(memory for memory in memories if memory is not None)
-
 
 @dataclass(frozen=True)
 class RecurrentState:
@@ -71,7 +60,6 @@ class RecurrentState:
 class LossOutput:
     loss: torch.Tensor
     pass_losses: tuple[torch.Tensor, ...]
-    normalized_pass_weights: torch.Tensor
 
 
 # -----------------------------------------------------------------------------
@@ -100,10 +88,6 @@ class TransformerConfig:
     def to_dict(self) -> dict:
         return asdict(self)
 
-    @classmethod
-    def from_dict(cls, values: dict) -> "TransformerConfig":
-        return cls(**values)
-
 
 @dataclass
 class MultiPassConfig(TransformerConfig):
@@ -118,11 +102,6 @@ class MultiPassConfig(TransformerConfig):
 @dataclass
 class MemoryTapeConfig(MultiPassConfig):
     """Configuration seam for MemoryTape-specific ablations."""
-
-
-@dataclass
-class MemoryUpdateConfig(MultiPassConfig):
-    """Configuration seam for MemoryUpdate-specific ablations."""
 
 
 # -----------------------------------------------------------------------------
@@ -235,78 +214,6 @@ class CausalCrossAttention(nn.Module):
 
         y = y.transpose(1, 2).contiguous().view(batch_size, seq_len, dim)
         return self.c_proj(y)
-
-
-class CausalTokenMemoryAttention(nn.Module):
-    """Causal attention over token and shifted-memory key/value sources."""
-
-    def __init__(self, config: TransformerConfig):
-        super().__init__()
-        self.c_q = nn.Linear(config.n_embd, config.n_embd, bias=False)
-        self.c_tok_kv = nn.Linear(config.n_embd, 2 * config.n_embd, bias=False)
-        self.c_mem_kv = nn.Linear(config.n_embd, 2 * config.n_embd, bias=False)
-        self.c_proj = nn.Linear(config.n_embd, config.n_embd, bias=False)
-        self.n_head = config.n_head
-        self.n_embd = config.n_embd
-        self.head_dim = config.n_embd // config.n_head
-        self.flash = hasattr(F, "scaled_dot_product_attention")
-
-    def forward(
-        self,
-        query: torch.Tensor,
-        token_sources: torch.Tensor,
-        memory: torch.Tensor,
-        *,
-        include_memory_source: bool = True,
-    ) -> torch.Tensor:
-        batch_size, seq_len, dim = query.shape
-        token_batch, token_len, token_dim = token_sources.shape
-        memory_batch, memory_len, memory_dim = memory.shape
-        if (batch_size, seq_len, dim) != (token_batch, token_len, token_dim):
-            raise ValueError("query and token_sources must share shape")
-        if (batch_size, seq_len, dim) != (memory_batch, memory_len, memory_dim):
-            raise ValueError("query and memory must share shape")
-
-        q = self.c_q(query)
-        token_k, token_v = self.c_tok_kv(token_sources).split(self.n_embd, dim=-1)
-        q = q.view(batch_size, seq_len, self.n_head, self.head_dim).transpose(1, 2)
-        token_k = token_k.view(batch_size, seq_len, self.n_head, self.head_dim).transpose(1, 2)
-        token_v = token_v.view(batch_size, seq_len, self.n_head, self.head_dim).transpose(1, 2)
-
-        positions = torch.arange(seq_len, device=query.device)
-        if include_memory_source:
-            memory_k, memory_v = self.c_mem_kv(memory).split(self.n_embd, dim=-1)
-            memory_k = memory_k.view(batch_size, memory_len, self.n_head, self.head_dim).transpose(1, 2)
-            memory_v = memory_v.view(batch_size, memory_len, self.n_head, self.head_dim).transpose(1, 2)
-            k = torch.cat((token_k, memory_k), dim=-2)
-            v = torch.cat((token_v, memory_v), dim=-2)
-            source_positions = torch.cat((positions, positions))
-        else:
-            k = token_k
-            v = token_v
-            source_positions = positions
-        allowed = source_positions.unsqueeze(0) <= positions.unsqueeze(1)
-
-        if self.flash:
-            y = F.scaled_dot_product_attention(
-                q,
-                k,
-                v,
-                attn_mask=allowed,
-                dropout_p=0.0,
-                is_causal=False,
-            )
-        else:
-            scores = (q @ k.transpose(-2, -1)) / math.sqrt(self.head_dim)
-            scores = scores.masked_fill(~allowed, float("-inf"))
-            y = F.softmax(scores, dim=-1) @ v
-
-        y = y.transpose(1, 2).contiguous().view(batch_size, seq_len, dim)
-        return self.c_proj(y)
-
-
-# Backward-compatible import name; new code should use the precise class name.
-CausalJointAttention = CausalTokenMemoryAttention
 
 
 def shift_right(memory: torch.Tensor) -> torch.Tensor:
@@ -557,11 +464,6 @@ class MultiPassTransformer(nn.Module):
                 raise RuntimeError("multi-pass model failed to emit memory states")
         return MultiPassOutput(tuple(passes))
 
-    def forward_passes(self, idx: torch.Tensor) -> tuple[tuple[torch.Tensor, ...], tuple[torch.Tensor, ...]]:
-        """Compatibility helper for old analysis code."""
-        output = self(idx)
-        return output.logits_per_pass, output.memory_states_per_pass
-
     @staticmethod
     def calc_loss(logits: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
         return F.cross_entropy(logits.reshape(-1, logits.shape[-1]), targets.reshape(-1), ignore_index=-1)
@@ -584,7 +486,7 @@ class MultiPassTransformer(nn.Module):
             dtype=losses[0].dtype,
         )
         total = torch.stack(losses).mul(weights).sum()
-        return LossOutput(loss=total, pass_losses=losses, normalized_pass_weights=weights)
+        return LossOutput(loss=total, pass_losses=losses)
 
     @torch.no_grad()
     def prefill_recurrent(self, ids: torch.Tensor) -> RecurrentState:
@@ -694,28 +596,6 @@ class MultiPassTransformer(nn.Module):
         raise NotImplementedError
 
 
-class MemoryConcatTransformer(MultiPassTransformer):
-    block_cls = Block
-
-    def __init__(self, config: MultiPassConfig):
-        super().__init__(config)
-        self.mem_in_ln = LayerNorm(config.n_embd)
-        self.mem_fuse = nn.Linear(2 * config.n_embd, config.n_embd, bias=False)
-        self.finish_initialization()
-        with torch.no_grad():
-            self.mem_fuse.weight.zero_()
-            eye = torch.eye(config.n_embd, device=self.mem_fuse.weight.device, dtype=self.mem_fuse.weight.dtype)
-            self.mem_fuse.weight[:, : config.n_embd].copy_(eye)
-            nn.init.normal_(self.mem_fuse.weight[:, config.n_embd :], mean=0.0, std=0.02)
-
-    def _run_full_pass(self, token_stream: torch.Tensor, memory_tape: torch.Tensor) -> torch.Tensor:
-        memory_tape = self.mem_in_ln(memory_tape)
-        hidden = self.mem_fuse(torch.cat((token_stream, memory_tape), dim=-1))
-        for block in self.transformer.h:
-            hidden = block(hidden)
-        return hidden
-
-
 class MemoryAddTransformer(MultiPassTransformer):
     """Causal decoder with a residual projection of the shifted memory tape.
 
@@ -736,56 +616,6 @@ class MemoryAddTransformer(MultiPassTransformer):
 
     def _run_full_pass(self, token_stream: torch.Tensor, memory_tape: torch.Tensor) -> torch.Tensor:
         hidden = token_stream + self.memory_projection(self.mem_in_ln(memory_tape))
-        for block in self.transformer.h:
-            hidden = block(hidden)
-        return hidden
-
-
-def _fuse_memory_state_inputs(
-    memory_tape: torch.Tensor,
-    token_stream: torch.Tensor,
-    *,
-    mem_in_ln: LayerNorm,
-    token_in_ln: LayerNorm,
-    token_to_memory: nn.Linear,
-) -> torch.Tensor:
-    """Apply the shared MemoryState/MemoryUpdate input-fusion contract."""
-    return mem_in_ln(memory_tape) + token_to_memory(token_in_ln(token_stream))
-
-
-class MemoryStateTransformer(MultiPassTransformer):
-    """Memory-first additive fusion followed by ordinary decoder blocks.
-
-    This isolates MemoryUpdate's input rule from its per-layer token
-    cross-attention: the shifted tape is the direct residual stream, while a
-    normalized token stream enters through an identity-initialized projection.
-    """
-
-    block_cls = Block
-
-    def __init__(self, config: MultiPassConfig):
-        super().__init__(config)
-        self.mem_in_ln = LayerNorm(config.n_embd)
-        self.token_in_ln = LayerNorm(config.n_embd)
-        self.token_to_memory = nn.Linear(config.n_embd, config.n_embd, bias=False)
-        self.finish_initialization()
-        with torch.no_grad():
-            self.token_to_memory.weight.copy_(
-                torch.eye(
-                    config.n_embd,
-                    device=self.token_to_memory.weight.device,
-                    dtype=self.token_to_memory.weight.dtype,
-                )
-            )
-
-    def _run_full_pass(self, token_stream: torch.Tensor, memory_tape: torch.Tensor) -> torch.Tensor:
-        hidden = _fuse_memory_state_inputs(
-            memory_tape,
-            token_stream,
-            mem_in_ln=self.mem_in_ln,
-            token_in_ln=self.token_in_ln,
-            token_to_memory=self.token_to_memory,
-        )
         for block in self.transformer.h:
             hidden = block(hidden)
         return hidden
@@ -828,125 +658,6 @@ class MemoryTapeTransformer(MultiPassTransformer):
         for block in self.transformer.h:
             hidden = block(hidden, memory_tape)
         return hidden
-
-class JointMemoryBlock(nn.Module):
-    def __init__(self, config: MultiPassConfig):
-        super().__init__()
-        self.ln_joint_q = LayerNorm(config.n_embd)
-        self.ln_token_kv = LayerNorm(config.n_embd)
-        self.ln_mem_kv = LayerNorm(config.n_embd)
-        # Retain the attribute name so existing checkpoints keep their keys.
-        self.joint_attn = CausalTokenMemoryAttention(config)
-        self.ln_mlp = LayerNorm(config.n_embd)
-        self.mlp = MLP(config)
-
-    def forward(
-        self,
-        x: torch.Tensor,
-        memory_states: torch.Tensor,
-        *,
-        include_memory_source: bool = True,
-    ) -> torch.Tensor:
-        joint_delta = self.joint_attn(
-            self.ln_joint_q(x),
-            self.ln_token_kv(x),
-            self.ln_mem_kv(memory_states),
-            include_memory_source=include_memory_source,
-        )
-        x = x + joint_delta
-        return x + self.mlp(self.ln_mlp(x))
-
-
-class JointMemoryTapeTransformer(MultiPassTransformer):
-    block_cls = JointMemoryBlock
-
-    def __init__(self, config: MultiPassConfig):
-        super().__init__(config)
-        self.finish_initialization()
-
-    def _run_full_pass(self, token_stream: torch.Tensor, memory_tape: torch.Tensor) -> torch.Tensor:
-        return self._run_full_pass_with_memory_source(
-            token_stream,
-            memory_tape,
-            include_memory_source=True,
-        )
-
-    def _run_full_pass_with_memory_source(
-        self,
-        token_stream: torch.Tensor,
-        memory_tape: torch.Tensor,
-        *,
-        include_memory_source: bool,
-    ) -> torch.Tensor:
-        hidden = token_stream
-        for block in self.transformer.h:
-            hidden = block(hidden, memory_tape, include_memory_source=include_memory_source)
-        return hidden
-
-    def forward_pass_without_memory_source(
-        self,
-        token_stream: torch.Tensor,
-        previous_memory: torch.Tensor,
-    ) -> PassOutput:
-        """Run a pass with the memory K/V bank excluded from every softmax."""
-        if token_stream.shape != previous_memory.shape:
-            raise ValueError("token_stream and previous_memory must have the same shape")
-        memory_tape = shift_right(previous_memory)
-        hidden = self._run_full_pass_with_memory_source(
-            token_stream,
-            memory_tape,
-            include_memory_source=False,
-        )
-        hidden = self.transformer.ln_f(hidden)
-        logits = self.lm_head(hidden)
-        memory = self.write_memory(hidden)
-        return PassOutput(logits=logits, hidden_states=hidden, memory_states=memory)
-
-
-class MemoryUpdateBlock(nn.Module):
-    def __init__(self, config: MemoryUpdateConfig):
-        super().__init__()
-        self.ln_mem_q = LayerNorm(config.n_embd)
-        self.ln_tok_kv = LayerNorm(config.n_embd)
-        self.token_attn = CausalCrossAttention(config)
-        self.ln_1 = LayerNorm(config.n_embd)
-        self.attn = CausalSelfAttention(config)
-        self.ln_2 = LayerNorm(config.n_embd)
-        self.mlp = MLP(config)
-
-    def forward(self, memory_states: torch.Tensor, token_stream: torch.Tensor) -> torch.Tensor:
-        token_delta = self.token_attn(self.ln_mem_q(memory_states), self.ln_tok_kv(token_stream))
-        memory_states = memory_states + token_delta
-        memory_states = memory_states + self.attn(self.ln_1(memory_states))
-        return memory_states + self.mlp(self.ln_2(memory_states))
-
-
-class MemoryUpdateTransformer(MultiPassTransformer):
-    block_cls = MemoryUpdateBlock
-
-    def __init__(self, config: MemoryUpdateConfig):
-        super().__init__(config)
-        self.mem_in_ln = LayerNorm(config.n_embd)
-        self.token_in_ln = LayerNorm(config.n_embd)
-        self.token_to_memory = nn.Linear(config.n_embd, config.n_embd, bias=False)
-        self.finish_initialization()
-        with torch.no_grad():
-            self.token_to_memory.weight.copy_(
-                torch.eye(config.n_embd, device=self.token_to_memory.weight.device, dtype=self.token_to_memory.weight.dtype)
-            )
-
-    def _run_full_pass(self, token_stream: torch.Tensor, memory_tape: torch.Tensor) -> torch.Tensor:
-        memory_states = _fuse_memory_state_inputs(
-            memory_tape,
-            token_stream,
-            mem_in_ln=self.mem_in_ln,
-            token_in_ln=self.token_in_ln,
-            token_to_memory=self.token_to_memory,
-        )
-        for block in self.transformer.h:
-            memory_states = block(memory_states, token_stream)
-        return memory_states
-
 
 def _validate_generation_inputs(ids: torch.Tensor, max_new_tokens: int) -> None:
     if ids.ndim != 2:

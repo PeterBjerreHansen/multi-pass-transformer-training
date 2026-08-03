@@ -1,82 +1,9 @@
 """Task-specific evaluation for shortest-path trace generation."""
 from __future__ import annotations
 
-from typing import Sequence
-
 import torch
 
 from tasks.trace import shortest_path
-
-
-def graph_structure_metrics(
-    num_nodes: int,
-    edges: Sequence[tuple[int, int]],
-    start: int,
-    goal: int,
-    target_path: Sequence[int],
-) -> dict[str, float]:
-    """Measure realized connectivity without treating edge count as a task class."""
-    adjacency: list[list[int]] = [[] for _ in range(num_nodes)]
-    reverse: list[list[int]] = [[] for _ in range(num_nodes)]
-    for source, target in edges:
-        adjacency[source].append(target)
-        reverse[target].append(source)
-
-    def reachable_from(seed: int, graph: Sequence[Sequence[int]]) -> set[int]:
-        reached = {seed}
-        stack = [seed]
-        while stack:
-            node = stack.pop()
-            for neighbor in graph[node]:
-                if neighbor not in reached:
-                    reached.add(neighbor)
-                    stack.append(neighbor)
-        return reached
-
-    reachable = reachable_from(start, adjacency)
-    can_reach_goal = reachable_from(goal, reverse)
-    relevant_edges = sum(
-        source in reachable and target in can_reach_goal
-        for source, target in edges
-    )
-
-    memo: dict[int, int] = {}
-
-    def route_count(node: int, visiting: set[int]) -> int:
-        if node == goal:
-            return 1
-        if node in memo:
-            return memo[node]
-        if node in visiting:
-            raise ValueError("shortest-path structure metrics require a DAG")
-        total = 0
-        for target in adjacency[node]:
-            total = min(2, total + route_count(target, visiting | {node}))
-        memo[node] = total
-        return total
-
-    capped_route_count = route_count(start, set())
-    decision_points = sum(
-        len(adjacency[node]) > 1
-        for node in target_path[:-1]
-    )
-    random_legal_probability = 1.0
-    for node in target_path[:-1]:
-        random_legal_probability /= len(adjacency[node])
-    return {
-        "node_count": float(num_nodes),
-        "edge_count": float(len(edges)),
-        "mean_out_degree": len(edges) / num_nodes,
-        "max_out_degree": float(
-            max((len(targets) for targets in adjacency), default=0)
-        ),
-        "reachable_node_fraction": len(reachable) / num_nodes,
-        "goal_reachable_node_fraction": len(can_reach_goal) / num_nodes,
-        "multi_route": float(capped_route_count > 1),
-        "decision_points": float(decision_points),
-        "relevant_edge_fraction": relevant_edges / max(len(edges), 1),
-        "random_legal_path_probability": random_legal_probability,
-    }
 
 
 @torch.no_grad()
@@ -98,16 +25,6 @@ def generation_metrics(
     totals = {
         "optimal_path": 0.0,
         "mean_target_path_length": 0.0,
-        "mean_node_count": 0.0,
-        "mean_edge_count": 0.0,
-        "mean_out_degree": 0.0,
-        "mean_max_out_degree": 0.0,
-        "mean_reachable_node_fraction": 0.0,
-        "mean_goal_reachable_node_fraction": 0.0,
-        "multi_route_fraction": 0.0,
-        "mean_decision_points": 0.0,
-        "mean_relevant_edge_fraction": 0.0,
-        "mean_random_legal_path_probability": 0.0,
     }
     bucket_counts = {
         bucket: 0
@@ -147,49 +64,12 @@ def generation_metrics(
             0,
             prompt_len : prompt_len + output_len,
         ].tolist()
-        prompt_tokens = batch.idx[row, 1 : prompt_len - 1].tolist()
-        edges, start, goal = shortest_path.parse_prompt_metadata(prompt_tokens)
-        row_num_nodes = prompt_tokens.index(5) - 1
         target_path_ids = target_suffix[:-1]
         target_path_length = len(target_path_ids) - 1
         bucket = shortest_path.path_length_bucket(target_path_length)
         optimal_path = generated_suffix == target_suffix
-        target_path = [
-            shortest_path.token_id_to_node(
-                token_id,
-                num_nodes=row_num_nodes,
-            )
-            for token_id in target_path_ids
-        ]
-        if any(node is None for node in target_path):
-            raise ValueError("target path contains an invalid node token")
-        structure = graph_structure_metrics(
-            row_num_nodes,
-            edges,
-            start,
-            goal,
-            target_path,
-        )
         totals["optimal_path"] += float(optimal_path)
         totals["mean_target_path_length"] += float(target_path_length)
-        totals["mean_node_count"] += structure["node_count"]
-        totals["mean_edge_count"] += structure["edge_count"]
-        totals["mean_out_degree"] += structure["mean_out_degree"]
-        totals["mean_max_out_degree"] += structure["max_out_degree"]
-        totals["mean_reachable_node_fraction"] += structure[
-            "reachable_node_fraction"
-        ]
-        totals["mean_goal_reachable_node_fraction"] += structure[
-            "goal_reachable_node_fraction"
-        ]
-        totals["multi_route_fraction"] += structure["multi_route"]
-        totals["mean_decision_points"] += structure["decision_points"]
-        totals["mean_relevant_edge_fraction"] += structure[
-            "relevant_edge_fraction"
-        ]
-        totals["mean_random_legal_path_probability"] += structure[
-            "random_legal_path_probability"
-        ]
         bucket_counts[bucket] += 1
         bucket_optimal[bucket] += float(optimal_path)
         for step in range(1, len(target_path_ids)):
@@ -241,5 +121,4 @@ def format_metrics(metrics: dict[str, float]) -> str:
 __all__ = [
     "format_metrics",
     "generation_metrics",
-    "graph_structure_metrics",
 ]

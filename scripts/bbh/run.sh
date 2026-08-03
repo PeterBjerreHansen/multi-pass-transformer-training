@@ -5,9 +5,11 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "${ROOT}"
 source "${ROOT}/scripts/lib/model_matrix.sh"
 
-TASKS="${TASKS:-permutation tracking pointer_chasing state_machine}"
+# task options: permutation tracking pointer_chasing state_machine
+TASKS="${TASKS:-permutation tracking pointer_chasing state_machine}" # default
 SEEDS="${SEEDS:-${SEED:-1337}}"
-ARCHITECTURES="${ARCHITECTURES:-transformer memory_tape joint_memory_tape memory_concat memory_add memory_state memory_update}"
+# architecture options: transformer memory_tape memory_add
+ARCHITECTURES="${ARCHITECTURES:-transformer memory_tape memory_add}" # default
 RESULT_ROOT="${RESULT_ROOT:-results/bbh}"
 
 runtime_args=()

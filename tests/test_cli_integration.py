@@ -32,12 +32,12 @@ def test_bbh_training_cli_writes_restorable_checkpoint(tmp_path):
     result = _run(
         "-m", "experiments.train_bbh",
         "--preset", "pointer_chasing_smoke",
-        "--architecture", "joint_memory_tape",
+        "--architecture", "memory_tape",
         "--curriculum-threshold", "0",
         "--device", "cpu",
         "--run-dir", str(run_dir),
     )
-    assert "architecture: joint_memory_tape" in result.stdout
+    assert "architecture: memory_tape" in result.stdout
     assert (run_dir / "latest.pt").exists()
     assert (run_dir / "best.pt").exists()
     assert (run_dir / "config.json").exists()
@@ -68,9 +68,9 @@ def test_bbh_training_cli_writes_restorable_checkpoint(tmp_path):
     assert json.loads(diagnostics.read_text(encoding="utf-8"))["evaluated_level"] == 1
 
 
-@pytest.mark.parametrize("architecture", ["memory_add", "memory_state"])
-def test_additive_memory_bbh_cli_reports_fusion_gradients(tmp_path, architecture):
-    run_dir = tmp_path / f"{architecture}_bbh"
+def test_memory_add_bbh_cli_reports_fusion_gradients(tmp_path):
+    architecture = "memory_add"
+    run_dir = tmp_path / "memory_add_bbh"
     result = _run(
         "-m", "experiments.train_bbh",
         "--preset", "pointer_chasing_smoke",
@@ -93,7 +93,7 @@ def test_trace_training_evaluation_and_diagnostics_cli(tmp_path):
     _run(
         "-m", "experiments.train_trace",
         "--preset", "shortest_path_smoke",
-        "--architecture", "joint_memory_tape",
+        "--architecture", "memory_tape",
         "--device", "cpu",
         "--run-dir", str(run_dir),
     )
@@ -112,6 +112,7 @@ def test_trace_training_evaluation_and_diagnostics_cli(tmp_path):
     assert payload["checkpoint"] == "best"
     assert payload["checkpoint_path"] == str(run_dir / "best.pt")
     assert "memory_interventions" in payload
+    assert payload["memory_interventions"]["source_memory"]["effective_rank"] >= 0
     assert len(payload["pass_dynamics"]["extra_passes"]) == 2
     assert set(payload["pass_dynamics"]["trained_passes"][0]["relative_linf_residual"]) == {
         "mean",

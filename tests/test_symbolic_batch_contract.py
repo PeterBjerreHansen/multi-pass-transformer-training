@@ -16,7 +16,7 @@ def _assert_symbolic_batch_contract(
     vocab_size: int,
     required_block_size: int,
 ) -> None:
-    assert batch.idx.shape == batch.targets.shape == batch.metric_mask.shape
+    assert batch.idx.shape == batch.targets.shape
     assert batch.idx.size(0) == 3
     assert batch.idx.size(1) <= required_block_size
     assert batch.prompt_lengths.shape == batch.output_lengths.shape == (3,)
@@ -37,7 +37,6 @@ def _assert_symbolic_batch_contract(
 
         idx_row = batch.idx[row]
         target_row = batch.targets[row]
-        metric_mask = batch.metric_mask[row]
         target_suffix = target_row[suffix_start:suffix_end]
 
         assert int(idx_row[0]) == stoi[BOS_TOKEN]
@@ -46,9 +45,6 @@ def _assert_symbolic_batch_contract(
         assert not (idx_row[:prompt_len] == stoi[PAD_TOKEN]).any()
         assert not (idx_row[prompt_len:active_idx_len] == stoi[PAD_TOKEN]).any()
 
-        expected_mask = torch.zeros_like(metric_mask)
-        expected_mask[suffix_start:suffix_end] = True
-        assert torch.equal(metric_mask, expected_mask)
         assert torch.equal(target_row[:suffix_start], torch.full((suffix_start,), -1))
         assert torch.equal(target_row[suffix_end:], torch.full_like(target_row[suffix_end:], -1))
         assert torch.equal(
@@ -144,7 +140,6 @@ def test_symbolic_task_batches_follow_shared_contract(tmp_path):
         "othello_train_games": 16,
         "othello_val_games": 8,
         "othello_dataset_seed": 11,
-        "othello_prepend_opening": False,
     }
     vocab, stoi, itos = othello.build_othello_vocab(**kwargs)
     batch = othello.build_othello_batch(

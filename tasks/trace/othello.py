@@ -32,14 +32,12 @@ MAX_MOVES = 60
 BLACK = 1
 WHITE = -1
 EMPTY = 0
-OPENING_PREFIX = (28, 27, 35, 36)
 MOVE_TOKEN_OFFSET = 4  # pad, bos, sep, eos
 PAD_MOVE = NUM_SQUARES
 DEFAULT_DATA_DIR = "data/othello"
 DEFAULT_TRAIN_GAMES = 500_000
 DEFAULT_VAL_GAMES = 512
 DEFAULT_DATASET_SEED = 1_337
-DEFAULT_PREPEND_OPENING = False
 DATASET_VERSION = 4
 PARALLEL_GENERATION_THRESHOLD = 2_048
 MAX_DATASET_WORKERS = 8
@@ -83,14 +81,12 @@ def move_token(square_index: int) -> str:
 
 def required_block_size(
     *,
-    othello_prepend_opening: bool = DEFAULT_PREPEND_OPENING,
     othello_train_games: int = DEFAULT_TRAIN_GAMES,
     othello_val_games: int = DEFAULT_VAL_GAMES,
     **_unused,
 ) -> int:
     _validate_dataset_sizes(othello_train_games, othello_val_games)
-    prompt_tokens = len(OPENING_PREFIX) if othello_prepend_opening else 0
-    return 2 + prompt_tokens + MAX_MOVES
+    return 2 + MAX_MOVES
 
 
 def build_othello_vocab(
@@ -338,7 +334,6 @@ def sample_othello_example(
     othello_train_games: int = DEFAULT_TRAIN_GAMES,
     othello_val_games: int = DEFAULT_VAL_GAMES,
     othello_dataset_seed: int = DEFAULT_DATASET_SEED,
-    othello_prepend_opening: bool = DEFAULT_PREPEND_OPENING,
 ) -> tuple[list[int], list[int], list[int]]:
     dataset = load_othello_dataset(
         split=split,
@@ -348,9 +343,8 @@ def sample_othello_example(
         othello_dataset_seed=othello_dataset_seed,
     )
     trace = dataset.sample_trace(rng)
-    prompt = [stoi[move_token(square)] for square in OPENING_PREFIX] if othello_prepend_opening else []
     answer = [stoi[move_token(square)] for square in trace]
-    return prompt, answer, trace
+    return [], answer, trace
 
 
 def build_othello_batch(
@@ -364,7 +358,6 @@ def build_othello_batch(
     othello_train_games: int = DEFAULT_TRAIN_GAMES,
     othello_val_games: int = DEFAULT_VAL_GAMES,
     othello_dataset_seed: int = DEFAULT_DATASET_SEED,
-    othello_prepend_opening: bool = DEFAULT_PREPEND_OPENING,
 ) -> SymbolicBatch:
     if batch_size < 1:
         raise ValueError("batch_size must be positive")
@@ -379,7 +372,6 @@ def build_othello_batch(
             othello_train_games=othello_train_games,
             othello_val_games=othello_val_games,
             othello_dataset_seed=othello_dataset_seed,
-            othello_prepend_opening=othello_prepend_opening,
         )
         rows.append(make_sequence(prompt, answer, stoi))
     return build_batch_from_sequences(rows, pad_id=stoi[PAD_TOKEN], device=device)
@@ -454,7 +446,6 @@ def _validate_dataset_sizes(train_games: int, val_games: int) -> None:
 __all__ = [
     "DEFAULT_DATASET_SEED",
     "DEFAULT_DATA_DIR",
-    "DEFAULT_PREPEND_OPENING",
     "DEFAULT_TRAIN_GAMES",
     "DEFAULT_VAL_GAMES",
     "MAX_MOVES",
