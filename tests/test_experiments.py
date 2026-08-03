@@ -262,6 +262,7 @@ def _append_args(**overrides) -> SimpleNamespace:
         "eval_interval": 1,
         "eval_batches": 1,
         "lr": 1e-3,
+        "max_grad_norm": 5.0,
         "weight_decay": 0.0,
         "pass_loss_weights": [0, 0, 1],
     }

@@ -92,18 +92,6 @@ def validate_model_args(args) -> None:
 
 
 def validate_training_args(args) -> None:
-    if not hasattr(args, "append_train_prob"):
-        args.append_train_prob = 0.0
-    if not hasattr(args, "append_train_microbatch_size"):
-        args.append_train_microbatch_size = 8
-    if not hasattr(args, "append_train_horizon"):
-        args.append_train_horizon = 4
-    if not hasattr(args, "append_train_loss_weight"):
-        args.append_train_loss_weight = 1.0
-    if not hasattr(args, "append_train_warmup_steps"):
-        args.append_train_warmup_steps = 5_000
-    if not hasattr(args, "append_train_ramp_steps"):
-        args.append_train_ramp_steps = 5_000
     if args.batch_size < 1:
         raise ValueError("--batch-size must be at least 1")
     if args.train_steps < 1:
