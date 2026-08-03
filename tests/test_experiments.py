@@ -683,6 +683,33 @@ def test_ablation_recommendation_accepts_task_specific_quality_metric():
     assert result["recommend_merge"]
 
 
+def test_null_slot_recommendation_requires_attention_precondition():
+    metric = "drift.append_recurrent.optimal_path"
+    control = {
+        str(seed): {
+            metric: 0.30,
+            "diagnostics.memory_attention.diagnostic_precondition": float(seed > 0),
+        }
+        for seed in range(3)
+    }
+    treatment = {
+        str(seed): {
+            metric: 0.32,
+            "diagnostics.memory_attention.mean_null_mass": 0.10,
+        }
+        for seed in range(3)
+    }
+    result = recommend(control, treatment, mode="null-slot", quality_metric=metric)
+    assert result["quality_win"]
+    assert result["diagnostic_precondition"]
+    assert result["recommend_merge"]
+
+    control["1"]["diagnostics.memory_attention.diagnostic_precondition"] = 0.0
+    result = recommend(control, treatment, mode="null-slot", quality_metric=metric)
+    assert not result["diagnostic_precondition"]
+    assert not result["recommend_merge"]
+
+
 def test_ablation_quality_metric_is_inferred_from_task():
     shortest_path = {
         str(seed): {"task": "shortest_path"}
