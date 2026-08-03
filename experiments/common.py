@@ -67,8 +67,6 @@ def apply_model_size_preset(args) -> None:
 
 def validate_model_args(args) -> None:
     apply_model_size_preset(args)
-    if not hasattr(args, "stale_memory_prob"):
-        args.stale_memory_prob = 0.0
     if not math.isfinite(args.stale_memory_prob) or not 0.0 <= args.stale_memory_prob <= 1.0:
         raise ValueError("--stale-memory-prob must be finite and in [0, 1]")
     if args.n_layer < 1 or args.n_head < 1 or args.n_embd < 1:
