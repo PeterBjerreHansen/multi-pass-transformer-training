@@ -60,17 +60,6 @@ def parse_args(argv: list[str] | None = None):
 def _load_eval_args(cli_args) -> tuple[SimpleNamespace, Path]:
     input_dir = Path(cli_args.input_run_dir).resolve()
     saved = saved_args_from_run(input_dir)
-    legacy_range = saved.get("train_pass_range")
-    if "max_n_pass" not in saved:
-        saved["max_n_pass"] = int(
-            legacy_range[1] if legacy_range is not None else saved.get("n_pass", 4)
-        )
-    if "min_n_pass" not in saved:
-        saved["min_n_pass"] = int(legacy_range[0]) if legacy_range is not None else 2
-    if "train_pass_mode" not in saved:
-        saved["train_pass_mode"] = "uniform" if legacy_range is not None else "fixed"
-    for legacy_name in ("n_pass", "train_pass_range", "sampled_tail_loss_weights"):
-        saved.pop(legacy_name, None)
     if cli_args.device is not None:
         saved["device"] = cli_args.device
     if cli_args.eval_batches is not None:
